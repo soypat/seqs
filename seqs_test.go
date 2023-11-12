@@ -39,16 +39,16 @@ func TestExchange_helloworld_client(t *testing.T) {
 			}
 			err := tcb.Snd(gotClientSeg)
 			if err != nil {
-				t.Fatal(err)
+				t.Fatalf("%s\noutgoing seg=%s", err, tcb.RelativeAutoSegment(gotClientSeg).RelativeGoString(0, 0))
 			}
 			tcb.HelperPrintSegment(t, false, gotClientSeg)
 			continue // we only pass server packets to the client.
 		}
 		err = tcb.Rcv(seg)
-		tcb.HelperPrintSegment(t, true, seg)
 		if err != nil {
-			t.Fatalf("%d %s\nseg=%+v\nrcv=%+v\nsnd=%+v", i, err, tcb.RelativeAutoSegment(seg), tcb.TestRelativeRecvSpace(), tcb.TestRelativeSendSpace())
+			t.Fatalf("%s\nincoming seg=%s", err, tcb.RelativeAutoSegment(seg).RelativeGoString(0, 0))
 		}
+		tcb.HelperPrintSegment(t, true, seg)
 		gotClientSeg = tcb.PendingSegment(0)
 	}
 }
