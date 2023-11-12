@@ -99,7 +99,6 @@ func TestExchange_rfc9293_figure8(t *testing.T) {
 }
 
 func TestExchange_helloworld_client(t *testing.T) {
-	return
 	// Client Transmission Control Block.
 	var tcb seqs.ControlBlock
 	// The client starts in the SYN_SENT state with a random sequence number.
@@ -107,7 +106,7 @@ func TestExchange_helloworld_client(t *testing.T) {
 
 	// We add the SYN state to the client.
 	tcb.HelperInitState(seqs.StateSynSent, gotClientSeg.SEQ, gotClientSeg.SEQ, gotClientSeg.WND)
-	err := tcb.Snd(gotClientSeg)
+	err := tcb.Send(gotClientSeg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,19 +128,23 @@ func TestExchange_helloworld_client(t *testing.T) {
 			if gotClientSeg != seg {
 				t.Errorf("client: got %+v, want %+v", gotClientSeg, seg)
 			}
-			err := tcb.Snd(gotClientSeg)
+			err := tcb.Send(gotClientSeg)
 			if err != nil {
 				t.Fatalf("%s\noutgoing seg=%s", err, tcb.RelativeAutoSegment(gotClientSeg).RelativeGoString(0, 0))
 			}
 			tcb.HelperPrintSegment(t, false, gotClientSeg)
 			continue // we only pass server packets to the client.
 		}
-		err = tcb.Rcv(seg)
+		err = tcb.Recv(seg)
 		if err != nil {
 			t.Fatalf("%s\nincoming seg=%s", err, tcb.RelativeAutoSegment(seg).RelativeGoString(0, 0))
 		}
 		tcb.HelperPrintSegment(t, true, seg)
-		gotClientSeg = tcb.PendingSegment(0)
+		var ok bool
+		gotClientSeg, ok = tcb.PendingSegment(0)
+		if !ok {
+			t.Fatalf("client: got none, want %+v", seg)
+		}
 	}
 }
 

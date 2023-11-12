@@ -20,13 +20,13 @@ func (tcb *ControlBlock) HelperExchange(t *testing.T, exchange []Exchange) {
 	const pfx = "exchange"
 	for i, ex := range exchange {
 		if ex.Outgoing != nil {
-			err := tcb.Snd(*ex.Outgoing)
+			err := tcb.Send(*ex.Outgoing)
 			if err != nil {
 				t.Fatalf(pfx+"%d snd: %s", i, err)
 			}
 		}
 		if ex.Incoming != nil {
-			err := tcb.Rcv(*ex.Incoming)
+			err := tcb.Recv(*ex.Incoming)
 			if err != nil {
 				t.Fatalf(pfx+"%d rcv: %s", i, err)
 			}
@@ -35,8 +35,10 @@ func (tcb *ControlBlock) HelperExchange(t *testing.T, exchange []Exchange) {
 		if state != ex.WantState {
 			t.Errorf(pfx+"%d state: got %s, want %s", i, state, ex.WantState)
 		}
-		pending := tcb.PendingSegment(0)
-		if ex.WantPending != nil && pending != *ex.WantPending {
+		pending, ok := tcb.PendingSegment(0)
+		if !ok && ex.WantPending != nil {
+			t.Fatalf(pfx+"%d pending: got none, want %+v", i, *ex.WantPending)
+		} else if ex.WantPending != nil && pending != *ex.WantPending {
 			t.Errorf(pfx+"%d pending: got %+v, want %+v", i, pending, *ex.WantPending)
 		}
 	}
