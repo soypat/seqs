@@ -1,5 +1,14 @@
 /*
-package seqs implements sequence number operations as per RFC 793.
+package seqs implements TCP control flow.
+
+# Transmission Control Block
+
+The Transmission Control Block (TCB) is the core data structure of TCP.
+It stores core state of the TCP connection such as the send and receive
+sequence number spaces, the current state of the connection, and the
+pending control segment flags.
+
+# Values and Sizes
 
 All arithmetic dealing with sequence numbers must be performed modulo 2**32
 which brings with it subtleties to computer modulo arithmetic.
