@@ -83,6 +83,11 @@ func (seg *Segment) Last() Value {
 	return Add(seg.SEQ, seglen) - 1
 }
 
+// State returns the current state of the connection.
+func (tcb *ControlBlock) State() State {
+	return tcb.state
+}
+
 // PendingSegment calculates a suitable next segment to send from a payload length.
 func (tcb *ControlBlock) PendingSegment(payloadLen int) Segment {
 	if payloadLen > math.MaxUint16 || Size(payloadLen) > tcb.snd.WND {
@@ -143,7 +148,9 @@ func (tcb *ControlBlock) Rcv(seg Segment) (err error) {
 
 	// We accept the segment and update TCB state.
 	tcb.snd.WND = seg.WND
-	tcb.snd.UNA = seg.ACK
+	if seg.Flags.HasAny(FlagACK) {
+		tcb.snd.UNA = seg.ACK
+	}
 	seglen := seg.LEN()
 	tcb.rcv.NXT.UpdateForward(seglen)
 	return err
@@ -168,7 +175,7 @@ func (tcb *ControlBlock) rcvListen(seg Segment) (err error) {
 		return err
 	}
 
-	iss := tcb.newISS()
+	iss := tcb.snd.ISS
 	// Initialize connection state:
 	tcb.snd = sendSpace{
 		ISS: iss,

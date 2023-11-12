@@ -7,6 +7,10 @@ import (
 	"github.com/soypat/seqs/eth"
 )
 
+const (
+	SYNACK = seqs.FlagSYN | seqs.FlagACK
+)
+
 func TestExchange_helloworld_client(t *testing.T) {
 	// Client Transmission Control Block.
 	var tcb seqs.ControlBlock
@@ -53,6 +57,38 @@ func TestExchange_helloworld_client(t *testing.T) {
 	}
 }
 
+func TestExchange_rfc793_figure7(t *testing.T) {
+	// Page 31 of RFC 793: Basic 3-way handshake for connection synchronization.
+	const issA, issB, windowA, windowB = 100, 300, 1000, 1000
+	exchange := []seqs.Exchange{
+		{
+			Outgoing:  &seqs.Segment{SEQ: issA, Flags: seqs.FlagSYN, WND: windowA},
+			WantState: seqs.StateSynSent,
+		},
+		{
+			Incoming:    &seqs.Segment{SEQ: issB, ACK: issA + 1, Flags: SYNACK, WND: windowB},
+			WantState:   seqs.StateEstablished,
+			WantPending: &seqs.Segment{SEQ: issA + 1, ACK: issB + 1, Flags: seqs.FlagACK, WND: windowA},
+		},
+		{
+			Outgoing:  &seqs.Segment{SEQ: issA + 1, ACK: issB + 1, Flags: seqs.FlagACK, WND: windowA},
+			WantState: seqs.StateEstablished,
+		},
+		{
+			Outgoing:  &seqs.Segment{SEQ: issA + 1, ACK: issB + 1, Flags: seqs.FlagACK, WND: windowA},
+			WantState: seqs.StateEstablished,
+		},
+	}
+	var tcbA seqs.ControlBlock
+	tcbA.HelperInitState(seqs.StateSynSent, issA, issA, windowA)
+	tcbA.HelperExchange(t, exchange)
+	exchangeB := reverseExchange(exchange, seqs.StateSynRcvd, seqs.StateSynRcvd, seqs.StateEstablished, seqs.StateEstablished)
+
+	var tcbB seqs.ControlBlock
+	tcbB.HelperInitState(seqs.StateListen, issB, issB, windowB)
+	tcbB.HelperExchange(t, exchangeB)
+}
+
 func parseSegment(t *testing.T, b []byte) seqs.Segment {
 	t.Helper()
 	ehdr := eth.DecodeEthernetHeader(b)
@@ -76,6 +112,32 @@ func parseSegment(t *testing.T, b []byte) seqs.Segment {
 		DATALEN: seqs.Size(len(payload)),
 		Flags:   tcp.Flags(),
 	}
+}
+
+func reverseExchange(exchange []seqs.Exchange, states ...seqs.State) []seqs.Exchange {
+	if len(exchange) != len(states) || len(exchange) == 0 {
+		panic("len(exchange) != len(states) or empty exchange")
+	}
+	firstIsIn := exchange[0].Incoming != nil
+	if firstIsIn {
+		panic("please start with an outgoing segment to reverse exchange for best test results")
+	}
+	out := make([]seqs.Exchange, len(exchange))
+	for i := range exchange {
+		isLast := i == len(exchange)-1
+		isOut := exchange[i].Outgoing != nil
+
+		out[i].WantState = states[i]
+		if isOut {
+			out[i].Incoming = exchange[i].Outgoing
+			if !isLast {
+				out[i].WantPending = exchange[i+1].Incoming
+			}
+		} else {
+			out[i].Outgoing = exchange[i].Incoming
+		}
+	}
+	return out
 }
 
 // Full client-server interaction in the sending of "hello world" over TCP in order.

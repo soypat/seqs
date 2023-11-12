@@ -8,6 +8,40 @@ import (
 // Here we define internal testing helpers that may be used in any *_test.go file
 // but are not exported.
 
+type Exchange struct {
+	Outgoing    *Segment
+	Incoming    *Segment
+	WantPending *Segment // Expected pending segment. If nil not checked.
+	WantState   State    // Expected end state.
+}
+
+func (tcb *ControlBlock) HelperExchange(t *testing.T, exchange []Exchange) {
+	t.Helper()
+	const pfx = "exchange"
+	for i, ex := range exchange {
+		if ex.Outgoing != nil {
+			err := tcb.Snd(*ex.Outgoing)
+			if err != nil {
+				t.Fatalf(pfx+"%d snd: %s", i, err)
+			}
+		}
+		if ex.Incoming != nil {
+			err := tcb.Rcv(*ex.Incoming)
+			if err != nil {
+				t.Fatalf(pfx+"%d rcv: %s", i, err)
+			}
+		}
+		state := tcb.State()
+		if state != ex.WantState {
+			t.Errorf(pfx+"%d state: got %s, want %s", i, state, ex.WantState)
+		}
+		pending := tcb.PendingSegment(0)
+		if ex.WantPending != nil && pending != *ex.WantPending {
+			t.Errorf(pfx+"%d pending: got %+v, want %+v", i, pending, *ex.WantPending)
+		}
+	}
+}
+
 func (tcb *ControlBlock) HelperInitState(state State, iss, nxt Value, localWindow Size) {
 	tcb.state = state
 	tcb.snd = sendSpace{
@@ -72,11 +106,11 @@ func (tcb *ControlBlock) HelperPrintSegment(t *testing.T, isReceive bool, seg Se
 	}
 }
 
-func (rcv *recvSpace) RelativeGoString() string {
+func (rcv recvSpace) RelativeGoString() string {
 	return fmt.Sprintf("{NXT:%d} ", rcv.NXT-rcv.IRS)
 }
 
-func (rcv *sendSpace) RelativeGoString() string {
+func (rcv sendSpace) RelativeGoString() string {
 	nxt := rcv.NXT - rcv.ISS
 	una := rcv.UNA - rcv.ISS
 	unaLen := Sizeof(una, nxt)
