@@ -10,6 +10,10 @@ import (
 
 // ControlBlock implements the Transmission Control Block (TCB) of a TCP connection as specified in RFC 9293
 // in page 19 and clarified further in page 25. It records the state of a TCP connection.
+//
+// A ControlBlock's internal state is modified by the available "System Calls" as defined in
+// RFC9293, such as Close, Listen/Open, Send, and Receive.
+// Sent and received data is represented with the [Segment] struct type.
 type ControlBlock struct {
 	// # Send Sequence Space
 	//
@@ -248,7 +252,7 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	hasAck := flags.HasAll(FlagACK)
 	// Short circuit SEQ checks if SYN present since the incoming segment initializes connection.
 	checkSEQ := !flags.HasAny(FlagSYN)
-
+	established := tcb.state == StateEstablished
 	// See section 3.4 of RFC 9293 for more on these checks.
 	switch {
 	case seg.WND > math.MaxUint16:
@@ -256,10 +260,12 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	case tcb.state == StateClosed:
 		err = io.ErrClosedPipe
 
-	case hasAck && !LessThan(tcb.snd.UNA, seg.ACK):
+	// Special treatment of duplicate ACKs on established connection and of ACKs of unsent data.
+	// https://www.rfc-editor.org/rfc/rfc9293.html#section-3.10.7.4-2.5.2.2.2.3.2.1
+	case hasAck && !established && !LessThan(tcb.snd.UNA, seg.ACK):
 		err = errors.New(errPfx + "ack points to old local data")
 
-	case hasAck && !LessThanEq(seg.ACK, tcb.snd.NXT):
+	case hasAck && !established && !LessThanEq(seg.ACK, tcb.snd.NXT):
 		err = errors.New(errPfx + "acks unsent data")
 
 	case checkSEQ && !InWindow(seg.SEQ, tcb.rcv.NXT, tcb.rcv.WND):
