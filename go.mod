@@ -1,3 +1,3 @@
-module github.com/YOURUSER/YOURREPONAME
+module github.com/soypat/seqs
 
-go 1.20
+go 1.19
