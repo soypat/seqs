@@ -15,6 +15,8 @@ which brings with it subtleties to computer modulo arithmetic.
 */
 package seqs
 
+import "time"
+
 // Value represents the value of a sequence number.
 type Value uint32
 
@@ -55,4 +57,10 @@ func Sizeof(v, w Value) Size {
 // UpdateForward updates v such that it becomes v + s.
 func (v *Value) UpdateForward(s Size) {
 	*v += Value(s)
+}
+
+// DefaultNewISS returns a new initial send sequence number.
+// It's implementation is suggested by RFC9293.
+func DefaultNewISS() Value {
+	return Value(time.Now().UnixMicro() / 4)
 }

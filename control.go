@@ -5,7 +5,11 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"time"
+)
+
+var (
+	// errDropSegment is a flag that signals to drop a segment silently.
+	errDropSegment = errors.New("drop segment")
 )
 
 // ControlBlock implements the Transmission Control Block (TCB) of a TCP connection as specified in RFC 9293
@@ -41,6 +45,7 @@ type ControlBlock struct {
 	//	3 - future sequence numbers which are not yet allowed
 	rcv recvSpace
 	// pending and state are modified by rcv* methods and Close method.
+	// The pending flags are only updated if the Recv method finishes with no error.
 	pending  Flags
 	state    State
 	debuglog string
@@ -94,7 +99,10 @@ func (tcb *ControlBlock) State() State {
 }
 
 // PendingSegment calculates a suitable next segment to send from a payload length.
-func (tcb *ControlBlock) PendingSegment(payloadLen int) Segment {
+func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
+	if tcb.pending == 0 || (payloadLen > 0 && tcb.state != StateEstablished) {
+		return Segment{}, false // No pending segment.
+	}
 	if payloadLen > math.MaxUint16 || Size(payloadLen) > tcb.snd.WND {
 		payloadLen = int(tcb.snd.WND)
 	}
@@ -105,10 +113,10 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) Segment {
 		Flags:   tcb.pending,
 		DATALEN: Size(payloadLen),
 	}
-	return seg
+	return seg, true
 }
 
-func (tcb *ControlBlock) Snd(seg Segment) error {
+func (tcb *ControlBlock) Send(seg Segment) error {
 	err := tcb.validateOutgoingSegment(seg)
 	if err != nil {
 		return err
@@ -121,28 +129,34 @@ func (tcb *ControlBlock) Snd(seg Segment) error {
 	return nil
 }
 
-func (tcb *ControlBlock) Rcv(seg Segment) (err error) {
+func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 	err = tcb.validateIncomingSegment(seg)
 	if err != nil {
+		if err == errDropSegment {
+			return nil
+		}
 		return err
 	}
 
 	prevNxt := tcb.snd.NXT
+	var pending Flags
 	switch tcb.state {
 	case StateListen:
-		err = tcb.rcvListen(seg)
+		pending, err = tcb.rcvListen(seg)
 	case StateSynSent:
-		err = tcb.rcvSynSent(seg)
+		pending, err = tcb.rcvSynSent(seg)
 	case StateSynRcvd:
-		err = tcb.rcvSynRcvd(seg)
+		pending, err = tcb.rcvSynRcvd(seg)
 	case StateEstablished:
-		err = tcb.rcvEstablished(seg)
+		pending, err = tcb.rcvEstablished(seg)
 	default:
 		err = errors.New("rcv: unexpected state " + tcb.state.String())
 	}
 	if err != nil {
 		return err
 	}
+
+	tcb.pending = pending
 	if prevNxt != 0 && tcb.snd.NXT != prevNxt {
 		tcb.debuglog += fmt.Sprintf("rcv %s: snd.nxt changed from %x to %x on segment %+v\n", tcb.state, prevNxt, tcb.snd.NXT, seg)
 	}
@@ -157,23 +171,23 @@ func (tcb *ControlBlock) Rcv(seg Segment) (err error) {
 	return err
 }
 
-func (tcb *ControlBlock) rcvEstablished(seg Segment) (err error) {
-	if seg.Flags.HasAny(FlagFIN) {
+func (tcb *ControlBlock) rcvEstablished(seg Segment) (pending Flags, err error) {
+	flags := seg.Flags
+	if flags.HasAny(FlagFIN) {
 		// See Figure 5: TCP Connection State Diagram of RFC 9293.
 		tcb.state = StateCloseWait
-		tcb.pending = FlagACK
-		return nil
+		pending = FlagACK
 	}
-	return nil
+	return pending, nil
 }
 
-func (tcb *ControlBlock) rcvListen(seg Segment) (err error) {
+func (tcb *ControlBlock) rcvListen(seg Segment) (pending Flags, err error) {
 	switch {
 	case !seg.Flags.HasAll(FlagSYN): //|| flags.HasAny(eth.FlagTCP_ACK):
 		err = errors.New("rcvListen: no SYN or unexpected flag set")
 	}
 	if err != nil {
-		return err
+		return 0, err
 	}
 	// Initialize all connection state:
 	tcb.resetSnd(tcb.snd.ISS, seg.WND)
@@ -182,10 +196,10 @@ func (tcb *ControlBlock) rcvListen(seg Segment) (err error) {
 	// We must respond with SYN|ACK frame after receiving SYN in listen state (three way handshake).
 	tcb.pending = synack
 	tcb.state = StateSynRcvd
-	return nil
+	return synack, nil
 }
 
-func (tcb *ControlBlock) rcvSynSent(seg Segment) (err error) {
+func (tcb *ControlBlock) rcvSynSent(seg Segment) (pending Flags, err error) {
 	hasSyn := seg.Flags.HasAny(FlagSYN)
 	hasAck := seg.Flags.HasAny(FlagACK)
 	switch {
@@ -196,24 +210,24 @@ func (tcb *ControlBlock) rcvSynSent(seg Segment) (err error) {
 		err = errors.New("rcvSynSent: bad seg.ack")
 	}
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	if hasAck {
 		tcb.state = StateEstablished
-		tcb.pending = FlagACK
+		pending = FlagACK
 		tcb.resetRcv(tcb.rcv.WND, seg.SEQ)
 	} else {
 		// Simultaneous connection sync edge case.
-		tcb.pending = synack
+		pending = synack
 		tcb.state = StateSynRcvd
 		tcb.resetSnd(tcb.snd.ISS, seg.WND)
 		tcb.resetRcv(tcb.rcv.WND, seg.SEQ)
 	}
-	return nil
+	return pending, nil
 }
 
-func (tcb *ControlBlock) rcvSynRcvd(seg Segment) (err error) {
+func (tcb *ControlBlock) rcvSynRcvd(seg Segment) (pending Flags, err error) {
 	switch {
 	case !seg.Flags.HasAll(FlagACK):
 		err = errors.New("rcvSynRcvd: expected ACK")
@@ -221,11 +235,10 @@ func (tcb *ControlBlock) rcvSynRcvd(seg Segment) (err error) {
 		err = errors.New("rcvSynRcvd: bad seg.ack")
 	}
 	if err != nil {
-		return err
+		return 0, err
 	}
 	tcb.state = StateEstablished
-	tcb.pending = FlagACK
-	return nil
+	return FlagACK, nil
 }
 
 func (tcb *ControlBlock) resetSnd(localISS Value, remoteWND Size) {
@@ -253,6 +266,9 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	// Short circuit SEQ checks if SYN present since the incoming segment initializes connection.
 	checkSEQ := !flags.HasAny(FlagSYN)
 	established := tcb.state == StateEstablished
+	acksOld := !LessThan(tcb.snd.UNA, seg.ACK)
+	acksUnsentData := !LessThanEq(seg.ACK, tcb.snd.NXT)
+	//
 	// See section 3.4 of RFC 9293 for more on these checks.
 	switch {
 	case seg.WND > math.MaxUint16:
@@ -260,12 +276,10 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	case tcb.state == StateClosed:
 		err = io.ErrClosedPipe
 
-	// Special treatment of duplicate ACKs on established connection and of ACKs of unsent data.
-	// https://www.rfc-editor.org/rfc/rfc9293.html#section-3.10.7.4-2.5.2.2.2.3.2.1
-	case hasAck && !established && !LessThan(tcb.snd.UNA, seg.ACK):
+	case hasAck && !established && acksOld:
 		err = errors.New(errPfx + "ack points to old local data")
 
-	case hasAck && !established && !LessThanEq(seg.ACK, tcb.snd.NXT):
+	case hasAck && !established && acksUnsentData:
 		err = errors.New(errPfx + "acks unsent data")
 
 	case checkSEQ && !InWindow(seg.SEQ, tcb.rcv.NXT, tcb.rcv.WND):
@@ -273,6 +287,23 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 
 	case checkSEQ && !InWindow(seg.Last(), tcb.rcv.NXT, tcb.rcv.WND):
 		err = errors.New(errPfx + "last not in receive window")
+	}
+	if err != nil {
+		return err
+	}
+
+	// Drop-segment checks.
+	switch {
+	// Special treatment of duplicate ACKs on established connection and of ACKs of unsent data.
+	// https://www.rfc-editor.org/rfc/rfc9293.html#section-3.10.7.4-2.5.2.2.2.3.2.1
+	case hasAck && established && acksOld:
+		tcb.pending = 0 // Completely ignore duplicate ACKs.
+		err = errDropSegment
+		tcb.debuglog += fmt.Sprintf("rcv %s: duplicate ACK %x\n", tcb.state, seg.ACK)
+	case hasAck && established && acksUnsentData:
+		tcb.pending = FlagACK // Send ACK for unsent data.
+		err = errDropSegment
+		tcb.debuglog += fmt.Sprintf("rcv %s: ACK %x of unsent data\n", tcb.state, seg.ACK)
 	}
 	return err
 }
@@ -297,10 +328,6 @@ func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
 		err = errors.New(errPfx + "last not in send window")
 	}
 	return err
-}
-
-func (tcb *ControlBlock) newISS() Value {
-	return Value(time.Now().UnixMicro() / 4)
 }
 
 // Flags is a TCP flags masked implementation i.e: SYN, FIN, ACK.
