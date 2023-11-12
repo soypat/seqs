@@ -11,6 +11,93 @@ const (
 	SYNACK = seqs.FlagSYN | seqs.FlagACK
 )
 
+func TestExchange_rfc9293_figure7(t *testing.T) {
+	/* Section 3.5 of RFC 9293: Basic 3-way handshake for connection synchronization.
+	TCP Peer A                                           TCP Peer B
+
+	1.  CLOSED                                               LISTEN
+
+	2.  SYN-SENT    --> <SEQ=100><CTL=SYN>               --> SYN-RECEIVED
+
+	3.  ESTABLISHED <-- <SEQ=300><ACK=101><CTL=SYN,ACK>  <-- SYN-RECEIVED
+
+	4.  ESTABLISHED --> <SEQ=101><ACK=301><CTL=ACK>       --> ESTABLISHED
+
+	5.  ESTABLISHED --> <SEQ=101><ACK=301><CTL=ACK><DATA> --> ESTABLISHED
+	*/
+	const issA, issB, windowA, windowB = 100, 300, 1000, 1000
+	exchangeA := []seqs.Exchange{
+		{ // A sends SYN to B.
+			Outgoing:  &seqs.Segment{SEQ: issA, Flags: seqs.FlagSYN, WND: windowA},
+			WantState: seqs.StateSynSent,
+		},
+		{ // A receives SYNACK from B thus establishing the connection on A's side.
+			Incoming:    &seqs.Segment{SEQ: issB, ACK: issA + 1, Flags: SYNACK, WND: windowB},
+			WantState:   seqs.StateEstablished,
+			WantPending: &seqs.Segment{SEQ: issA + 1, ACK: issB + 1, Flags: seqs.FlagACK, WND: windowA},
+		},
+		{ // A sends ACK to B, which leaves connection established on their side. Three way handshake complete by now.
+			Outgoing:  &seqs.Segment{SEQ: issA + 1, ACK: issB + 1, Flags: seqs.FlagACK, WND: windowA},
+			WantState: seqs.StateEstablished,
+		},
+		{ // A sends data to B?
+			Outgoing:  &seqs.Segment{SEQ: issA + 1, ACK: issB + 1, Flags: seqs.FlagACK, WND: windowA},
+			WantState: seqs.StateEstablished,
+		},
+	}
+	var tcbA seqs.ControlBlock
+	tcbA.HelperInitState(seqs.StateSynSent, issA, issA, windowA)
+	tcbA.HelperExchange(t, exchangeA)
+	exchangeB := reverseExchange(exchangeA, seqs.StateSynRcvd, seqs.StateSynRcvd, seqs.StateEstablished, seqs.StateEstablished)
+
+	var tcbB seqs.ControlBlock
+	tcbB.HelperInitState(seqs.StateListen, issB, issB, windowB)
+	tcbB.HelperExchange(t, exchangeB)
+}
+
+func TestExchange_rfc9293_figure8(t *testing.T) {
+	/* Section 3.5 of RFC 9293: Simultaneous Connection Synchronization (SYN).
+	TCP Peer A                                       TCP Peer B
+
+	1.  CLOSED                                           CLOSED
+
+	2.  SYN-SENT     --> <SEQ=100><CTL=SYN>              ...
+
+	3.  SYN-RECEIVED <-- <SEQ=300><CTL=SYN>              <-- SYN-SENT
+
+	4.               ... <SEQ=100><CTL=SYN>              --> SYN-RECEIVED
+
+	5.  SYN-RECEIVED --> <SEQ=100><ACK=301><CTL=SYN,ACK> ...
+
+	6.  ESTABLISHED  <-- <SEQ=300><ACK=101><CTL=SYN,ACK> <-- SYN-RECEIVED
+
+	7.               ... <SEQ=100><ACK=301><CTL=SYN,ACK> --> ESTABLISHED
+	*/
+	const issA, issB, windowA, windowB = 100, 300, 1000, 1000
+	exchangeA := []seqs.Exchange{
+		{ // A sends SYN to B.
+			Outgoing:  &seqs.Segment{SEQ: issA, Flags: seqs.FlagSYN, WND: windowA},
+			WantState: seqs.StateSynSent,
+		},
+		{ // A receives a SYN with no ACK from B.
+			Incoming:    &seqs.Segment{SEQ: issB, Flags: seqs.FlagSYN, WND: windowB},
+			WantState:   seqs.StateSynRcvd,
+			WantPending: &seqs.Segment{SEQ: issA, ACK: issB + 1, Flags: SYNACK, WND: windowA},
+		},
+		{ // A sends SYNACK to B.
+			Outgoing:  &seqs.Segment{SEQ: issA, ACK: issB + 1, Flags: SYNACK, WND: windowA},
+			WantState: seqs.StateSynRcvd,
+		},
+		{ // A receives ACK from B.
+			Incoming:  &seqs.Segment{SEQ: issB, ACK: issA + 1, Flags: seqs.FlagACK, WND: windowA},
+			WantState: seqs.StateEstablished,
+		},
+	}
+	var tcbA seqs.ControlBlock
+	tcbA.HelperInitState(seqs.StateSynSent, issA, issA, windowA)
+	tcbA.HelperExchange(t, exchangeA)
+}
+
 func TestExchange_helloworld_client(t *testing.T) {
 	// Client Transmission Control Block.
 	var tcb seqs.ControlBlock
@@ -55,38 +142,6 @@ func TestExchange_helloworld_client(t *testing.T) {
 		tcb.HelperPrintSegment(t, true, seg)
 		gotClientSeg = tcb.PendingSegment(0)
 	}
-}
-
-func TestExchange_rfc793_figure7(t *testing.T) {
-	// Page 31 of RFC 793: Basic 3-way handshake for connection synchronization.
-	const issA, issB, windowA, windowB = 100, 300, 1000, 1000
-	exchange := []seqs.Exchange{
-		{
-			Outgoing:  &seqs.Segment{SEQ: issA, Flags: seqs.FlagSYN, WND: windowA},
-			WantState: seqs.StateSynSent,
-		},
-		{
-			Incoming:    &seqs.Segment{SEQ: issB, ACK: issA + 1, Flags: SYNACK, WND: windowB},
-			WantState:   seqs.StateEstablished,
-			WantPending: &seqs.Segment{SEQ: issA + 1, ACK: issB + 1, Flags: seqs.FlagACK, WND: windowA},
-		},
-		{
-			Outgoing:  &seqs.Segment{SEQ: issA + 1, ACK: issB + 1, Flags: seqs.FlagACK, WND: windowA},
-			WantState: seqs.StateEstablished,
-		},
-		{
-			Outgoing:  &seqs.Segment{SEQ: issA + 1, ACK: issB + 1, Flags: seqs.FlagACK, WND: windowA},
-			WantState: seqs.StateEstablished,
-		},
-	}
-	var tcbA seqs.ControlBlock
-	tcbA.HelperInitState(seqs.StateSynSent, issA, issA, windowA)
-	tcbA.HelperExchange(t, exchange)
-	exchangeB := reverseExchange(exchange, seqs.StateSynRcvd, seqs.StateSynRcvd, seqs.StateEstablished, seqs.StateEstablished)
-
-	var tcbB seqs.ControlBlock
-	tcbB.HelperInitState(seqs.StateListen, issB, issB, windowB)
-	tcbB.HelperExchange(t, exchangeB)
 }
 
 func parseSegment(t *testing.T, b []byte) seqs.Segment {
