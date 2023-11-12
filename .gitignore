@@ -1,0 +1,33 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*bin
+*.log
+# *__debug_bin
+
+# IDE
+.vscode/
+*.elf
+*.uf2
+
+
+
+# Go workspace file.
+go.work
+go.work.sum
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+*.cov
+
+# Dependency directories after running `go mod vendor`
+vendor/
+
+
+*/__pycache__/*

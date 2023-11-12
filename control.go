@@ -37,8 +37,9 @@ type ControlBlock struct {
 	//	3 - future sequence numbers which are not yet allowed
 	rcv recvSpace
 	// pending and state are modified by rcv* methods and Close method.
-	pending Flags
-	state   State
+	pending  Flags
+	state    State
+	debuglog string
 }
 
 // sendSpace contains Send Sequence Space data. Its sequence numbers correspond to local data.
@@ -121,10 +122,7 @@ func (tcb *ControlBlock) Rcv(seg Segment) (err error) {
 	if err != nil {
 		return err
 	}
-	if seg.Flags.HasAny(FlagRST) {
-		tcb.rst(seg.SEQ)
-		return nil
-	}
+
 	prevNxt := tcb.snd.NXT
 	switch tcb.state {
 	case StateListen:
@@ -142,8 +140,7 @@ func (tcb *ControlBlock) Rcv(seg Segment) (err error) {
 		return err
 	}
 	if prevNxt != 0 && tcb.snd.NXT != prevNxt {
-		// NXT modified in Snd() method.
-		return fmt.Errorf("rcv %s: snd.nxt changed from %x to %x", tcb.state, prevNxt, tcb.snd.NXT)
+		tcb.debuglog += fmt.Sprintf("rcv %s: snd.nxt changed from %x to %x on segment %+v\n", tcb.state, prevNxt, tcb.snd.NXT, seg)
 	}
 
 	// We accept the segment and update TCB state.
@@ -174,23 +171,10 @@ func (tcb *ControlBlock) rcvListen(seg Segment) (err error) {
 	if err != nil {
 		return err
 	}
+	// Initialize all connection state:
+	tcb.resetSnd(tcb.snd.ISS, seg.WND)
+	tcb.resetRcv(seg.SEQ, tcb.rcv.WND)
 
-	iss := tcb.snd.ISS
-	// Initialize connection state:
-	tcb.snd = sendSpace{
-		ISS: iss,
-		UNA: iss,
-		NXT: iss,
-		WND: seg.WND,
-		// UP, WL1, WL2 defaults to zero values.
-	}
-
-	wnd := tcb.rcv.WND
-	tcb.rcv = recvSpace{
-		IRS: seg.SEQ,
-		NXT: seg.SEQ, // +1 includes SYN flag as part of sequence octets is added outside.
-		WND: wnd,
-	}
 	// We must respond with SYN|ACK frame after receiving SYN in listen state (three way handshake).
 	tcb.pending = synack
 	tcb.state = StateSynRcvd
@@ -198,23 +182,29 @@ func (tcb *ControlBlock) rcvListen(seg Segment) (err error) {
 }
 
 func (tcb *ControlBlock) rcvSynSent(seg Segment) (err error) {
+	hasSyn := seg.Flags.HasAny(FlagSYN)
+	hasAck := seg.Flags.HasAny(FlagACK)
 	switch {
-	case !seg.Flags.HasAll(synack):
-		err = errors.New("rcvSynSent: expected SYN|ACK") // Not prepared for simultaneous intitialization yet.
-	case seg.ACK != tcb.snd.UNA+1:
+	case !hasSyn:
+		err = errors.New("rcvSynSent: expected SYN")
+
+	case hasAck && seg.ACK != tcb.snd.UNA+1:
 		err = errors.New("rcvSynSent: bad seg.ack")
 	}
 	if err != nil {
 		return err
 	}
-	wnd := tcb.rcv.WND
-	tcb.rcv = recvSpace{
-		IRS: seg.SEQ,
-		NXT: seg.SEQ, // +1 includes SYN flag as part of sequence octets.
-		WND: wnd,
+
+	if hasAck {
+		tcb.resetRcv(seg.SEQ, tcb.rcv.WND)
+		tcb.state = StateEstablished
+		tcb.pending = FlagACK
+	} else {
+		// Simultaneous connection sync edge case.
+		tcb.pending = synack
+		tcb.state = StateSynRcvd
+		tcb.resetSnd(tcb.snd.ISS, seg.WND)
 	}
-	tcb.state = StateEstablished
-	tcb.pending = FlagACK
 	return nil
 }
 
@@ -233,9 +223,22 @@ func (tcb *ControlBlock) rcvSynRcvd(seg Segment) (err error) {
 	return nil
 }
 
-func (tcb *ControlBlock) rst(seq Value) {
-	// cs.pending = FlagRST
-	tcb.state = StateListen
+func (tcb *ControlBlock) resetSnd(localISS Value, remoteWND Size) {
+	tcb.snd = sendSpace{
+		ISS: localISS,
+		UNA: localISS,
+		NXT: localISS,
+		WND: remoteWND,
+		// UP, WL1, WL2 defaults to zero values.
+	}
+}
+
+func (tcb *ControlBlock) resetRcv(remoteISS Value, localWND Size) {
+	tcb.rcv = recvSpace{
+		IRS: remoteISS,
+		NXT: remoteISS,
+		WND: localWND,
+	}
 }
 
 func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {

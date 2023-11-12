@@ -56,7 +56,7 @@ func (tcb *ControlBlock) HelperInitState(state State, iss, nxt Value, localWindo
 	}
 }
 
-func (tcb *ControlBlock) TestRelativeSendSpace() sendSpace {
+func (tcb *ControlBlock) RelativeSendSpace() sendSpace {
 	snd := tcb.snd
 	snd.NXT -= snd.ISS
 	snd.UNA -= snd.ISS
@@ -64,7 +64,7 @@ func (tcb *ControlBlock) TestRelativeSendSpace() sendSpace {
 	return snd
 }
 
-func (tcb *ControlBlock) TestRelativeRecvSpace() recvSpace {
+func (tcb *ControlBlock) RelativeRecvSpace() recvSpace {
 	rcv := tcb.rcv
 	rcv.NXT -= rcv.IRS
 	rcv.IRS = 0
@@ -94,9 +94,9 @@ func (tcb *ControlBlock) RelativeAutoSegment(seg Segment) Segment {
 
 func (tcb *ControlBlock) HelperPrintSegment(t *testing.T, isReceive bool, seg Segment) {
 	const fmtmsg = " Seg=%+v\nRcvSpace=%s\nSndSpace=%s"
-	rcv := tcb.TestRelativeRecvSpace()
+	rcv := tcb.RelativeRecvSpace()
 	rcvStr := rcv.RelativeGoString()
-	snd := tcb.TestRelativeSendSpace()
+	snd := tcb.RelativeSendSpace()
 	sndStr := snd.RelativeGoString()
 	t.Helper()
 	if isReceive {
@@ -127,4 +127,8 @@ func (seg Segment) RelativeGoString(iseq, iack Value) string {
 		return fmt.Sprintf("{SEQ:%d ACK:%d DATALEN:%d Flags:%s} (LEN:%d)", seg.SEQ-iseq, seg.ACK-iack, seg.DATALEN, seg.Flags, seglen)
 	}
 	return fmt.Sprintf("{SEQ:%d ACK:%d DATALEN:%d Flags:%s} ", seg.SEQ-iseq, seg.ACK-iack, seg.DATALEN, seg.Flags)
+}
+
+func (tcb *ControlBlock) DebugLog() string {
+	return tcb.debuglog
 }
