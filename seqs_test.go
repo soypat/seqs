@@ -89,7 +89,7 @@ func TestExchange_rfc9293_figure8(t *testing.T) {
 			WantState: seqs.StateSynRcvd,
 		},
 		3: { // A receives ACK from B.
-			Incoming:  &seqs.Segment{SEQ: issB, ACK: issA + 1, Flags: seqs.FlagACK, WND: windowA},
+			Incoming:  &seqs.Segment{SEQ: issB, ACK: issA + 1, Flags: SYNACK, WND: windowA},
 			WantState: seqs.StateEstablished,
 		},
 	}
