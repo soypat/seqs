@@ -77,9 +77,20 @@ func (rcv *recvSpace) RelativeGoString() string {
 }
 
 func (rcv *sendSpace) RelativeGoString() string {
-	return fmt.Sprintf("{NXT:%d UNA:%d} ", rcv.NXT-rcv.ISS, rcv.UNA-rcv.ISS)
+	nxt := rcv.NXT - rcv.ISS
+	una := rcv.UNA - rcv.ISS
+	unaLen := Sizeof(una, nxt)
+	if unaLen != 0 {
+		return fmt.Sprintf("{NXT:%d UNA:%d} (%d unacked)", nxt, una, unaLen)
+	}
+	return fmt.Sprintf("{NXT:%d UNA:%d}", nxt, una)
 }
 
 func (seg Segment) RelativeGoString(iseq, iack Value) string {
+	seglen := seg.LEN()
+	if seglen != seg.DATALEN {
+		// If SYN/FIN is set print out the length of the segment.
+		return fmt.Sprintf("{SEQ:%d ACK:%d DATALEN:%d Flags:%s} (LEN:%d)", seg.SEQ-iseq, seg.ACK-iack, seg.DATALEN, seg.Flags, seglen)
+	}
 	return fmt.Sprintf("{SEQ:%d ACK:%d DATALEN:%d Flags:%s} ", seg.SEQ-iseq, seg.ACK-iack, seg.DATALEN, seg.Flags)
 }
