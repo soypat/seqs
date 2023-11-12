@@ -52,7 +52,7 @@ func TestExchange_rfc9293_figure7(t *testing.T) {
 
 	var tcbB seqs.ControlBlock
 	tcbB.HelperInitState(seqs.StateListen, issB, issB, windowB)
-	tcbB.HelperExchange(t, exchangeB[:3]) // TODO remove [:3] after snd.UNA bugfix
+	tcbB.HelperExchange(t, exchangeB) // TODO remove [:3] after snd.UNA bugfix
 }
 
 func TestExchange_rfc9293_figure8(t *testing.T) {
