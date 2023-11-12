@@ -350,9 +350,9 @@ func (iphdr *IPv4Header) Put(buf []byte) {
 //
 // The TCP Length is the TCP header length plus the data length in octets
 // (this is not an explicitly transmitted quantity, but is computed),
-// and it does not count the 12 octets of the pseudo header (See [RFC 793])
+// and it does not count the 12 octets of the pseudo header (See [RFC 9293])
 //
-// [RFC 793]: https://www.rfc-editor.org/rfc/rfc793
+// [RFC 9293]: https://www.rfc-editor.org/rfc/rfc9293.html
 func (iphdr *IPv4Header) PutPseudo(buf []byte) {
 	_ = buf[11]
 	copy(buf[0:4], iphdr.Source[:])

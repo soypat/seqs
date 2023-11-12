@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// ControlBlock implements the Transmission Control Block (TCB) of a TCP connection as specified in RFC 793
+// ControlBlock implements the Transmission Control Block (TCB) of a TCP connection as specified in RFC 9293
 // in page 19 and clarified further in page 25. It records the state of a TCP connection.
 type ControlBlock struct {
 	// # Send Sequence Space
@@ -158,7 +158,7 @@ func (tcb *ControlBlock) Rcv(seg Segment) (err error) {
 
 func (tcb *ControlBlock) rcvEstablished(seg Segment) (err error) {
 	if seg.Flags.HasAny(FlagFIN) {
-		// See diagram on page 23 of RFC 793.
+		// See Figure 5: TCP Connection State Diagram of RFC 9293.
 		tcb.state = StateCloseWait
 		tcb.pending = FlagACK
 		return nil
@@ -245,7 +245,7 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	// Short circuit SEQ checks if SYN present since the incoming segment initializes connection.
 	checkSEQ := !flags.HasAny(FlagSYN)
 
-	// See RFC 793 page 25 for more on these checks.
+	// See section 3.4 of RFC 9293 for more on these checks.
 	switch {
 	case seg.WND > math.MaxUint16:
 		err = errors.New(errPfx + "wnd > 2**16")
