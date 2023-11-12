@@ -173,7 +173,7 @@ func (tcb *ControlBlock) rcvListen(seg Segment) (err error) {
 	}
 	// Initialize all connection state:
 	tcb.resetSnd(tcb.snd.ISS, seg.WND)
-	tcb.resetRcv(seg.SEQ, tcb.rcv.WND)
+	tcb.resetRcv(tcb.rcv.WND, seg.SEQ)
 
 	// We must respond with SYN|ACK frame after receiving SYN in listen state (three way handshake).
 	tcb.pending = synack
@@ -196,14 +196,15 @@ func (tcb *ControlBlock) rcvSynSent(seg Segment) (err error) {
 	}
 
 	if hasAck {
-		tcb.resetRcv(seg.SEQ, tcb.rcv.WND)
 		tcb.state = StateEstablished
 		tcb.pending = FlagACK
+		tcb.resetRcv(tcb.rcv.WND, seg.SEQ)
 	} else {
 		// Simultaneous connection sync edge case.
 		tcb.pending = synack
 		tcb.state = StateSynRcvd
 		tcb.resetSnd(tcb.snd.ISS, seg.WND)
+		tcb.resetRcv(tcb.rcv.WND, seg.SEQ)
 	}
 	return nil
 }
@@ -233,7 +234,7 @@ func (tcb *ControlBlock) resetSnd(localISS Value, remoteWND Size) {
 	}
 }
 
-func (tcb *ControlBlock) resetRcv(remoteISS Value, localWND Size) {
+func (tcb *ControlBlock) resetRcv(localWND Size, remoteISS Value) {
 	tcb.rcv = recvSpace{
 		IRS: remoteISS,
 		NXT: remoteISS,
