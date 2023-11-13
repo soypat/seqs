@@ -137,13 +137,13 @@ func TestExchange_helloworld_client(t *testing.T) {
 		}
 		err = tcb.Recv(seg)
 		if err != nil {
-			t.Fatalf("%s\nincoming seg=%s", err, tcb.RelativeAutoSegment(seg).RelativeGoString(0, 0))
+			t.Fatalf("%s\nincoming seg%d=%s", err, i, tcb.RelativeAutoSegment(seg).RelativeGoString(0, 0))
 		}
 		tcb.HelperPrintSegment(t, true, seg)
 		var ok bool
 		gotClientSeg, ok = tcb.PendingSegment(0)
 		if !ok {
-			t.Fatalf("client: got none, want %+v", seg)
+			t.Fatalf("client%d: got no segment state=%s", i, tcb.State())
 		}
 	}
 }
