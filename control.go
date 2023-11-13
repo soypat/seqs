@@ -100,7 +100,7 @@ func (tcb *ControlBlock) State() State {
 
 // PendingSegment calculates a suitable next segment to send from a payload length.
 func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
-	if tcb.pending == 0 || (payloadLen > 0 && tcb.state != StateEstablished) {
+	if (payloadLen == 0 && tcb.pending == 0) || (payloadLen > 0 && tcb.state != StateEstablished) {
 		return Segment{}, false // No pending segment.
 	}
 	if payloadLen > math.MaxUint16 || Size(payloadLen) > tcb.snd.WND {
@@ -173,10 +173,10 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 
 func (tcb *ControlBlock) rcvEstablished(seg Segment) (pending Flags, err error) {
 	flags := seg.Flags
+	pending = FlagACK
 	if flags.HasAny(FlagFIN) {
 		// See Figure 5: TCP Connection State Diagram of RFC 9293.
 		tcb.state = StateCloseWait
-		pending = FlagACK
 	}
 	return pending, nil
 }
