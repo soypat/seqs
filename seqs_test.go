@@ -233,6 +233,12 @@ func TestExchange_rfc9293_figure12(t *testing.T) {
 	tcbA.HelperInitState(seqs.StateEstablished, issA, issA, windowA)
 	tcbA.HelperInitRcv(issB, issB, windowB)
 	tcbA.HelperExchange(t, exchangeA)
+
+	exchangeB := reverseExchange(exchangeA, seqs.StateCloseWait, seqs.StateCloseWait, seqs.StateLastAck, seqs.StateClosed)
+	var tcbB seqs.ControlBlock
+	tcbB.HelperInitState(seqs.StateEstablished, issB, issB, windowB)
+	tcbB.HelperInitRcv(issA, issA, windowA)
+	tcbB.HelperExchange(t, exchangeB)
 }
 
 func TestExchange_helloworld_client(t *testing.T) {
