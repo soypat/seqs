@@ -49,6 +49,9 @@ func (tcb *ControlBlock) Send(seg Segment) error {
 	seglen := seg.LEN()
 	tcb.snd.NXT.UpdateForward(seglen)
 	tcb.rcv.WND = seg.WND
+	if seg.Flags.HasAny(FlagFIN) && tcb.state == StateEstablished {
+		tcb.state = StateFinWait1
+	}
 	return nil
 }
 

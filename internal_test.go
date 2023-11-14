@@ -58,6 +58,12 @@ func (tcb *ControlBlock) HelperInitState(state State, iss, nxt Value, localWindo
 	}
 }
 
+func (tcb *ControlBlock) HelperInitRcv(irs, nxt Value, remoteWindow Size) {
+	tcb.rcv.IRS = irs
+	tcb.rcv.NXT = nxt
+	tcb.snd.WND = remoteWindow
+}
+
 func (tcb *ControlBlock) RelativeSendSpace() sendSpace {
 	snd := tcb.snd
 	snd.NXT -= snd.ISS
