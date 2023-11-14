@@ -49,8 +49,19 @@ func (tcb *ControlBlock) Send(seg Segment) error {
 	seglen := seg.LEN()
 	tcb.snd.NXT.UpdateForward(seglen)
 	tcb.rcv.WND = seg.WND
-	if seg.Flags.HasAny(FlagFIN) && tcb.state == StateEstablished {
-		tcb.state = StateFinWait1
+	hasFIN := seg.Flags.HasAny(FlagFIN)
+	hasACK := seg.Flags.HasAny(FlagACK)
+	switch tcb.state {
+	case StateEstablished:
+		if hasFIN {
+			tcb.state = StateFinWait1
+		}
+	case StateCloseWait:
+		if hasFIN {
+			tcb.state = StateLastAck
+		} else if hasACK {
+			tcb.pending = finack
+		}
 	}
 	return nil
 }
@@ -60,9 +71,6 @@ func (tcb *ControlBlock) Send(seg Segment) error {
 func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 	err = tcb.validateIncomingSegment(seg)
 	if err != nil {
-		if err == errDropSegment {
-			return nil
-		}
 		return err
 	}
 
@@ -81,6 +89,11 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 		pending, err = tcb.rcvFinWait1(seg)
 	case StateFinWait2:
 		pending, err = tcb.rcvFinWait2(seg)
+	case StateCloseWait:
+	case StateLastAck:
+		if seg.Flags.HasAny(FlagACK) {
+			tcb.state = StateClosed
+		}
 	default:
 		err = errors.New("rcv: unexpected state " + tcb.state.String())
 	}

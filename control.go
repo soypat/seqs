@@ -246,7 +246,7 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	preestablished := tcb.state.preEstablished()
 	acksOld := hasAck && !LessThan(tcb.snd.UNA, seg.ACK)
 	acksUnsentData := hasAck && !LessThanEq(seg.ACK, tcb.snd.NXT)
-	//
+	ctlSegment := established && flags.HasAny(FlagFIN|FlagRST)
 	// See section 3.4 of RFC 9293 for more on these checks.
 	switch {
 	case seg.WND > math.MaxUint16:
@@ -274,7 +274,7 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	switch {
 	// Special treatment of duplicate ACKs on established connection and of ACKs of unsent data.
 	// https://www.rfc-editor.org/rfc/rfc9293.html#section-3.10.7.4-2.5.2.2.2.3.2.1
-	case established && acksOld:
+	case established && acksOld && !ctlSegment:
 		err = errDropSegment
 		tcb.pending = 0 // Completely ignore duplicate ACKs.
 		tcb.debuglog += fmt.Sprintf("rcv %s: duplicate ACK %x\n", tcb.state, seg.ACK)
