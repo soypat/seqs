@@ -235,6 +235,7 @@ func TestExchange_rfc9293_figure12(t *testing.T) {
 	tcbA.HelperExchange(t, exchangeA)
 
 	exchangeB := reverseExchange(exchangeA, seqs.StateCloseWait, seqs.StateCloseWait, seqs.StateLastAck, seqs.StateClosed)
+	exchangeB[1].WantPending = &seqs.Segment{SEQ: issB, ACK: issA + 1, Flags: FINACK, WND: windowB}
 	var tcbB seqs.ControlBlock
 	tcbB.HelperInitState(seqs.StateEstablished, issB, issB, windowB)
 	tcbB.HelperInitRcv(issA, issA, windowA)
