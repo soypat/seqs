@@ -52,6 +52,10 @@ func (tcb *ControlBlock) Send(seg Segment) error {
 	hasFIN := seg.Flags.HasAny(FlagFIN)
 	hasACK := seg.Flags.HasAny(FlagACK)
 	switch tcb.state {
+	case StateClosing:
+		if hasACK {
+			tcb.state = StateTimeWait
+		}
 	case StateEstablished:
 		if hasFIN {
 			tcb.state = StateFinWait1

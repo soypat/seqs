@@ -204,9 +204,11 @@ func (tcb *ControlBlock) rcvFinWait1(seg Segment) (pending Flags, err error) {
 	if !flags.HasAny(FlagACK) {
 		return 0, errors.New("rcvFinWait1: expected ACK")
 	} else if flags.HasAny(FlagFIN) {
-		tcb.debuglog += "got fin in finwait1\n"
+		tcb.state = StateClosing // Simultaneous close. See figure 13 of RFC 9293.
+	} else {
+		tcb.state = StateFinWait2
 	}
-	tcb.state = StateFinWait2
+
 	return FlagACK, nil
 }
 

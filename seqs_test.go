@@ -242,6 +242,50 @@ func TestExchange_rfc9293_figure12(t *testing.T) {
 	tcbB.HelperExchange(t, exchangeB)
 }
 
+/*
+	 Figure 12: Simultaneous Close Sequence
+			TCP Peer A                                           TCP Peer B
+
+		1.  ESTABLISHED                                          ESTABLISHED
+
+		2.  (Close)                                              (Close)
+			FIN-WAIT-1  --> <SEQ=100><ACK=300><CTL=FIN,ACK>  ... FIN-WAIT-1
+						<-- <SEQ=300><ACK=100><CTL=FIN,ACK>  <--
+						... <SEQ=100><ACK=300><CTL=FIN,ACK>  -->
+
+		3.  CLOSING     --> <SEQ=101><ACK=301><CTL=ACK>      ... CLOSING
+						<-- <SEQ=301><ACK=101><CTL=ACK>      <--
+						... <SEQ=101><ACK=301><CTL=ACK>      -->
+
+		4.  TIME-WAIT                                            TIME-WAIT
+			(2 MSL)                                              (2 MSL)
+			CLOSED                                               CLOSED
+*/
+func TestExchange_rfc9293_figure13(t *testing.T) {
+	const issA, issB, windowA, windowB = 100, 300, 1000, 1000
+	exchangeA := []seqs.Exchange{
+		0: { // A sends FIN|ACK to B to begin closing connection.
+			Outgoing:  &seqs.Segment{SEQ: issA, ACK: issB, Flags: FINACK, WND: windowA},
+			WantState: seqs.StateFinWait1,
+		},
+		1: { // A receives FIN|ACK from B, who sent packet before receiving A's FINACK.
+			Incoming:    &seqs.Segment{SEQ: issB, ACK: issA, Flags: FINACK, WND: windowB},
+			WantState:   seqs.StateClosing,
+			WantPending: &seqs.Segment{SEQ: issA + 1, ACK: issB + 1, Flags: seqs.FlagACK, WND: windowA},
+		},
+		2: { // A sends ACK to B.
+			Outgoing:  &seqs.Segment{SEQ: issA + 1, ACK: issB + 1, Flags: seqs.FlagACK, WND: windowA},
+			WantState: seqs.StateTimeWait,
+		},
+	}
+	var tcbA seqs.ControlBlock
+	tcbA.HelperInitState(seqs.StateEstablished, issA, issA, windowA)
+	tcbA.HelperInitRcv(issB, issB, windowB)
+	tcbA.HelperExchange(t, exchangeA)
+
+	// No need to test B since exchange is completely symmetric.
+}
+
 func TestExchange_helloworld_client(t *testing.T) {
 	// Client Transmission Control Block.
 	var tcb seqs.ControlBlock

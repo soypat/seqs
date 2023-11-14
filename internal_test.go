@@ -9,6 +9,7 @@ import (
 // Here we define internal testing helpers that may be used in any *_test.go file
 // but are not exported.
 
+// Exchange represents a single exchange of segments.
 type Exchange struct {
 	Outgoing    *Segment
 	Incoming    *Segment
@@ -25,6 +26,9 @@ func (tcb *ControlBlock) HelperExchange(t *testing.T, exchange []Exchange) {
 	t.Helper()
 	const pfx = "exchange"
 	for i, ex := range exchange {
+		if ex.Outgoing != nil && ex.Incoming != nil {
+			t.Fatalf(pfx+"[%d] cannot send and receive in the same exchange, please split into two exchanges.", i)
+		}
 		if ex.Outgoing != nil {
 			err := tcb.Send(*ex.Outgoing)
 			if err != nil {
