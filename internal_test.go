@@ -33,13 +33,13 @@ func (tcb *ControlBlock) HelperExchange(t *testing.T, exchange []Exchange) {
 		}
 		state := tcb.State()
 		if state != ex.WantState {
-			t.Errorf(pfx+"%d state: got %s, want %s", i, state, ex.WantState)
+			t.Errorf(pfx+"%d state:\n got=%s\nwant=%s", i, state, ex.WantState)
 		}
 		pending, ok := tcb.PendingSegment(0)
 		if !ok && ex.WantPending != nil {
-			t.Fatalf(pfx+"%d pending: got none, want %+v", i, *ex.WantPending)
+			t.Fatalf(pfx+"%d pending:got none, want %+v", i, *ex.WantPending)
 		} else if ex.WantPending != nil && pending != *ex.WantPending {
-			t.Errorf(pfx+"%d pending: got %+v, want %+v", i, pending, *ex.WantPending)
+			t.Errorf(pfx+"%d pending:\n got=%+v\nwant=%+v", i, pending, *ex.WantPending)
 		}
 	}
 }
@@ -134,3 +134,7 @@ func (seg Segment) RelativeGoString(iseq, iack Value) string {
 func (tcb *ControlBlock) DebugLog() string {
 	return tcb.debuglog
 }
+
+const (
+	RSTJump = rstJump
+)
