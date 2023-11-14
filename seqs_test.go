@@ -9,6 +9,7 @@ import (
 
 const (
 	SYNACK = seqs.FlagSYN | seqs.FlagACK
+	FINACK = seqs.FlagFIN | seqs.FlagACK
 )
 
 /*
@@ -187,6 +188,51 @@ func TestExchange_rfc9293_figure8(t *testing.T) {
 	var tcbB seqs.ControlBlock
 	tcbB.HelperInitState(seqs.StateListen, issB, issB, windowB)
 	tcbB.HelperExchange(t, exchangeB)
+}
+
+/*
+		Figure 12: Normal Close Sequence
+	    TCP Peer A                                           TCP Peer B
+		1.  ESTABLISHED                                          ESTABLISHED
+
+		2.  (Close)
+			FIN-WAIT-1  --> <SEQ=100><ACK=300><CTL=FIN,ACK>  --> CLOSE-WAIT
+
+		3.  FIN-WAIT-2  <-- <SEQ=300><ACK=101><CTL=ACK>      <-- CLOSE-WAIT
+
+		4.                                                       (Close)
+			TIME-WAIT   <-- <SEQ=300><ACK=101><CTL=FIN,ACK>  <-- LAST-ACK
+
+		5.  TIME-WAIT   --> <SEQ=101><ACK=301><CTL=ACK>      --> CLOSED
+
+		6.  (2 MSL)
+			CLOSED
+*/
+func TestExchange_rfc9293_figure12(t *testing.T) {
+	const issA, issB, windowA, windowB = 100, 300, 1000, 1000
+	exchangeA := []seqs.Exchange{
+		0: { // A sends FIN|ACK to B to begin closing connection.
+			Outgoing:  &seqs.Segment{SEQ: issA, Flags: FINACK, WND: windowA},
+			WantState: seqs.StateFinWait1,
+		},
+		1: { // A receives ACK from B.
+			Incoming:  &seqs.Segment{SEQ: issB, ACK: issA + 1, Flags: seqs.FlagACK, WND: windowB},
+			WantState: seqs.StateFinWait2,
+		},
+		2: { // A receives FIN|ACK from B.
+			Incoming:    &seqs.Segment{SEQ: issB, ACK: issA + 1, Flags: FINACK, WND: windowB},
+			WantState:   seqs.StateTimeWait,
+			WantPending: &seqs.Segment{SEQ: issA + 1, ACK: issB + 1, Flags: seqs.FlagACK, WND: windowA},
+		},
+		3: { // A sends ACK to B.
+			Outgoing:  &seqs.Segment{SEQ: issA + 1, ACK: issB + 1, Flags: seqs.FlagACK, WND: windowA},
+			WantState: seqs.StateClosed, // Technically we should be in TimeWait here.
+		},
+	}
+	var tcbA seqs.ControlBlock
+	tcbA.HelperInitState(seqs.StateEstablished, issA, issA, windowA)
+	tcbA.HelperInitRcv(issB, issB, windowB)
+	tcbA.HelperExchange(t, exchangeA)
 }
 
 func TestExchange_helloworld_client(t *testing.T) {
