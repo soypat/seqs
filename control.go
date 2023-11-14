@@ -7,6 +7,10 @@ import (
 	"math"
 )
 
+const (
+	rstJump = 100
+)
+
 var (
 	// errDropSegment is a flag that signals to drop a segment silently.
 	errDropSegment = errors.New("drop segment")
@@ -43,11 +47,13 @@ type ControlBlock struct {
 	//	1 - old sequence numbers which have been acknowledged
 	//	2 - sequence numbers allowed for new reception
 	//	3 - future sequence numbers which are not yet allowed
-	rcv recvSpace
+	rcv    recvSpace
+	rstPtr Value // RST pointer. See RFC 3540.
 	// pending and state are modified by rcv* methods and Close method.
 	// The pending flags are only updated if the Recv method finishes with no error.
-	pending  Flags
-	state    State
+	pending Flags
+	state   State
+
 	debuglog string
 }
 
@@ -106,9 +112,20 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 	if payloadLen > math.MaxUint16 || Size(payloadLen) > tcb.snd.WND {
 		payloadLen = int(tcb.snd.WND)
 	}
+
+	var ack Value
+	if tcb.pending.HasAny(FlagACK) {
+		ack = tcb.rcv.NXT
+	}
+
+	var seq Value = tcb.snd.NXT
+	if tcb.pending.HasAny(FlagRST) {
+		seq = tcb.rstPtr
+	}
+
 	seg := Segment{
-		SEQ:     tcb.snd.NXT,
-		ACK:     tcb.rcv.NXT,
+		SEQ:     seq,
+		ACK:     ack,
 		WND:     tcb.rcv.WND,
 		Flags:   tcb.pending,
 		DATALEN: Size(payloadLen),
@@ -266,8 +283,9 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	// Short circuit SEQ checks if SYN present since the incoming segment initializes connection.
 	checkSEQ := !flags.HasAny(FlagSYN)
 	established := tcb.state == StateEstablished
-	acksOld := !LessThan(tcb.snd.UNA, seg.ACK)
-	acksUnsentData := !LessThanEq(seg.ACK, tcb.snd.NXT)
+	preestablished := tcb.state.preEstablished()
+	acksOld := hasAck && !LessThan(tcb.snd.UNA, seg.ACK)
+	acksUnsentData := hasAck && !LessThanEq(seg.ACK, tcb.snd.NXT)
 	//
 	// See section 3.4 of RFC 9293 for more on these checks.
 	switch {
@@ -276,11 +294,11 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	case tcb.state == StateClosed:
 		err = io.ErrClosedPipe
 
-	case hasAck && !established && acksOld:
-		err = errors.New(errPfx + "ack points to old local data")
+	// case !established && acksOld:
+	// err = errors.New(errPfx + "ack points to old local data")
 
-	case hasAck && !established && acksUnsentData:
-		err = errors.New(errPfx + "acks unsent data")
+	// case !established && acksUnsentData:
+	// err = errors.New(errPfx + "acks unsent data")
 
 	case checkSEQ && !InWindow(seg.SEQ, tcb.rcv.NXT, tcb.rcv.WND):
 		err = errors.New(errPfx + "seq not in receive window")
@@ -296,21 +314,37 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	switch {
 	// Special treatment of duplicate ACKs on established connection and of ACKs of unsent data.
 	// https://www.rfc-editor.org/rfc/rfc9293.html#section-3.10.7.4-2.5.2.2.2.3.2.1
-	case hasAck && established && acksOld:
+	case established && acksOld:
+		err = errDropSegment
 		tcb.pending = 0 // Completely ignore duplicate ACKs.
-		err = errDropSegment
 		tcb.debuglog += fmt.Sprintf("rcv %s: duplicate ACK %x\n", tcb.state, seg.ACK)
-	case hasAck && established && acksUnsentData:
-		tcb.pending = FlagACK // Send ACK for unsent data.
+
+	case established && acksUnsentData:
 		err = errDropSegment
+		tcb.pending = FlagACK // Send ACK for unsent data.
 		tcb.debuglog += fmt.Sprintf("rcv %s: ACK %x of unsent data\n", tcb.state, seg.ACK)
+
+	case preestablished && (acksOld || acksUnsentData):
+		err = errDropSegment
+		tcb.pending = FlagRST
+		tcb.rstPtr = seg.ACK
+		tcb.resetSnd(tcb.snd.ISS, seg.WND)
+		tcb.debuglog += fmt.Sprintf("rcv %s: RST %x of old data\n", tcb.state, seg.ACK)
+
+	case preestablished && flags.HasAny(FlagRST):
+		err = errDropSegment
+		tcb.pending = 0
+		tcb.state = StateListen
+		tcb.resetSnd(tcb.snd.ISS+rstJump, tcb.snd.WND)
+		tcb.resetRcv(tcb.rcv.WND, 3_14159_2653)
+		tcb.debuglog += fmt.Sprintf("rcv %s: remote RST\n", tcb.state)
 	}
 	return err
 }
 
 func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
-	// hasAck := seg.Flags.HasAny(FlagACK)
-
+	hasAck := seg.Flags.HasAny(FlagACK)
+	checkSeq := !seg.Flags.HasAny(FlagRST)
 	const errPfx = "invalid out segment: "
 	seglast := seg.Last()
 	switch {
@@ -318,13 +352,13 @@ func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
 		err = io.ErrClosedPipe
 	case seg.WND > math.MaxUint16:
 		err = errors.New(errPfx + "wnd > 2**16")
-	case seg.ACK != tcb.rcv.NXT:
+	case hasAck && seg.ACK != tcb.rcv.NXT:
 		err = errors.New(errPfx + "ack != rcv.nxt")
 
-	case !InWindow(seg.SEQ, tcb.snd.NXT, tcb.snd.WND):
+	case checkSeq && !InWindow(seg.SEQ, tcb.snd.NXT, tcb.snd.WND):
 		err = errors.New(errPfx + "seq not in send window")
 
-	case !InWindow(seglast, tcb.snd.NXT, tcb.snd.WND):
+	case checkSeq && !InWindow(seglast, tcb.snd.NXT, tcb.snd.WND):
 		err = errors.New(errPfx + "last not in send window")
 	}
 	return err
@@ -429,3 +463,7 @@ const (
 	// (which includes an acknowledgment of its connection termination request).
 	StateLastAck
 )
+
+func (s State) preEstablished() bool {
+	return s == StateSynRcvd || s == StateSynSent || s == StateListen
+}

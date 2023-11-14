@@ -11,20 +11,21 @@ const (
 	SYNACK = seqs.FlagSYN | seqs.FlagACK
 )
 
-func TestExchange_rfc9293_figure7(t *testing.T) {
-	/* Section 3.5 of RFC 9293: Basic 3-way handshake for connection synchronization.
-	TCP Peer A                                           TCP Peer B
+/*
+	 Section 3.5 of RFC 9293: Basic 3-way handshake for connection synchronization.
+		TCP Peer A                                           TCP Peer B
 
-	1.  CLOSED                                               LISTEN
+		1.  CLOSED                                               LISTEN
 
-	2.  SYN-SENT    --> <SEQ=100><CTL=SYN>               --> SYN-RECEIVED
+		2.  SYN-SENT    --> <SEQ=100><CTL=SYN>               --> SYN-RECEIVED
 
-	3.  ESTABLISHED <-- <SEQ=300><ACK=101><CTL=SYN,ACK>  <-- SYN-RECEIVED
+		3.  ESTABLISHED <-- <SEQ=300><ACK=101><CTL=SYN,ACK>  <-- SYN-RECEIVED
 
-	4.  ESTABLISHED --> <SEQ=101><ACK=301><CTL=ACK>       --> ESTABLISHED
+		4.  ESTABLISHED --> <SEQ=101><ACK=301><CTL=ACK>       --> ESTABLISHED
 
-	5.  ESTABLISHED --> <SEQ=101><ACK=301><CTL=ACK><DATA> --> ESTABLISHED
-	*/
+		5.  ESTABLISHED --> <SEQ=101><ACK=301><CTL=ACK><DATA> --> ESTABLISHED
+*/
+func TestExchange_rfc9293_figure6(t *testing.T) {
 	const issA, issB, windowA, windowB = 100, 300, 1000, 1000
 	exchangeA := []seqs.Exchange{
 		{ // A sends SYN to B.
@@ -55,24 +56,25 @@ func TestExchange_rfc9293_figure7(t *testing.T) {
 	tcbB.HelperExchange(t, exchangeB) // TODO remove [:3] after snd.UNA bugfix
 }
 
-func TestExchange_rfc9293_figure8(t *testing.T) {
-	/* Section 3.5 of RFC 9293: Simultaneous Connection Synchronization (SYN).
-	TCP Peer A                                       TCP Peer B
+/*
+	 Section 3.5 of RFC 9293: Simultaneous Connection Synchronization (SYN).
+		TCP Peer A                                       TCP Peer B
 
-	1.  CLOSED                                           CLOSED
+		1.  CLOSED                                           CLOSED
 
-	2.  SYN-SENT     --> <SEQ=100><CTL=SYN>              ...
+		2.  SYN-SENT     --> <SEQ=100><CTL=SYN>              ...
 
-	3.  SYN-RECEIVED <-- <SEQ=300><CTL=SYN>              <-- SYN-SENT
+		3.  SYN-RECEIVED <-- <SEQ=300><CTL=SYN>              <-- SYN-SENT
 
-	4.               ... <SEQ=100><CTL=SYN>              --> SYN-RECEIVED
+		4.               ... <SEQ=100><CTL=SYN>              --> SYN-RECEIVED
 
-	5.  SYN-RECEIVED --> <SEQ=100><ACK=301><CTL=SYN,ACK> ...
+		5.  SYN-RECEIVED --> <SEQ=100><ACK=301><CTL=SYN,ACK> ...
 
-	6.  ESTABLISHED  <-- <SEQ=300><ACK=101><CTL=SYN,ACK> <-- SYN-RECEIVED
+		6.  ESTABLISHED  <-- <SEQ=300><ACK=101><CTL=SYN,ACK> <-- SYN-RECEIVED
 
-	7.               ... <SEQ=100><ACK=301><CTL=SYN,ACK> --> ESTABLISHED
-	*/
+		7.               ... <SEQ=100><ACK=301><CTL=SYN,ACK> --> ESTABLISHED
+*/
+func TestExchange_rfc9293_figure7(t *testing.T) {
 	const issA, issB, windowA, windowB = 100, 300, 1000, 1000
 	exchangeA := []seqs.Exchange{
 		0: { // A sends SYN to B.
@@ -96,6 +98,95 @@ func TestExchange_rfc9293_figure8(t *testing.T) {
 	var tcbA seqs.ControlBlock
 	tcbA.HelperInitState(seqs.StateSynSent, issA, issA, windowA)
 	tcbA.HelperExchange(t, exchangeA)
+}
+
+/*
+	 Recovery from Old Duplicate SYN
+		TCP Peer A                                           TCP Peer B
+
+		1.  CLOSED                                               LISTEN
+
+		2.  SYN-SENT    --> <SEQ=100><CTL=SYN>               ...
+
+		3.  (duplicate) ... <SEQ=90><CTL=SYN>               --> SYN-RECEIVED
+
+		4.  SYN-SENT    <-- <SEQ=300><ACK=91><CTL=SYN,ACK>  <-- SYN-RECEIVED
+
+		5.  SYN-SENT    --> <SEQ=91><CTL=RST>               --> LISTEN
+
+		6.              ... <SEQ=100><CTL=SYN>               --> SYN-RECEIVED
+
+		7.  ESTABLISHED <-- <SEQ=400><ACK=101><CTL=SYN,ACK>  <-- SYN-RECEIVED
+
+		8.  ESTABLISHED --> <SEQ=101><ACK=401><CTL=ACK>      --> ESTABLISHED
+*/
+func TestExchange_rfc9293_figure8(t *testing.T) {
+	const issA, issB, windowA, windowB = 100, 300, 1000, 1000
+	const issAold = 90
+	const issBNew = issB + seqs.RSTJump
+	exchangeA := []seqs.Exchange{
+		0: { // A sends new SYN to B (which is not received).
+			Outgoing:  &seqs.Segment{SEQ: issA, Flags: seqs.FlagSYN, WND: windowA},
+			WantState: seqs.StateSynSent,
+		},
+		1: { // Receive SYN from B acking an old "duplicate" SYN.
+			Incoming:    &seqs.Segment{SEQ: issB, ACK: issAold + 1, Flags: SYNACK, WND: windowB},
+			WantState:   seqs.StateSynSent,
+			WantPending: &seqs.Segment{SEQ: issAold + 1, Flags: seqs.FlagRST, WND: windowA},
+		},
+		2: { // A sends RST to B and makes segment believable by using the old SEQ.
+			Outgoing:  &seqs.Segment{SEQ: issAold + 1, Flags: seqs.FlagRST, WND: windowA},
+			WantState: seqs.StateSynSent,
+		},
+		3: { // A sends a duplicate SYN to B.
+			Outgoing:  &seqs.Segment{SEQ: issA, Flags: seqs.FlagSYN, WND: windowA},
+			WantState: seqs.StateSynSent,
+		},
+		4: { // B SYNACKs new SYN.
+			Incoming:    &seqs.Segment{SEQ: issBNew, ACK: issA + 1, Flags: SYNACK, WND: windowB},
+			WantState:   seqs.StateEstablished,
+			WantPending: &seqs.Segment{SEQ: issA + 1, ACK: issBNew + 1, Flags: seqs.FlagACK, WND: windowA},
+		},
+		5: { // B receives ACK from A.
+			Outgoing:  &seqs.Segment{SEQ: issA + 1, ACK: issBNew + 1, Flags: seqs.FlagACK, WND: windowA},
+			WantState: seqs.StateEstablished,
+		},
+	}
+	var tcbA seqs.ControlBlock
+	tcbA.HelperInitState(seqs.StateSynSent, issA, issA, windowA)
+	tcbA.HelperExchange(t, exchangeA)
+
+	exchangeB := []seqs.Exchange{
+		0: { // B receives old SYN from A.
+			Incoming:    &seqs.Segment{SEQ: issAold, Flags: seqs.FlagSYN, WND: windowA},
+			WantState:   seqs.StateSynRcvd,
+			WantPending: &seqs.Segment{SEQ: issB, ACK: issAold + 1, Flags: SYNACK, WND: windowB},
+		},
+		1: { // B SYNACKs old SYN.
+			Outgoing:  &seqs.Segment{SEQ: issB, ACK: issAold + 1, Flags: SYNACK, WND: windowB},
+			WantState: seqs.StateSynRcvd,
+		},
+		2: { // B receives RST from A.
+			Incoming:  &seqs.Segment{SEQ: issAold + 1, Flags: seqs.FlagRST, WND: windowA},
+			WantState: seqs.StateListen,
+		},
+		3: { // B receives new SYN from A.
+			Incoming:    &seqs.Segment{SEQ: issA, Flags: seqs.FlagSYN, WND: windowA},
+			WantState:   seqs.StateSynRcvd,
+			WantPending: &seqs.Segment{SEQ: issBNew, ACK: issA + 1, Flags: SYNACK, WND: windowB},
+		},
+		4: { // B SYNACKs new SYN.
+			Outgoing:  &seqs.Segment{SEQ: issBNew, ACK: issA + 1, Flags: SYNACK, WND: windowB},
+			WantState: seqs.StateSynRcvd,
+		},
+		5: { // B receives ACK from A.
+			Incoming:  &seqs.Segment{SEQ: issA + 1, ACK: issBNew + 1, Flags: seqs.FlagACK, WND: windowA},
+			WantState: seqs.StateEstablished,
+		},
+	}
+	var tcbB seqs.ControlBlock
+	tcbB.HelperInitState(seqs.StateListen, issB, issB, windowB)
+	tcbB.HelperExchange(t, exchangeB)
 }
 
 func TestExchange_helloworld_client(t *testing.T) {
