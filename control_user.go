@@ -77,6 +77,10 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 		pending, err = tcb.rcvSynRcvd(seg)
 	case StateEstablished:
 		pending, err = tcb.rcvEstablished(seg)
+	case StateFinWait1:
+		pending, err = tcb.rcvFinWait1(seg)
+	case StateFinWait2:
+		pending, err = tcb.rcvFinWait2(seg)
 	default:
 		err = errors.New("rcv: unexpected state " + tcb.state.String())
 	}

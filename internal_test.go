@@ -22,22 +22,22 @@ func (tcb *ControlBlock) HelperExchange(t *testing.T, exchange []Exchange) {
 		if ex.Outgoing != nil {
 			err := tcb.Send(*ex.Outgoing)
 			if err != nil {
-				t.Fatalf(pfx+"%d snd: %s", i, err)
+				t.Fatalf(pfx+"%d snd: %s\nseg=%+v\nrcv=%+v\nsnd=%+v", i, err, *ex.Outgoing, tcb.rcv, tcb.snd)
 			}
 		}
 		if ex.Incoming != nil {
 			err := tcb.Recv(*ex.Incoming)
 			if err != nil {
-				t.Fatalf(pfx+"%d rcv: %s", i, err)
+				t.Fatalf(pfx+"%d rcv: %s\nseg=%+v\nrcv=%+v\nsnd=%+v", i, err, *ex.Incoming, tcb.rcv, tcb.snd)
 			}
 		}
 		state := tcb.State()
 		if state != ex.WantState {
-			t.Errorf(pfx+"%d state:\n got=%s\nwant=%s", i, state, ex.WantState)
+			t.Errorf(pfx+"%d unexpected state:\n got=%s\nwant=%s", i, state, ex.WantState)
 		}
 		pending, ok := tcb.PendingSegment(0)
 		if !ok && ex.WantPending != nil {
-			t.Fatalf(pfx+"%d pending:got none, want %+v", i, *ex.WantPending)
+			t.Fatalf(pfx+"%d pending:got none, want=%+v", i, *ex.WantPending)
 		} else if ex.WantPending != nil && pending != *ex.WantPending {
 			t.Errorf(pfx+"%d pending:\n got=%+v\nwant=%+v", i, pending, *ex.WantPending)
 		}

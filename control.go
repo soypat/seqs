@@ -129,16 +129,6 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 	return seg, true
 }
 
-func (tcb *ControlBlock) rcvEstablished(seg Segment) (pending Flags, err error) {
-	flags := seg.Flags
-	pending = FlagACK
-	if flags.HasAny(FlagFIN) {
-		// See Figure 5: TCP Connection State Diagram of RFC 9293.
-		tcb.state = StateCloseWait
-	}
-	return pending, nil
-}
-
 func (tcb *ControlBlock) rcvListen(seg Segment) (pending Flags, err error) {
 	switch {
 	case !seg.Flags.HasAll(FlagSYN): //|| flags.HasAny(eth.FlagTCP_ACK):
@@ -196,6 +186,35 @@ func (tcb *ControlBlock) rcvSynRcvd(seg Segment) (pending Flags, err error) {
 		return 0, err
 	}
 	tcb.state = StateEstablished
+	return FlagACK, nil
+}
+
+func (tcb *ControlBlock) rcvEstablished(seg Segment) (pending Flags, err error) {
+	flags := seg.Flags
+	pending = FlagACK
+	if flags.HasAny(FlagFIN) {
+		// See Figure 5: TCP Connection State Diagram of RFC 9293.
+		tcb.state = StateCloseWait
+	}
+	return pending, nil
+}
+
+func (tcb *ControlBlock) rcvFinWait1(seg Segment) (pending Flags, err error) {
+	flags := seg.Flags
+	if !flags.HasAny(FlagACK) {
+		return 0, errors.New("rcvFinWait1: expected ACK")
+	} else if flags.HasAny(FlagFIN) {
+		tcb.debuglog += "got fin in finwait1\n"
+	}
+	tcb.state = StateFinWait2
+	return FlagACK, nil
+}
+
+func (tcb *ControlBlock) rcvFinWait2(seg Segment) (pending Flags, err error) {
+	if !seg.Flags.HasAll(finack) {
+		return pending, errors.New("rcvFinWait2: expected FIN|ACK")
+	}
+	tcb.state = StateTimeWait
 	return FlagACK, nil
 }
 
@@ -321,6 +340,7 @@ const (
 
 	// The union of SYN and ACK flags is commonly found throughout the specification, so we define a shorthand.
 	synack = FlagSYN | FlagACK
+	finack = FlagFIN | FlagACK
 )
 
 // HasAll checks if mask bits are all set in the receiver flags.
