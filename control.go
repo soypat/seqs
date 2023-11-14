@@ -13,7 +13,8 @@ const (
 
 var (
 	// errDropSegment is a flag that signals to drop a segment silently.
-	errDropSegment = errors.New("drop segment")
+	errDropSegment    = errors.New("drop segment")
+	errWindowTooLarge = errors.New("invalid window size > 2**16")
 )
 
 // ControlBlock implements the Transmission Control Block (TCB) of a TCP connection as specified in RFC 9293
@@ -99,11 +100,6 @@ func (seg *Segment) Last() Value {
 	return Add(seg.SEQ, seglen) - 1
 }
 
-// State returns the current state of the connection.
-func (tcb *ControlBlock) State() State {
-	return tcb.state
-}
-
 // PendingSegment calculates a suitable next segment to send from a payload length.
 func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 	if (payloadLen == 0 && tcb.pending == 0) || (payloadLen > 0 && tcb.state != StateEstablished) {
@@ -131,61 +127,6 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 		DATALEN: Size(payloadLen),
 	}
 	return seg, true
-}
-
-func (tcb *ControlBlock) Send(seg Segment) error {
-	err := tcb.validateOutgoingSegment(seg)
-	if err != nil {
-		return err
-	}
-
-	// The segment is valid, we can update TCB state.
-	seglen := seg.LEN()
-	tcb.snd.NXT.UpdateForward(seglen)
-	tcb.rcv.WND = seg.WND
-	return nil
-}
-
-func (tcb *ControlBlock) Recv(seg Segment) (err error) {
-	err = tcb.validateIncomingSegment(seg)
-	if err != nil {
-		if err == errDropSegment {
-			return nil
-		}
-		return err
-	}
-
-	prevNxt := tcb.snd.NXT
-	var pending Flags
-	switch tcb.state {
-	case StateListen:
-		pending, err = tcb.rcvListen(seg)
-	case StateSynSent:
-		pending, err = tcb.rcvSynSent(seg)
-	case StateSynRcvd:
-		pending, err = tcb.rcvSynRcvd(seg)
-	case StateEstablished:
-		pending, err = tcb.rcvEstablished(seg)
-	default:
-		err = errors.New("rcv: unexpected state " + tcb.state.String())
-	}
-	if err != nil {
-		return err
-	}
-
-	tcb.pending = pending
-	if prevNxt != 0 && tcb.snd.NXT != prevNxt {
-		tcb.debuglog += fmt.Sprintf("rcv %s: snd.nxt changed from %x to %x on segment %+v\n", tcb.state, prevNxt, tcb.snd.NXT, seg)
-	}
-
-	// We accept the segment and update TCB state.
-	tcb.snd.WND = seg.WND
-	if seg.Flags.HasAny(FlagACK) {
-		tcb.snd.UNA = seg.ACK
-	}
-	seglen := seg.LEN()
-	tcb.rcv.NXT.UpdateForward(seglen)
-	return err
 }
 
 func (tcb *ControlBlock) rcvEstablished(seg Segment) (pending Flags, err error) {
@@ -351,7 +292,7 @@ func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
 	case tcb.state == StateClosed:
 		err = io.ErrClosedPipe
 	case seg.WND > math.MaxUint16:
-		err = errors.New(errPfx + "wnd > 2**16")
+		err = errWindowTooLarge
 	case hasAck && seg.ACK != tcb.rcv.NXT:
 		err = errors.New(errPfx + "ack != rcv.nxt")
 

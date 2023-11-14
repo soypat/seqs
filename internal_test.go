@@ -135,6 +135,11 @@ func (tcb *ControlBlock) DebugLog() string {
 	return tcb.debuglog
 }
 
+// https://datatracker.ietf.org/doc/html/rfc9293#section-3.8.6.2.1
+func (tcb *ControlBlock) UsableWindow() Size {
+	return Sizeof(tcb.snd.NXT, tcb.snd.UNA) + tcb.snd.WND
+}
+
 const (
 	RSTJump = rstJump
 )
