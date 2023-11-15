@@ -116,7 +116,7 @@ func (tcb *ControlBlock) RelativeAutoSegment(seg Segment) Segment {
 }
 
 func (tcb *ControlBlock) HelperPrintSegment(t *testing.T, isReceive bool, seg Segment) {
-	const fmtmsg = " Seg=%+v\nRcvSpace=%s\nSndSpace=%s"
+	const fmtmsg = "\nSeg=%+v\nRcvSpace=%s\nSndSpace=%s"
 	rcv := tcb.RelativeRecvSpace()
 	rcvStr := rcv.RelativeGoString()
 	snd := tcb.RelativeSendSpace()
@@ -167,4 +167,10 @@ const (
 
 func IsDroppedErr(err error) bool {
 	return err != nil && errors.Is(err, errDropSegment)
+}
+
+func (tcb *ControlBlock) HelperPrintDebugInfoOnFail(t *testing.T) {
+	if log := tcb.DebugLog(); t.Failed() && log != "" {
+		t.Logf("debuglog:\n%s", log)
+	}
 }
