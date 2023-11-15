@@ -1,6 +1,7 @@
 package seqs_test
 
 import (
+	"strconv"
 	"testing"
 
 	"github.com/soypat/seqs"
@@ -10,6 +11,7 @@ import (
 const (
 	SYNACK = seqs.FlagSYN | seqs.FlagACK
 	FINACK = seqs.FlagFIN | seqs.FlagACK
+	PSHACK = seqs.FlagPSH | seqs.FlagACK
 )
 
 /*
@@ -286,6 +288,88 @@ func TestExchange_rfc9293_figure13(t *testing.T) {
 	// No need to test B since exchange is completely symmetric.
 }
 
+// This test reenacts a full client-server interaction in the sending and receiving
+// of the 12 byte message "hello world\n" over TCP.
+func TestExchange_helloworld(t *testing.T) {
+	// Client Transmission Control Block.
+	var tcbA seqs.ControlBlock
+	defer tcbA.HelperPrintDebugInfoOnFail(t)
+	const windowA, windowB = 502, 4096
+	const issA, issB = 0x5e722b7d, 0xbe6e4c0f
+	const datalen = 12
+	exchangeA := []seqs.Exchange{
+		0: { // A sends SYN to B.
+			Outgoing:  &seqs.Segment{SEQ: issA, Flags: seqs.FlagSYN, WND: windowA},
+			WantState: seqs.StateSynSent,
+		},
+		1: { // A receives SYNACK from B.
+			Incoming:    &seqs.Segment{SEQ: issB, ACK: issA + 1, Flags: SYNACK, WND: windowB},
+			WantState:   seqs.StateEstablished,
+			WantPending: &seqs.Segment{SEQ: issA + 1, ACK: issB + 1, Flags: seqs.FlagACK, WND: windowA},
+		},
+		2: { // A sends ACK to B thus establishing connection.
+			Outgoing:  &seqs.Segment{SEQ: issA + 1, ACK: issB + 1, Flags: seqs.FlagACK, WND: windowA},
+			WantState: seqs.StateEstablished,
+		},
+		3: { // A sends PSH|ACK to B with 12 byte message: "hello world\n"
+			Outgoing:  &seqs.Segment{SEQ: issA + 1, ACK: issB + 1, Flags: PSHACK, WND: windowA, DATALEN: datalen},
+			WantState: seqs.StateEstablished,
+		},
+		4: { // A receives ACK from B of last message.
+			Incoming:  &seqs.Segment{SEQ: issB + 1, ACK: issA + 1 + datalen, Flags: seqs.FlagACK, WND: windowB},
+			WantState: seqs.StateEstablished,
+		},
+		5: { // A receives PSH|ACK from B with echoed 12 byte message: "hello world\n"
+			Incoming:    &seqs.Segment{SEQ: issB + 1, ACK: issA + 1 + datalen, Flags: PSHACK, WND: windowB, DATALEN: datalen},
+			WantState:   seqs.StateEstablished,
+			WantPending: &seqs.Segment{SEQ: issA + 1 + datalen, ACK: issB + 1 + datalen, Flags: seqs.FlagACK, WND: windowA},
+		},
+		6: { // A ACKs B's message.
+			Outgoing:  &seqs.Segment{SEQ: issA + 1 + datalen, ACK: issB + 1 + datalen, Flags: seqs.FlagACK, WND: windowA},
+			WantState: seqs.StateEstablished,
+		},
+		7: { // A sends PSH|ACK to B with SECOND 12 byte message.
+			Outgoing:  &seqs.Segment{SEQ: issA + 1 + datalen, ACK: issB + 1 + datalen, Flags: PSHACK, WND: windowA, DATALEN: datalen},
+			WantState: seqs.StateEstablished,
+		},
+		8: { // A receives PSH|ACK that acks last message and contains echoed of SECOND 12 byte message.
+			Incoming:    &seqs.Segment{SEQ: issB + 1 + datalen, ACK: issA + 1 + 2*datalen, Flags: PSHACK, WND: windowB, DATALEN: datalen},
+			WantState:   seqs.StateEstablished,
+			WantPending: &seqs.Segment{SEQ: issA + 1 + 2*datalen, ACK: issB + 1 + 2*datalen, Flags: seqs.FlagACK, WND: windowA},
+		},
+		9: { // A ACKs B's SECOND message.
+			Outgoing:  &seqs.Segment{SEQ: issA + 1 + 2*datalen, ACK: issB + 1 + 2*datalen, Flags: seqs.FlagACK, WND: windowA},
+			WantState: seqs.StateEstablished,
+		},
+		10: { // A sends FIN|ACK to B to close connection.
+			Outgoing:  &seqs.Segment{SEQ: issA + 1 + 2*datalen, ACK: issB + 1 + 2*datalen, Flags: FINACK, WND: windowA},
+			WantState: seqs.StateFinWait1,
+		},
+		11: { // A receives B's ACK of FIN.
+			Incoming:    &seqs.Segment{SEQ: issB + 1 + 2*datalen, ACK: issA + 2 + 2*datalen, Flags: seqs.FlagACK, WND: windowB},
+			WantState:   seqs.StateFinWait2,
+			WantPending: &seqs.Segment{SEQ: issA + 2 + 2*datalen, ACK: issB + 1 + 2*datalen, Flags: seqs.FlagACK, WND: windowA},
+		},
+	}
+	// The client starts in the SYN_SENT state with a random sequence number.
+	gotServerSeg, _ := parseSegment(t, exchangeHelloWorld[0])
+	tcbA.HelperInitState(seqs.StateSynSent, gotServerSeg.SEQ, gotServerSeg.SEQ, windowB)
+	tcbA.HelperExchange(t, exchangeA)
+
+	exchangeB := reverseExchange(exchangeA, seqs.StateSynRcvd, seqs.StateSynRcvd,
+		seqs.StateEstablished, seqs.StateEstablished, seqs.StateEstablished, seqs.StateEstablished,
+		seqs.StateEstablished, seqs.StateEstablished, seqs.StateEstablished, seqs.StateEstablished,
+		seqs.StateCloseWait, seqs.StateCloseWait)
+
+	exchangeB[7].WantPending = nil // Is an unpredicable action.
+	var tcbB seqs.ControlBlock
+	defer tcbB.HelperPrintDebugInfoOnFail(t)
+
+	tcbB.HelperInitState(seqs.StateListen, issB, issB, windowB)
+	tcbB.HelperInitRcv(issA, issA, windowA)
+	tcbB.HelperExchange(t, exchangeB)
+}
+
 func TestExchange_helloworld_client(t *testing.T) {
 	// Client Transmission Control Block.
 	var tcb seqs.ControlBlock
@@ -374,7 +458,7 @@ func parseSegment(t *testing.T, b []byte) (seqs.Segment, []byte) {
 
 func reverseExchange(exchange []seqs.Exchange, states ...seqs.State) []seqs.Exchange {
 	if len(exchange) != len(states) || len(exchange) == 0 {
-		panic("len(exchange) != len(states) or empty exchange")
+		panic("len(exchange) != len(states) or empty exchange: " + strconv.Itoa(len(exchange)) + " " + strconv.Itoa(len(states)))
 	}
 	firstIsIn := exchange[0].Incoming != nil
 	if firstIsIn {
