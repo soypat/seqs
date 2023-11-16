@@ -12,6 +12,8 @@
 .vscode/
 *.elf
 *.uf2
+local
+_local
 
 
 
