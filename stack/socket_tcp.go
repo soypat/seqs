@@ -1,6 +1,7 @@
 package stack
 
 import (
+	"io"
 	"strconv"
 	"time"
 
@@ -8,12 +9,13 @@ import (
 	"github.com/soypat/seqs/eth"
 )
 
+type tcphandler func(response []byte, pkt *TCPPacket) (int, error)
+
 type tcpSocket struct {
 	LastRx  time.Time
-	handler func(response []byte, self *TCPPacket) (int, error)
+	handler tcphandler
 	Port    uint16
 	packets [1]TCPPacket
-	tcb     seqs.ControlBlock
 }
 
 const tcpMTU = _MTU - eth.SizeEthernetHeader - eth.SizeIPv4Header - eth.SizeTCPHeader
@@ -50,39 +52,23 @@ func (u *tcpSocket) IsPendingHandling() bool {
 // If
 func (u *tcpSocket) HandleEth(dst []byte) (n int, err error) {
 	if u.handler == nil {
-		panic("nil udp handler on port " + strconv.Itoa(int(u.Port)))
+		panic("nil tcp handler on port " + strconv.Itoa(int(u.Port)))
 	}
 	packet := &u.packets[0]
-	if packet.HasPacket() {
-		payload := packet.Payload()
-		// The normal case, we've received a packet and need to process it
-		// via TCP control logic. The TCP controller can choose to write a
-		// control packet to dst or not. We'll know because the packet will
-		// will be marked with PSH flag to mark it as non-control packet.
-		incoming := packet.TCP.Segment(len(payload))
-		err = u.tcb.Recv(incoming)
-		if err != nil {
-			return 0, err
-		}
-		_, ok := u.tcb.PendingSegment(0)
-		if ok {
-			n, err = u.handler(dst, &u.packets[0]) // TODO: I'm not happy with this API.
-		}
-	} else {
-		// If no packet is pending the user has likely flagged they want to send a packet
-		n, err = u.handler(dst, &u.packets[0])
-	}
 
-	packet.Rx = time.Time{} // Invalidate packet. TODO(soypat): we'll often send more than a single packet...
+	n, err = u.handler(dst, &u.packets[0])
+	if err != io.ErrNoProgress {
+		packet.Rx = time.Time{} // Invalidate packet.
+	}
 	return n, err
 }
 
 // Open sets the UDP handler and opens the port.
-func (u *tcpSocket) Open(port uint16, h func([]byte, *TCPPacket) (int, error)) {
-	if port == 0 || h == nil {
+func (u *tcpSocket) Open(port uint16, handler tcphandler) {
+	if port == 0 || handler == nil {
 		panic("invalid port or nil handler" + strconv.Itoa(int(u.Port)))
 	}
-	u.handler = h
+	u.handler = handler
 	u.Port = port
 	for i := range u.packets {
 		u.packets[i].Rx = time.Time{} // Invalidate packets.
@@ -115,8 +101,8 @@ func (u *TCPPacket) HasPacket() bool {
 	return u.Rx != forcedTime && !u.Rx.IsZero()
 }
 
-// PutHeaders puts the Ethernet, IPv4 and TCP headers into b.
-// b must be at least 54 bytes or else PutHeaders panics. No options are marshalled.
+// PutHeaders puts 54 bytes including the Ethernet, IPv4 and TCP headers into b.
+// b must be at least 54 bytes in length or else PutHeaders panics. No options are marshalled.
 func (p *TCPPacket) PutHeaders(b []byte) {
 	const minSize = eth.SizeEthernetHeader + eth.SizeIPv4Header + eth.SizeTCPHeader
 	if len(b) < minSize {
@@ -182,4 +168,50 @@ func (p *TCPPacket) dataPtrs() (payloadStart, payloadEnd, tcpOptStart int) {
 		return -1, -1, -1
 	}
 	return payloadStart, payloadEnd, tcpOptStart
+}
+
+func (pkt *TCPPacket) InvertSrcDest() {
+	pkt.IP.Destination, pkt.IP.Source = pkt.IP.Source, pkt.IP.Destination
+	pkt.Eth.Destination, pkt.Eth.Source = pkt.Eth.Source, pkt.Eth.Destination
+	pkt.TCP.DestinationPort, pkt.TCP.SourcePort = pkt.TCP.SourcePort, pkt.TCP.DestinationPort
+}
+
+func (pkt *TCPPacket) CalculateHeaders(seg seqs.Segment, payload []byte) {
+	const ipLenInWords = 5
+	// Ethernet frame.
+	pkt.Eth.SizeOrEtherType = uint16(eth.EtherTypeIPv4)
+
+	// IPv4 frame.
+	pkt.IP.Protocol = 6 // TCP.
+	pkt.IP.TTL = 64
+	pkt.IP.ID = prand16(pkt.IP.ID)
+	pkt.IP.VersionAndIHL = ipLenInWords // Sets IHL: No IP options. Version set automatically.
+	pkt.IP.TotalLength = 4*ipLenInWords + eth.SizeTCPHeader + uint16(len(payload))
+	pkt.IP.Checksum = pkt.IP.CalculateChecksum()
+
+	// TODO(soypat): Document how to handle ToS. For now just use ToS used by other side.
+	// packet.IP.ToS = 0
+	pkt.IP.Flags = 0
+	// TCP frame.
+	const offset = 5
+	pkt.TCP = eth.TCPHeader{
+		SourcePort:      pkt.TCP.SourcePort,
+		DestinationPort: pkt.TCP.DestinationPort,
+		Seq:             seg.SEQ,
+		Ack:             seg.ACK,
+		WindowSizeRaw:   uint16(seg.WND),
+		UrgentPtr:       0, // We do not implement urgent pointer.
+	}
+	pkt.TCP.SetFlags(seg.Flags)
+	pkt.TCP.SetOffset(offset)
+	pkt.TCP.Checksum = pkt.TCP.CalculateChecksumIPv4(&pkt.IP, nil, payload)
+}
+
+// prand16 generates a pseudo random number from a seed.
+func prand16(seed uint16) uint16 {
+	// 16bit Xorshift  https://en.wikipedia.org/wiki/Xorshift
+	seed ^= seed << 7
+	seed ^= seed >> 9
+	seed ^= seed << 8
+	return seed
 }

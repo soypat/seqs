@@ -180,7 +180,7 @@ func (s *Stack) RecvEth(ethernetFrame []byte) (err error) {
 		case offset < eth.SizeTCPHeader || int(offset) > len(payload):
 			return errBadTCPOffset
 		}
-		tcpOptions := payload[:offset]
+		tcpOptions := payload[eth.SizeTCPHeader:offset]
 		payload = payload[offset:]
 		gotsum := thdr.CalculateChecksumIPv4(&ihdr, tcpOptions, payload)
 		if gotsum != thdr.Checksum {
@@ -353,7 +353,7 @@ func (s *Stack) getUDP(port uint16) *udpSocket {
 
 // OpenTCP opens a TCP port and sets the handler. If the port is already open
 // or if there is no socket available it returns an error.
-func (s *Stack) OpenTCP(port uint16, handler func([]byte, *TCPPacket) (int, error)) error {
+func (s *Stack) OpenTCP(port uint16, handler tcphandler) error {
 	switch {
 	case port == 0:
 		return errZeroPort

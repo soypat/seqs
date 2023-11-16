@@ -1,15 +1,18 @@
 package stack
 
 import (
+	"io"
 	"strconv"
 	"time"
 
 	"github.com/soypat/seqs/eth"
 )
 
+type udphandler func(response []byte, pkt *UDPPacket) (int, error)
+
 type udpSocket struct {
 	LastRx  time.Time
-	handler func(response []byte, self *UDPPacket) (int, error)
+	handler udphandler
 	Port    uint16
 	packets [1]UDPPacket
 }
@@ -46,12 +49,14 @@ func (u *udpSocket) HandleEth(dst []byte) (int, error) {
 	packet := &u.packets[0]
 
 	n, err := u.handler(dst, &u.packets[0])
-	packet.Rx = time.Time{} // Invalidate packet.
+	if err != io.ErrNoProgress {
+		packet.Rx = time.Time{} // Invalidate packet.
+	}
 	return n, err
 }
 
 // Open sets the UDP handler and opens the port.
-func (u *udpSocket) Open(port uint16, h func([]byte, *UDPPacket) (int, error)) {
+func (u *udpSocket) Open(port uint16, h udphandler) {
 	if port == 0 || h == nil {
 		panic("invalid port or nil handler" + strconv.Itoa(int(u.Port)))
 	}
