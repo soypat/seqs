@@ -485,7 +485,8 @@ func (tcphdr *TCPHeader) Put(buf []byte) {
 //
 //	offset := eth.SizeEthernetHeader + ipOffset + tcpOffset // Are payload offsets.
 //	end := ip.TotalLength + eth.SizeEthernetHeader
-//	payloadSize := end - offset
+//	payload := buf[offset:end]
+//	payloadSize := len(payload)
 func (tcphdr *TCPHeader) Segment(payloadSize int) seqs.Segment {
 	return seqs.Segment{
 		SEQ:     tcphdr.Seq,
