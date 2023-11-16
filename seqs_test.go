@@ -436,24 +436,18 @@ func parseSegment(t *testing.T, b []byte) (seqs.Segment, []byte) {
 	if ehdr.AssertType() != eth.EtherTypeIPv4 {
 		t.Fatalf("not IPv4")
 	}
-	ip := eth.DecodeIPv4Header(b[eth.SizeEthernetHeader:])
+	ip, ipOffset := eth.DecodeIPv4Header(b[eth.SizeEthernetHeader:])
 	if ip.Protocol != 6 {
 		t.Fatalf("not TCP")
 	}
-	tcp := eth.DecodeTCPHeader(b[eth.SizeEthernetHeader+ip.IHL()*4:])
-	offset := eth.SizeEthernetHeader + ip.IHL()*4 + tcp.OffsetInBytes()
+	tcp, tcpOffset := eth.DecodeTCPHeader(b[eth.SizeEthernetHeader+ipOffset:])
+	offset := eth.SizeEthernetHeader + ipOffset + tcpOffset
 	end := ip.TotalLength + eth.SizeEthernetHeader
 	if int(end) > len(b) {
 		t.Fatalf("bad ip.TotalLength")
 	}
 	payload := b[offset:end]
-	return seqs.Segment{
-		SEQ:     tcp.Seq,
-		ACK:     tcp.Ack,
-		WND:     tcp.WindowSize(),
-		DATALEN: seqs.Size(len(payload)),
-		Flags:   tcp.Flags(),
-	}, payload
+	return tcp.Segment(len(payload)), payload
 }
 
 func reverseExchange(exchange []seqs.Exchange, states ...seqs.State) []seqs.Exchange {

@@ -42,7 +42,7 @@ func TestUDPChecksum(t *testing.T) {
 	}
 	// Process IP header.
 	ipData := testUDPPacket[14:34]
-	ip := DecodeIPv4Header(ipData)
+	ip, _ := DecodeIPv4Header(ipData)
 	if ip.Protocol != 17 {
 		t.Errorf("incorrect IP protocol: %v", ip.String())
 	}
@@ -55,7 +55,7 @@ func TestUDPChecksum(t *testing.T) {
 	ipDataGot := make([]byte, len(ipData))
 	ip.Put(ipDataGot)
 	if !bytes.Equal(ipData, ipDataGot) {
-		got := DecodeIPv4Header(ipDataGot)
+		got, _ := DecodeIPv4Header(ipDataGot)
 		t.Error("IP marshal does not match original data", ip.String(), got.String())
 	}
 	// Process UDP header.

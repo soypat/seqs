@@ -306,8 +306,9 @@ func (ip *IPv4Header) String() string {
 	)
 }
 
-// DecodeIPv4Header decodes a 20 byte IPv4 header from buf.
-func DecodeIPv4Header(buf []byte) (iphdr IPv4Header) {
+// DecodeIPv4Header decodes a 20 byte IPv4 header from buf and returns the IPv4Header
+// and the offset in bytes to the payload as calculated from the IHL field.
+func DecodeIPv4Header(buf []byte) (iphdr IPv4Header, payloadOffset uint8) {
 	_ = buf[19]
 	iphdr.VersionAndIHL = buf[0]
 	iphdr.ToS = buf[1]
@@ -319,7 +320,7 @@ func DecodeIPv4Header(buf []byte) (iphdr IPv4Header) {
 	iphdr.Checksum = binary.BigEndian.Uint16(buf[10:])
 	copy(iphdr.Source[:], buf[12:16])
 	copy(iphdr.Destination[:], buf[16:20])
-	return iphdr
+	return iphdr, iphdr.IHL() * 4
 }
 
 // Put marshals the IPv4 frame onto buf. buf needs to be 20 bytes in length or Put panics.
@@ -451,7 +452,9 @@ func (a *ARPv4Header) String() string {
 		"I have ", net.IP(a.ProtoSender[:]).String(), "! Tell ", net.IP(a.ProtoTarget[:]).String(), ", aka ", net.HardwareAddr(a.HardwareTarget[:]).String())
 }
 
-func DecodeTCPHeader(buf []byte) (tcphdr TCPHeader) {
+// DecodeTCPHeader decodes a TCP header from buf and returns the TCPHeader
+// and the offset in bytes to the payload. Panics if buf is less than 20 bytes in length.
+func DecodeTCPHeader(buf []byte) (tcphdr TCPHeader, payloadOffset uint8) {
 	_ = buf[19]
 	tcphdr.SourcePort = binary.BigEndian.Uint16(buf[0:])
 	tcphdr.DestinationPort = binary.BigEndian.Uint16(buf[2:])
@@ -461,7 +464,7 @@ func DecodeTCPHeader(buf []byte) (tcphdr TCPHeader) {
 	tcphdr.WindowSizeRaw = binary.BigEndian.Uint16(buf[14:])
 	tcphdr.Checksum = binary.BigEndian.Uint16(buf[16:])
 	tcphdr.UrgentPtr = binary.BigEndian.Uint16(buf[18:])
-	return tcphdr
+	return tcphdr, tcphdr.OffsetInBytes()
 }
 
 // Put marshals the TCP frame onto buf. buf needs to be 20 bytes in length or Put panics.
@@ -475,6 +478,22 @@ func (tcphdr *TCPHeader) Put(buf []byte) {
 	binary.BigEndian.PutUint16(buf[14:], tcphdr.WindowSizeRaw)
 	binary.BigEndian.PutUint16(buf[16:], tcphdr.Checksum)
 	binary.BigEndian.PutUint16(buf[18:], tcphdr.UrgentPtr)
+}
+
+// Segment returns a [seqs.Segment] representation of the TCP header. It requires
+// the payload length as an argument, which can be calculated from IP and TCP headers as follows:
+//
+//	offset := eth.SizeEthernetHeader + ipOffset + tcpOffset // Are payload offsets.
+//	end := ip.TotalLength + eth.SizeEthernetHeader
+//	payloadSize := end - offset
+func (tcphdr *TCPHeader) Segment(payloadSize int) seqs.Segment {
+	return seqs.Segment{
+		SEQ:     tcphdr.Seq,
+		ACK:     tcphdr.Ack,
+		WND:     tcphdr.WindowSize(),
+		DATALEN: seqs.Size(payloadSize),
+		Flags:   tcphdr.Flags(),
+	}
 }
 
 // Offset specifies the size of the TCP header in 32-bit words. The minimum size
