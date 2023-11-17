@@ -71,7 +71,9 @@ func (tcb *ControlBlock) Send(seg Segment) error {
 }
 
 // Recv processes a segment that is being received from the network. It updates the TCB
-// if there is no error.
+// if there is no error. The ControlBlock can only receive segments that are the next
+// expected sequence number which means the caller must handle the out-of-order case
+// and buffering that comes with it.
 func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 	err = tcb.validateIncomingSegment(seg)
 	if err != nil {
@@ -118,4 +120,10 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 	seglen := seg.LEN()
 	tcb.rcv.NXT.UpdateForward(seglen)
 	return err
+}
+
+// RecvNext returns the next sequence number expected to be received.
+// This implementation will reject segments that are not the next expected sequence.
+func (tcb *ControlBlock) RecvNext() Value {
+	return tcb.rcv.NXT
 }

@@ -23,23 +23,23 @@ type Value uint32
 // Size represents the size (length) of a sequence number window.
 type Size uint32
 
-// LessThan checks if v is before w, i.e., v < w.
+// LessThan checks if v is before w (modulo 32) i.e., v < w.
 func LessThan(v, w Value) bool {
 	return int32(v-w) < 0
 }
 
-// LessThanEq returns true if v==w or v is before i.e., v < w.
+// LessThanEq returns true if v==w or v is before (modulo 32) i.e., v < w.
 func LessThanEq(v, w Value) bool {
 	return v == w || LessThan(v, w)
 }
 
-// InRange checks if v is in the range [a,b), i.e., a <= v < b.
+// InRange checks if v is in the range [a,b) (modulo 32), i.e., a <= v < b.
 func InRange(v, a, b Value) bool {
 	return v-a < b-a
 }
 
 // InWindow checks if v is in the window that starts at 'first' and spans 'size'
-// sequence numbers.
+// sequence numbers (modulo 32).
 func InWindow(v, first Value, size Size) bool {
 	return InRange(v, first, Add(first, size))
 }
