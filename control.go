@@ -17,8 +17,11 @@ var (
 	errWindowTooLarge = errors.New("invalid window size > 2**16")
 )
 
-// ControlBlock implements the Transmission Control Block (TCB) of a TCP connection as specified in RFC 9293
-// in page 19 and clarified further in page 25. It records the state of a TCP connection.
+// ControlBlock is a partial Transmission Control Block (TCB) implementation as per RFC 9293
+// in page 19 and clarified further in page 25. This implementation is limited to
+// receiving only sequential segments. This means buffer management is left up
+// entirely to the user of the ControlBlock. Use ControlBlock as the building block
+// that solves Sequence Number calculation and validation in a full TCP implementation.
 //
 // A ControlBlock's internal state is modified by the available "System Calls" as defined in
 // RFC9293, such as Close, Listen/Open, Send, and Receive.
@@ -256,17 +259,14 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	case tcb.state == StateClosed:
 		err = io.ErrClosedPipe
 
-	// case !established && acksOld:
-	// err = errors.New(errPfx + "ack points to old local data")
-
-	// case !established && acksUnsentData:
-	// err = errors.New(errPfx + "acks unsent data")
-
 	case checkSEQ && !InWindow(seg.SEQ, tcb.rcv.NXT, tcb.rcv.WND):
 		err = errors.New(errPfx + "seq not in receive window")
 
 	case checkSEQ && !InWindow(seg.Last(), tcb.rcv.NXT, tcb.rcv.WND):
 		err = errors.New(errPfx + "last not in receive window")
+
+	case checkSEQ && seg.SEQ != tcb.rcv.NXT:
+		err = errors.New(errPfx + "seq != rcv.nxt (use sequential segments)")
 	}
 	if err != nil {
 		return err
@@ -343,6 +343,7 @@ const (
 	// The union of SYN and ACK flags is commonly found throughout the specification, so we define a shorthand.
 	synack = FlagSYN | FlagACK
 	finack = FlagFIN | FlagACK
+	pshack = FlagPSH | FlagACK
 )
 
 // HasAll checks if mask bits are all set in the receiver flags.
