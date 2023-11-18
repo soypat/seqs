@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/netip"
 	"time"
 
 	"github.com/soypat/seqs/eth"
@@ -18,14 +19,14 @@ const (
 
 type StackConfig struct {
 	MAC         net.HardwareAddr
-	IP          net.IP
+	IP          netip.Addr
 	MaxUDPConns int
 	MaxTCPConns int
 }
 
 // NewStack creates a ready to use TCP/UDP Stack instance.
-func NewStack(cfg StackConfig) *Stack {
-	var s Stack
+func NewStack(cfg StackConfig) *PortStack {
+	var s PortStack
 	s.MAC = cfg.MAC
 	s.IP = cfg.IP
 	s.UDPv4 = make([]udpSocket, cfg.MaxUDPConns)
@@ -33,14 +34,17 @@ func NewStack(cfg StackConfig) *Stack {
 	return &s
 }
 
-// Stack is a TCP/UDP netlink implementation for muxing packets received into
-// their respective sockets with [Stack.RcvEth].
-type Stack struct {
+// PortStack implements partial TCP/UDP packet muxing to respective sockets with [PortStack.RcvEth].
+// This implementation limits itself basic header validation and port matching.
+// Users of PortStack are expected to implement connection state, packet buffering and retransmission logic.
+//   - In the case of TCP this means implementing the TCP state machine.
+//   - In the case of UDP PortStack should be enough to build  most applications.
+type PortStack struct {
 	lastRx        time.Time
 	lastRxSuccess time.Time
 	MAC           net.HardwareAddr
 	// Set IP to non-nil to ignore packets not meant for us.
-	IP               net.IP
+	IP               netip.Addr
 	UDPv4            []udpSocket
 	TCPv4            []tcpSocket
 	GlobalHandler    func([]byte)
@@ -73,16 +77,16 @@ var (
 //
 // If [Stack.HandleEth] is not called often enough prevent packet queue from
 // filling up on a socket RecvEth will start to return [ErrDroppedPacket].
-func (s *Stack) RecvEth(ethernetFrame []byte) (err error) {
+func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 	var ehdr eth.EthernetHeader
 	var ihdr eth.IPv4Header
 	defer func() {
 		if err != nil {
-			s.error("Stack.RecvEth", slog.String("err", err.Error()), slog.Any("IP", ihdr))
+			ps.error("Stack.RecvEth", slog.String("err", err.Error()), slog.Any("IP", ihdr))
 		} else {
-			s.lastRxSuccess = s.lastRx
-			if s.GlobalHandler != nil {
-				s.GlobalHandler(ethernetFrame)
+			ps.lastRxSuccess = ps.lastRx
+			if ps.GlobalHandler != nil {
+				ps.GlobalHandler(ethernetFrame)
 			}
 		}
 	}()
@@ -90,15 +94,20 @@ func (s *Stack) RecvEth(ethernetFrame []byte) (err error) {
 	if len(payload) < eth.SizeEthernetHeader+eth.SizeIPv4Header {
 		return errPacketSmol
 	}
-	s.debug("Stack.RecvEth:start", slog.Int("plen", len(payload)))
-	s.lastRx = time.Now()
+	ps.debug("Stack.RecvEth:start", slog.Int("plen", len(payload)))
+	ps.lastRx = time.Now()
 
 	// Ethernet parsing block
 	ehdr = eth.DecodeEthernetHeader(payload)
-	if s.MAC != nil && !eth.IsBroadcastHW(ehdr.Destination[:]) && !bytes.Equal(ehdr.Destination[:], s.MAC) {
+	etype := ehdr.AssertType()
+	if ps.MAC != nil && !eth.IsBroadcastHW(ehdr.Destination[:]) && !bytes.Equal(ehdr.Destination[:], ps.MAC) {
 		return nil // Ignore packet, is not for us.
-	} else if ehdr.AssertType() != eth.EtherTypeIPv4 {
+	} else if etype != eth.EtherTypeIPv4 && etype != eth.EtherTypeARP {
 		return nil // Ignore Non-IPv4 packets.
+	}
+
+	if etype == eth.EtherTypeARP {
+
 	}
 
 	// IP parsing block.
@@ -111,7 +120,8 @@ func (s *Stack) RecvEth(ethernetFrame []byte) (err error) {
 		return errIPVersion
 	case ipOffset < eth.SizeIPv4Header:
 		return errInvalidIHL
-	case s.IP != nil && string(ihdr.Destination[:]) != string(s.IP):
+
+	case ps.IP.Compare(netip.AddrFrom4(ihdr.Destination)) != 0:
 		return nil // Not for us.
 	case uint16(offset) > end || int(offset) > len(payload) || int(end) > len(payload):
 		return errors.New("bad IP TotalLength/IHL")
@@ -121,9 +131,10 @@ func (s *Stack) RecvEth(ethernetFrame []byte) (err error) {
 	ipOptions := payload[eth.SizeEthernetHeader+eth.SizeIPv4Header : offset] // TODO add IPv4 options.
 	payload = payload[offset:end]
 	switch ihdr.Protocol {
+
 	case 17:
 		// UDP (User Datagram Protocol).
-		if len(s.UDPv4) == 0 {
+		if len(ps.UDPv4) == 0 {
 			return nil // No sockets.
 		} else if len(payload) < eth.SizeUDPHeader {
 			return errTooShortTCPOrUDP
@@ -142,21 +153,21 @@ func (s *Stack) RecvEth(ethernetFrame []byte) (err error) {
 			return errChecksumTCPorUDP
 		}
 
-		socket := s.getUDP(uhdr.DestinationPort)
+		socket := ps.getUDP(uhdr.DestinationPort)
 		if socket == nil {
 			break // No socket listening on this port.
 		} else if socket.NeedsHandling() {
-			s.error("UDP packet dropped")
-			s.droppedPackets++
+			ps.error("UDP packet dropped")
+			ps.droppedPackets++
 			return ErrDroppedPacket // Our socket needs handling before admitting more packets.
 		}
 		// The packet is meant for us. We handle it.
-		s.info("UDP packet stored", slog.Int("plen", len(payload)))
+		ps.info("UDP packet stored", slog.Int("plen", len(payload)))
 		// Flag packets as needing processing.
-		s.pendingUDPv4++
-		socket.LastRx = s.lastRx // set as unhandled here.
+		ps.pendingUDPv4++
+		socket.LastRx = ps.lastRx // set as unhandled here.
 
-		socket.packets[0].Rx = s.lastRx
+		socket.packets[0].Rx = ps.lastRx
 		socket.packets[0].Eth = ehdr
 		socket.packets[0].IP = ihdr
 		socket.packets[0].UDP = uhdr
@@ -164,10 +175,10 @@ func (s *Stack) RecvEth(ethernetFrame []byte) (err error) {
 		copy(socket.packets[0].payload[:], payload)
 
 	case 6:
-		s.info("TCP packet received", slog.Int("plen", len(payload)))
+		ps.info("TCP packet received", slog.Int("plen", len(payload)))
 		// TCP (Transport Control Protocol).
 		switch {
-		case len(s.TCPv4) == 0:
+		case len(ps.TCPv4) == 0:
 			return nil
 		case len(payload) < eth.SizeTCPHeader:
 			return errTooShortTCPOrUDP
@@ -188,20 +199,20 @@ func (s *Stack) RecvEth(ethernetFrame []byte) (err error) {
 			println("bad checksum")
 		}
 
-		socket := s.getTCP(thdr.DestinationPort)
+		socket := ps.getTCP(thdr.DestinationPort)
 		if socket == nil {
 			break // No socket listening on this port.
 		} else if socket.NeedsHandling() {
-			s.error("TCP packet dropped")
-			s.droppedPackets++
+			ps.error("TCP packet dropped")
+			ps.droppedPackets++
 			return ErrDroppedPacket // Our socket needs handling before admitting more packets.
 		}
-		s.info("TCP packet stored", slog.Int("plen", len(payload)))
+		ps.info("TCP packet stored", slog.Int("plen", len(payload)))
 		// Flag packets as needing processing.
-		s.pendingTCPv4++
-		socket.LastRx = s.lastRx // set as unhandled here.
+		ps.pendingTCPv4++
+		socket.LastRx = ps.lastRx // set as unhandled here.
 
-		socket.packets[0].Rx = s.lastRx
+		socket.packets[0].Rx = ps.lastRx
 		socket.packets[0].Eth = ehdr
 		socket.packets[0].IP = ihdr
 		socket.packets[0].TCP = thdr
@@ -218,18 +229,18 @@ func (s *Stack) RecvEth(ethernetFrame []byte) (err error) {
 // not processed and that a future call to HandleEth is required to complete.
 //
 // If a handler returns any other error the port is closed.
-func (s *Stack) HandleEth(dst []byte) (n int, err error) {
+func (ps *PortStack) HandleEth(dst []byte) (n int, err error) {
 	switch {
 	case len(dst) < _MTU:
 		return 0, io.ErrShortBuffer
-	case s.pendingUDPv4 == 0 && s.pendingTCPv4 == 0:
+	case ps.pendingUDPv4 == 0 && ps.pendingTCPv4 == 0:
 		return 0, nil // No packets to handle
 	}
 
-	s.info("HandleEth", slog.Int("dstlen", len(dst)))
-	if s.pendingUDPv4 > 0 {
-		for i := range s.UDPv4 {
-			socket := &s.UDPv4[i]
+	ps.info("HandleEth", slog.Int("dstlen", len(dst)))
+	if ps.pendingUDPv4 > 0 {
+		for i := range ps.UDPv4 {
+			socket := &ps.UDPv4[i]
 			if !socket.IsPendingHandling() {
 				return 0, nil
 			}
@@ -240,7 +251,7 @@ func (s *Stack) HandleEth(dst []byte) (n int, err error) {
 				err = nil
 				continue
 			}
-			s.pendingUDPv4--
+			ps.pendingUDPv4--
 			if err != nil {
 				socket.Close()
 				return 0, err
@@ -252,8 +263,8 @@ func (s *Stack) HandleEth(dst []byte) (n int, err error) {
 		}
 	}
 
-	if n == 0 && s.pendingTCPv4 > 0 {
-		socketList := s.TCPv4
+	if n == 0 && ps.pendingTCPv4 > 0 {
+		socketList := ps.TCPv4
 		for i := range socketList {
 			socket := &socketList[i]
 			if !socket.IsPendingHandling() {
@@ -266,7 +277,7 @@ func (s *Stack) HandleEth(dst []byte) (n int, err error) {
 				err = nil
 				continue
 			}
-			s.pendingTCPv4--
+			ps.pendingTCPv4--
 			if err != nil {
 				socket.Close()
 				return 0, err
@@ -279,14 +290,14 @@ func (s *Stack) HandleEth(dst []byte) (n int, err error) {
 	}
 
 	if n != 0 && err == nil {
-		s.processedPackets++
+		ps.processedPackets++
 	}
 	return n, err
 }
 
 // OpenUDP opens a UDP port and sets the handler. If the port is already open
 // or if there is no socket available it returns an error.
-func (s *Stack) OpenUDP(port uint16, handler func([]byte, *UDPPacket) (int, error)) error {
+func (ps *PortStack) OpenUDP(port uint16, handler func([]byte, *UDPPacket) (int, error)) error {
 	switch {
 	case port == 0:
 		return errZeroPort
@@ -294,7 +305,7 @@ func (s *Stack) OpenUDP(port uint16, handler func([]byte, *UDPPacket) (int, erro
 		return errNilHandler
 	}
 	availIdx := -1
-	socketList := s.UDPv4
+	socketList := ps.UDPv4
 	for i := range socketList {
 		socket := &socketList[i]
 		if socket.Port == port {
@@ -313,7 +324,7 @@ func (s *Stack) OpenUDP(port uint16, handler func([]byte, *UDPPacket) (int, erro
 
 // FlagUDPPending flags the socket listening on a given port as having a pending
 // packet. This is useful to force a response even if no packet has been received.
-func (s *Stack) FlagUDPPending(port uint16) error {
+func (s *PortStack) FlagUDPPending(port uint16) error {
 	if port == 0 {
 		return errZeroPort
 	}
@@ -328,20 +339,20 @@ func (s *Stack) FlagUDPPending(port uint16) error {
 }
 
 // CloseUDP closes a UDP socket.
-func (s *Stack) CloseUDP(port uint16) error {
+func (ps *PortStack) CloseUDP(port uint16) error {
 	if port == 0 {
 		return errZeroPort
 	}
-	socket := s.getUDP(port)
+	socket := ps.getUDP(port)
 	if socket == nil {
 		return errNoSocketAvail
 	}
-	s.pendingUDPv4 -= uint32(socket.pending())
+	ps.pendingUDPv4 -= uint32(socket.pending())
 	socket.Close()
 	return nil
 }
 
-func (s *Stack) getUDP(port uint16) *udpSocket {
+func (s *PortStack) getUDP(port uint16) *udpSocket {
 	for i := range s.UDPv4 {
 		socket := &s.UDPv4[i]
 		if socket.Port == port {
@@ -353,7 +364,7 @@ func (s *Stack) getUDP(port uint16) *udpSocket {
 
 // OpenTCP opens a TCP port and sets the handler. If the port is already open
 // or if there is no socket available it returns an error.
-func (s *Stack) OpenTCP(port uint16, handler tcphandler) error {
+func (ps *PortStack) OpenTCP(port uint16, handler tcphandler) error {
 	switch {
 	case port == 0:
 		return errZeroPort
@@ -362,7 +373,7 @@ func (s *Stack) OpenTCP(port uint16, handler tcphandler) error {
 	}
 
 	availIdx := -1
-	socketList := s.TCPv4
+	socketList := ps.TCPv4
 	for i := range socketList {
 		socket := &socketList[i]
 		if socket.Port == port {
@@ -381,37 +392,37 @@ func (s *Stack) OpenTCP(port uint16, handler tcphandler) error {
 
 // FlagTCPPending flags the socket listening on a given port as having a pending
 // packet. This is useful to force a response even if no packet has been received.
-func (s *Stack) FlagTCPPending(port uint16) error {
+func (ps *PortStack) FlagTCPPending(port uint16) error {
 	if port == 0 {
 		return errZeroPort
 	}
-	socket := s.getTCP(port)
+	socket := ps.getTCP(port)
 	if socket == nil {
 		return errNoSocketAvail
 	}
 	if socket.forceResponse() {
-		s.pendingTCPv4++
+		ps.pendingTCPv4++
 	}
 	return nil
 }
 
 // CloseTCP closes a TCP socket.
-func (s *Stack) CloseTCP(port uint16) error {
+func (ps *PortStack) CloseTCP(port uint16) error {
 	if port == 0 {
 		return errZeroPort
 	}
-	socket := s.getTCP(port)
+	socket := ps.getTCP(port)
 	if socket == nil {
 		return errNoSocketAvail
 	}
-	s.pendingTCPv4 -= socket.pending()
+	ps.pendingTCPv4 -= socket.pending()
 	socket.Close()
 	return nil
 }
 
-func (s *Stack) getTCP(port uint16) *tcpSocket {
-	for i := range s.TCPv4 {
-		socket := &s.TCPv4[i]
+func (ps *PortStack) getTCP(port uint16) *tcpSocket {
+	for i := range ps.TCPv4 {
+		socket := &ps.TCPv4[i]
 		if socket.Port == port {
 			return socket
 		}
@@ -419,20 +430,20 @@ func (s *Stack) getTCP(port uint16) *tcpSocket {
 	return nil
 }
 
-func (s *Stack) info(msg string, attrs ...slog.Attr) {
-	s.logAttrsPrint(slog.LevelInfo, msg, attrs...)
+func (ps *PortStack) info(msg string, attrs ...slog.Attr) {
+	ps.logAttrsPrint(slog.LevelInfo, msg, attrs...)
 }
 
-func (s *Stack) error(msg string, attrs ...slog.Attr) {
-	s.logAttrsPrint(slog.LevelError, msg, attrs...)
+func (ps *PortStack) error(msg string, attrs ...slog.Attr) {
+	ps.logAttrsPrint(slog.LevelError, msg, attrs...)
 }
 
-func (s *Stack) debug(msg string, attrs ...slog.Attr) {
-	s.logAttrsPrint(slog.LevelDebug, msg, attrs...)
+func (ps *PortStack) debug(msg string, attrs ...slog.Attr) {
+	ps.logAttrsPrint(slog.LevelDebug, msg, attrs...)
 }
 
-func (s *Stack) logAttrsPrint(level slog.Level, msg string, attrs ...slog.Attr) {
-	if s.level <= level {
+func (ps *PortStack) logAttrsPrint(level slog.Level, msg string, attrs ...slog.Attr) {
+	if ps.level <= level {
 		logAttrsPrint(level, msg, attrs...)
 	}
 }
