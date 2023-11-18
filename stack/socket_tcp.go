@@ -10,6 +10,8 @@ import (
 	"github.com/soypat/seqs"
 )
 
+const defaultSocketSize = 2048
+
 type tcp struct {
 	stack     *PortStack
 	scb       seqs.ControlBlock
@@ -30,7 +32,7 @@ func (t *tcp) State() seqs.State {
 func (t *tcp) Send(b []byte) error {
 	if t.tx.buf == nil {
 		t.tx = ring{
-			buf: make([]byte, max(2048, len(b))),
+			buf: make([]byte, max(defaultSocketSize, len(b))),
 		}
 	}
 	_, err := t.tx.Write(b)
@@ -38,6 +40,11 @@ func (t *tcp) Send(b []byte) error {
 		return err
 	}
 	return nil
+}
+
+func (t *tcp) Recv(b []byte) (int, error) {
+	n, err := t.rx.Read(b)
+	return n, err
 }
 
 // DialTCP opens an active TCP connection to the given remote address.
@@ -110,6 +117,20 @@ func (t *tcp) handleRecv(response []byte, pkt *TCPPacket) (n int, err error) {
 	// if segIncoming.SEQ != t.scb.RecvNext() {
 	// 	return 0, ErrDroppedPacket // SCB does not admit out-of-order packets.
 	// }
+	if segIncoming.Flags.HasAny(seqs.FlagPSH) {
+		if len(payload) != int(segIncoming.DATALEN) {
+			return 0, errors.New("segment data length does not match payload length")
+		}
+		if t.rx.buf == nil {
+			t.rx = ring{
+				buf: make([]byte, defaultSocketSize),
+			}
+		}
+		_, err = t.rx.Write(payload)
+		if err != nil {
+			return 0, err
+		}
+	}
 	err = t.scb.Recv(segIncoming)
 	if err != nil {
 		return 0, err
