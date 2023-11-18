@@ -58,10 +58,9 @@ func TestStackEstablish(t *testing.T) {
 	if numBytesSent < expectedData {
 		t.Error("too little data exchanged", numBytesSent, " want>=", expectedData)
 	}
-	if txDone >= 4 {
+	if txDone >= 3 {
 		t.Error("too many exchanges for a 3 way handshake")
-	}
-	if txDone <= 1 {
+	} else if txDone <= 1 {
 		t.Error("too few exchanges for a 3 way handshake")
 	}
 	if clientTCP.State() != seqs.StateEstablished {
@@ -70,6 +69,54 @@ func TestStackEstablish(t *testing.T) {
 	if serverTCP.State() != seqs.StateEstablished {
 		t.Error("server not established: got", serverTCP.State(), "want", seqs.StateEstablished)
 	}
+}
+
+func TestStackSendReceive(t *testing.T) {
+	const (
+		clientISS = 100
+		clientWND = 1000
+
+		serverISS = 300
+		serverWND = 1300
+	)
+
+	var (
+		macClient = [6]byte{0x01, 0x00, 0x00, 0x00, 0x00, 0x00}
+		ipClient  = netip.MustParseAddrPort("192.168.1.1:1025")
+		macServer = [6]byte{0x02, 0x00, 0x00, 0x00, 0x00, 0x00}
+		ipServer  = netip.MustParseAddrPort("192.168.1.2:80")
+	)
+
+	Client := stack.NewPortStack(stack.PortStackConfig{
+		MAC:             macClient[:],
+		IP:              ipClient.Addr(),
+		MaxOpenPortsTCP: 1,
+	})
+	clientTCP, err := stack.DialTCP(Client, ipClient.Port(), macServer, ipServer, clientISS, clientWND)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = Client.FlagTCPPending(ipClient.Port())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	Server := stack.NewPortStack(stack.PortStackConfig{
+		MAC:             macServer[:],
+		IP:              ipServer.Addr(),
+		MaxOpenPortsTCP: 1,
+	})
+	serverTCP, err := stack.ListenTCP(Server, ipServer.Port(), serverISS, serverWND)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 3 way handshake needs2 exchanges to complete.
+	txStacks(t, 2, Client, Server)
+	if clientTCP.State() != seqs.StateEstablished || serverTCP.State() != seqs.StateEstablished {
+		t.Fatal("not established")
+	}
+
 }
 
 func isDroppedPacket(err error) bool {

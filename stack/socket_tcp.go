@@ -1,6 +1,8 @@
 package stack
 
 import (
+	"errors"
+	"io"
 	"net/netip"
 	"time"
 
@@ -11,17 +13,29 @@ type tcp struct {
 	stack     *PortStack
 	scb       seqs.ControlBlock
 	localPort uint16
-	iss       seqs.Value
-	wnd       seqs.Size
 	lastTx    time.Time
 	lastRx    time.Time
 	// Remote fields discovered during an active open.
 	remote    netip.AddrPort
 	remoteMAC [6]byte
+	tx        ring
 }
 
 func (t *tcp) State() seqs.State {
 	return t.scb.State()
+}
+
+func (t *tcp) Send(b []byte) error {
+	if t.tx.buf == nil {
+		t.tx = ring{
+			buf: make([]byte, 2048),
+		}
+	}
+	_, err := t.tx.Write(b)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 // DialTCP opens an active TCP connection to the given remote address.
@@ -147,8 +161,6 @@ func (t *tcp) mustSendSyn() bool {
 
 func (t *tcp) close() {
 	t.remote = netip.AddrPort{}
-	t.wnd = 0
-	t.iss = 0
 	t.scb = seqs.ControlBlock{}
 	t.lastTx = time.Time{}
 	t.lastRx = time.Time{}
@@ -160,5 +172,91 @@ func (t *tcp) synsentSegment() seqs.Segment {
 		ACK:   0,
 		Flags: seqs.FlagSYN,
 		WND:   t.scb.RecvWindow(),
+	}
+}
+
+type ring struct {
+	buf []byte
+	off int
+	end int
+}
+
+func (r *ring) Write(b []byte) (int, error) {
+	free := r.Free()
+	if len(b) > free {
+		return 0, errors.New("no more space")
+	}
+	midFree := r.midFree()
+	if midFree > 0 {
+		n := copy(r.buf[r.end:], b)
+		r.end += n
+		return n, nil
+	}
+
+	n := copy(r.buf[r.end:], b)
+	r.end = n
+	if n < len(b) {
+		n2 := copy(r.buf, b[n:])
+		r.end = n2
+		n += n2
+	}
+	return n, nil
+}
+
+func (r *ring) Read(b []byte) (int, error) {
+	if r.Buffered() == 0 {
+		return 0, io.EOF
+	}
+
+	if r.end >= r.off {
+		// start       off       end      len(buf)
+		//   |  sfree   |  used   |  efree   |
+		n := copy(b, r.buf[r.off:])
+		r.off += n
+		r.onReadEnd()
+		return n, nil
+	}
+	// start     end       off     len(buf)
+	//   |  used  |  mfree  |  used  |
+	n := copy(b, r.buf[r.off:])
+	r.off += n
+	if n < len(b) {
+		n2 := copy(b[n:], r.buf)
+		r.off = n2
+		n += n2
+	}
+	r.onReadEnd()
+	return n, nil
+}
+
+func (r *ring) Buffered() int {
+	return len(r.buf) - r.Free()
+}
+
+func (r *ring) Free() int {
+	if r.end >= r.off {
+		// start       off       end      len(buf)
+		//   |  sfree   |  used   |  efree   |
+		startFree := r.off
+		endFree := len(r.buf) - r.end
+		return startFree + endFree
+	}
+	// start     end       off     len(buf)
+	//   |  used  |  mfree  |  used  |
+	return r.off - r.end
+}
+
+func (r *ring) midFree() int {
+	if r.end >= r.off {
+		return 0
+	}
+	return r.off - r.end
+}
+
+func (r *ring) onReadEnd() {
+	if r.off == r.end {
+		// We read everything, reset.
+		r.off = 0
+		r.end = 0
 	}
 }
