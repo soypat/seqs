@@ -228,10 +228,6 @@ func BroadcastHW() net.HardwareAddr { return net.HardwareAddr(broadcast) }
 // be sent to every device on a given LAN segment.
 const broadcast = "\xff\xff\xff" + "\xff\xff\xff"
 
-var (
-	none = net.HardwareAddr{0, 0, 0, 0, 0, 0}
-)
-
 type EtherType uint16
 
 // AssertType returns the Size or EtherType field of the Ethernet frame as EtherType.
@@ -300,7 +296,7 @@ func (iphdr *IPv4Header) PayloadLength() int {
 }
 
 func (ip *IPv4Header) String() string {
-	return strcat("IPv4 ", net.IP(ip.Source[:]).String(), " -> ",
+	return strcat(net.IP(ip.Source[:]).String(), " -> ",
 		net.IP(ip.Destination[:]).String(), " proto=", strconv.Itoa(int(ip.Protocol)),
 		" len=", strconv.Itoa(int(ip.TotalLength)),
 	)

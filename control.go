@@ -67,9 +67,9 @@ type sendSpace struct {
 	ISS Value // initial send sequence number, defined locally on connection start
 	UNA Value // send unacknowledged. Seqs equal to UNA and above have NOT been acked by remote. Corresponds to local data.
 	NXT Value // send next. This seq and up to UNA+WND-1 are allowed to be sent. Corresponds to local data.
+	WND Size  // send window defined by remote. Permitted number unacked octets in flight.
 	// WL1 Value // segment sequence number used for last window update
 	// WL2 Value // segment acknowledgment number used for last window update
-	WND Size // send window defined by remote. Permitted number unacked octets in flight.
 }
 
 // recvSpace contains Receive Sequence Space data. Its sequence numbers correspond to remote data.
@@ -186,8 +186,8 @@ func (tcb *ControlBlock) rcvSynSent(seg Segment) (pending Flags, err error) {
 
 func (tcb *ControlBlock) rcvSynRcvd(seg Segment) (pending Flags, err error) {
 	switch {
-	case !seg.Flags.HasAll(FlagACK):
-		err = errors.New("rcvSynRcvd: expected ACK")
+	// case !seg.Flags.HasAll(FlagACK):
+	// 	err = errors.New("rcvSynRcvd: expected ACK")
 	case seg.ACK != tcb.snd.UNA+1:
 		err = errors.New("rcvSynRcvd: bad seg.ack")
 	}

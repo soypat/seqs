@@ -1,220 +1,164 @@
 package stack
 
 import (
-	"io"
-	"strconv"
+	"net/netip"
 	"time"
 
 	"github.com/soypat/seqs"
-	"github.com/soypat/seqs/eth"
 )
 
-type tcphandler func(response []byte, pkt *TCPPacket) (int, error)
-
-type tcpSocket struct {
-	LastRx  time.Time
-	handler tcphandler
-	Port    uint16
-	packets [1]TCPPacket
+type tcp struct {
+	stack     *PortStack
+	scb       seqs.ControlBlock
+	localPort uint16
+	iss       seqs.Value
+	wnd       seqs.Size
+	lastTx    time.Time
+	lastRx    time.Time
+	// Remote fields discovered during an active open.
+	remote    netip.AddrPort
+	remoteMAC [6]byte
 }
 
-const tcpMTU = _MTU - eth.SizeEthernetHeader - eth.SizeIPv4Header - eth.SizeTCPHeader
-
-type TCPPacket struct {
-	Rx  time.Time
-	Eth eth.EthernetHeader
-	IP  eth.IPv4Header
-	TCP eth.TCPHeader
-	// data contains TCP+IP options and then the actual data.
-	data [tcpMTU]byte
+func (t *tcp) State() seqs.State {
+	return t.scb.State()
 }
 
-func (p *TCPPacket) String() string {
-	return "TCP Packet: " + p.Eth.String() + p.IP.String() + p.TCP.String() + " payload:" + strconv.Quote(string(p.Payload()))
-}
-
-// NeedsHandling returns true if the socket needs handling before it can
-// admit more pending packets.
-func (u *tcpSocket) NeedsHandling() bool {
-	// As of now socket has space for 1 packet so if packet is pending, queue is full.
-	// Compile time check to ensure this is fulfilled:
-	_ = u.packets[1-len(u.packets)]
-	return u.IsPendingHandling()
-}
-
-// IsPendingHandling returns true if there are packet(s) pending handling.
-func (u *tcpSocket) IsPendingHandling() bool {
-	return u.Port != 0 && !u.packets[0].Rx.IsZero()
-}
-
-// HandleEth writes the socket's response into dst to be sent over an ethernet interface.
-// HandleEth can return 0 bytes written and a nil error to indicate no action must be taken.
-// If
-func (u *tcpSocket) HandleEth(dst []byte) (n int, err error) {
-	if u.handler == nil {
-		panic("nil tcp handler on port " + strconv.Itoa(int(u.Port)))
+// DialTCP opens an active TCP connection to the given remote address.
+func DialTCP(stack *PortStack, localPort uint16, remoteMAC [6]byte, remote netip.AddrPort, iss seqs.Value, window seqs.Size) (*tcp, error) {
+	t := tcp{
+		stack:     stack,
+		localPort: localPort,
+		remote:    remote,
+		remoteMAC: remoteMAC,
 	}
-	packet := &u.packets[0]
 
-	n, err = u.handler(dst, &u.packets[0])
-	if err != io.ErrNoProgress {
-		packet.Rx = time.Time{} // Invalidate packet.
+	err := stack.OpenTCP(localPort, t.handleMain)
+	if err != nil {
+		return nil, err
 	}
-	return n, err
+	err = t.scb.Open(iss, window, seqs.StateSynSent)
+	if err != nil {
+		return nil, err
+	}
+	err = t.scb.Send(t.synsentSegment())
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
 }
 
-// Open sets the UDP handler and opens the port.
-func (u *tcpSocket) Open(port uint16, handler tcphandler) {
-	if port == 0 || handler == nil {
-		panic("invalid port or nil handler" + strconv.Itoa(int(u.Port)))
+// ListenTCP opens a passive TCP connection that listens on the given port.
+// ListenTCP only handles one connection at a time, so API may change in future to accomodate multiple connections.
+func ListenTCP(stack *PortStack, port uint16, iss seqs.Value, window seqs.Size) (*tcp, error) {
+	t := tcp{
+		stack:     stack,
+		localPort: port,
 	}
-	u.handler = handler
-	u.Port = port
-	for i := range u.packets {
-		u.packets[i].Rx = time.Time{} // Invalidate packets.
+	err := stack.OpenTCP(port, t.handleMain)
+	if err != nil {
+		return nil, err
 	}
+	err = t.scb.Open(iss, window, seqs.StateListen)
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
 }
 
-func (s *tcpSocket) pending() (p uint32) {
-	for i := range s.packets {
-		if s.packets[i].HasPacket() {
-			p++
+func (t *tcp) handleMain(response []byte, pkt *TCPPacket) (n int, err error) {
+	hasPacket := pkt.HasPacket()
+	if !hasPacket && t.mustSendSyn() {
+		// Connection is still closed, we need to establish
+		return t.handleInitSyn(response, pkt)
+	}
+
+	if hasPacket {
+		remotePort := t.remote.Port()
+		if remotePort != 0 && pkt.TCP.SourcePort != remotePort {
+			return 0, ErrDroppedPacket // This packet came from a different client to the one we are interacting with.
+		}
+		t.lastRx = pkt.Rx
+		n, err := t.handleRecv(response, pkt)
+		if n > 0 || err != nil {
+			return n, err // Return early if something happened, else yield to user data handler.
 		}
 	}
-	return p
+	return t.handleUser(response, pkt)
 }
 
-func (u *tcpSocket) Close() {
-	u.handler = nil
-	u.Port = 0 // Port 0 flags the port is inactive.
+func (t *tcp) handleRecv(response []byte, pkt *TCPPacket) (n int, err error) {
+	// By this point we know that the packet is valid and contains data, we process it.
+	payload := pkt.Payload()
+	segIncoming := pkt.TCP.Segment(len(payload))
+	// if segIncoming.SEQ != t.scb.RecvNext() {
+	// 	return 0, ErrDroppedPacket // SCB does not admit out-of-order packets.
+	// }
+	err = t.scb.Recv(segIncoming)
+	if err != nil {
+		return 0, err
+	}
+
+	segOut, ok := t.scb.PendingSegment(0)
+	if !ok {
+		return 0, nil // No pending control segment. Yield to handleUser.
+	}
+	err = t.scb.Send(segOut)
+	if err != nil {
+		return 0, err
+	}
+	if segIncoming.Flags.HasAny(seqs.FlagSYN) && t.remote == (netip.AddrPort{}) {
+		// We have a client that wants to connect to us.
+		t.remote = netip.AddrPortFrom(netip.AddrFrom4(pkt.IP.Source), pkt.TCP.SourcePort)
+	}
+	pkt.InvertSrcDest()
+	pkt.CalculateHeaders(segOut, nil)
+	pkt.PutHeaders(response)
+	return 54, nil
 }
 
-func (u *tcpSocket) forceResponse() (added bool) {
-	if !u.IsPendingHandling() {
-		added = true
-		u.packets[0].Rx = forcedTime
-	}
-	return added
+func (t *tcp) handleUser(response []byte, pkt *TCPPacket) (n int, err error) {
+	return 0, nil
 }
 
-func (u *TCPPacket) HasPacket() bool {
-	return u.Rx != forcedTime && !u.Rx.IsZero()
+func (t *tcp) handleInitSyn(response []byte, pkt *TCPPacket) (n int, err error) {
+	// Uninitialized TCB, we start the handshake.
+
+	copy(pkt.Eth.Source[:], t.stack.MAC)
+	pkt.IP.Source = t.stack.IP.As4()
+	pkt.TCP.SourcePort = t.localPort
+
+	pkt.IP.Destination = t.remote.Addr().As4()
+	pkt.TCP.DestinationPort = t.remote.Port()
+	pkt.Eth.Destination = t.remoteMAC
+
+	pkt.CalculateHeaders(t.synsentSegment(), nil)
+	pkt.PutHeaders(response)
+	return 54, nil
 }
 
-// PutHeaders puts 54 bytes including the Ethernet, IPv4 and TCP headers into b.
-// b must be at least 54 bytes in length or else PutHeaders panics. No options are marshalled.
-func (p *TCPPacket) PutHeaders(b []byte) {
-	const minSize = eth.SizeEthernetHeader + eth.SizeIPv4Header + eth.SizeTCPHeader
-	if len(b) < minSize {
-		panic("short tcpPacket buffer")
-	}
-	if p.IP.IHL() != 5 || p.TCP.Offset() != 5 {
-		panic("TCPPacket.PutHeaders expects no IP or TCP options")
-	}
-	p.Eth.Put(b)
-	p.IP.Put(b[eth.SizeEthernetHeader:])
-	p.TCP.Put(b[eth.SizeEthernetHeader+eth.SizeIPv4Header:])
+func (t *tcp) awaitingSyn() bool {
+	return t.scb.State() == seqs.StateSynSent && t.remote != (netip.AddrPort{})
 }
 
-func (p *TCPPacket) PutHeadersWithOptions(b []byte) error {
-	const minSize = eth.SizeEthernetHeader + eth.SizeIPv4Header + eth.SizeTCPHeader
-	if len(b) < minSize {
-		panic("short tcpPacket buffer")
-	}
-	panic("PutHeadersWithOptions not implemented")
+func (t *tcp) mustSendSyn() bool {
+	return t.awaitingSyn() && time.Since(t.lastTx) > 3*time.Second
 }
 
-// Payload returns the TCP payload. If TCP or IPv4 header data is incorrect/bad it returns nil.
-// If the response is "forced" then payload will be nil.
-func (p *TCPPacket) Payload() []byte {
-	if !p.HasPacket() {
-		return nil
-	}
-	payloadStart, payloadEnd, _ := p.dataPtrs()
-	if payloadStart < 0 {
-		return nil // Bad header value
-	}
-	return p.data[payloadStart:payloadEnd]
+func (t *tcp) close() {
+	t.remote = netip.AddrPort{}
+	t.wnd = 0
+	t.iss = 0
+	t.scb = seqs.ControlBlock{}
+	t.lastTx = time.Time{}
+	t.lastRx = time.Time{}
 }
 
-// Options returns the TCP options in the packet.
-func (p *TCPPacket) TCPOptions() []byte {
-	if !p.HasPacket() {
-		return nil
+func (t *tcp) synsentSegment() seqs.Segment {
+	return seqs.Segment{
+		SEQ:   t.scb.ISS(),
+		ACK:   0,
+		Flags: seqs.FlagSYN,
+		WND:   t.scb.RecvWindow(),
 	}
-	payloadStart, _, tcpOptStart := p.dataPtrs()
-	if payloadStart < 0 {
-		return nil // Bad header value
-	}
-	return p.data[tcpOptStart:payloadStart]
-}
-
-// Options returns the TCP options in the packet.
-func (p *TCPPacket) IPOptions() []byte {
-	if !p.HasPacket() {
-		return nil
-	}
-	_, _, tcpOpts := p.dataPtrs()
-	if tcpOpts < 0 {
-		return nil // Bad header value
-	}
-	return p.data[:tcpOpts]
-}
-
-//go:inline
-func (p *TCPPacket) dataPtrs() (payloadStart, payloadEnd, tcpOptStart int) {
-	tcpOptStart = int(4*p.IP.IHL()) - eth.SizeIPv4Header
-	payloadStart = tcpOptStart + int(p.TCP.OffsetInBytes()) - eth.SizeTCPHeader
-	payloadEnd = int(p.IP.TotalLength) - tcpOptStart - eth.SizeTCPHeader - eth.SizeIPv4Header
-	if payloadStart < 0 || payloadEnd < 0 || tcpOptStart < 0 || payloadStart > payloadEnd ||
-		payloadEnd > len(p.data) || tcpOptStart > payloadStart {
-		return -1, -1, -1
-	}
-	return payloadStart, payloadEnd, tcpOptStart
-}
-
-func (pkt *TCPPacket) InvertSrcDest() {
-	pkt.IP.Destination, pkt.IP.Source = pkt.IP.Source, pkt.IP.Destination
-	pkt.Eth.Destination, pkt.Eth.Source = pkt.Eth.Source, pkt.Eth.Destination
-	pkt.TCP.DestinationPort, pkt.TCP.SourcePort = pkt.TCP.SourcePort, pkt.TCP.DestinationPort
-}
-
-func (pkt *TCPPacket) CalculateHeaders(seg seqs.Segment, payload []byte) {
-	const ipLenInWords = 5
-	// Ethernet frame.
-	pkt.Eth.SizeOrEtherType = uint16(eth.EtherTypeIPv4)
-
-	// IPv4 frame.
-	pkt.IP.Protocol = 6 // TCP.
-	pkt.IP.TTL = 64
-	pkt.IP.ID = prand16(pkt.IP.ID)
-	pkt.IP.VersionAndIHL = ipLenInWords // Sets IHL: No IP options. Version set automatically.
-	pkt.IP.TotalLength = 4*ipLenInWords + eth.SizeTCPHeader + uint16(len(payload))
-	pkt.IP.Checksum = pkt.IP.CalculateChecksum()
-
-	// TODO(soypat): Document how to handle ToS. For now just use ToS used by other side.
-	// packet.IP.ToS = 0
-	pkt.IP.Flags = 0
-	// TCP frame.
-	const offset = 5
-	pkt.TCP = eth.TCPHeader{
-		SourcePort:      pkt.TCP.SourcePort,
-		DestinationPort: pkt.TCP.DestinationPort,
-		Seq:             seg.SEQ,
-		Ack:             seg.ACK,
-		WindowSizeRaw:   uint16(seg.WND),
-		UrgentPtr:       0, // We do not implement urgent pointer.
-	}
-	pkt.TCP.SetFlags(seg.Flags)
-	pkt.TCP.SetOffset(offset)
-	pkt.TCP.Checksum = pkt.TCP.CalculateChecksumIPv4(&pkt.IP, nil, payload)
-}
-
-// prand16 generates a pseudo random number from a seed.
-func prand16(seed uint16) uint16 {
-	// 16bit Xorshift  https://en.wikipedia.org/wiki/Xorshift
-	seed ^= seed << 7
-	seed ^= seed >> 9
-	seed ^= seed << 8
-	return seed
 }
