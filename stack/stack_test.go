@@ -117,6 +117,24 @@ func TestStackSendReceive(t *testing.T) {
 		t.Fatal("not established")
 	}
 
+	// Send data from client to server.
+	const data = "hello world"
+	err = clientTCP.Send([]byte(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	txStacks(t, 1, Client, Server)
+	if clientTCP.State() != seqs.StateEstablished || serverTCP.State() != seqs.StateEstablished {
+		t.Fatal("not established")
+	}
+	var buf [len(data)]byte
+	n, err := serverTCP.Recv(buf[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(buf[:n]) != data {
+		t.Error("got", string(buf[:n]), "want", data)
+	}
 }
 
 func isDroppedPacket(err error) bool {

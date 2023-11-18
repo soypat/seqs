@@ -105,6 +105,7 @@ func (seg *Segment) Last() Value {
 }
 
 // PendingSegment calculates a suitable next segment to send from a payload length.
+// It does not modify the ControlBlock state.
 func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 	if (payloadLen == 0 && tcb.pending == 0) || (payloadLen > 0 && tcb.state != StateEstablished) {
 		return Segment{}, false // No pending segment.
