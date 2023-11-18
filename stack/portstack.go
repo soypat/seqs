@@ -17,20 +17,20 @@ const (
 	_MTU = 1500
 )
 
-type StackConfig struct {
-	MAC         net.HardwareAddr
-	IP          netip.Addr
-	MaxUDPConns int
-	MaxTCPConns int
+type PortStackConfig struct {
+	MAC             net.HardwareAddr
+	IP              netip.Addr
+	MaxOpenPortsUDP int
+	MaxOpenPortsTCP int
 }
 
-// NewStack creates a ready to use TCP/UDP Stack instance.
-func NewStack(cfg StackConfig) *PortStack {
+// NewPortStack creates a ready to use TCP/UDP Stack instance.
+func NewPortStack(cfg PortStackConfig) *PortStack {
 	var s PortStack
 	s.MAC = cfg.MAC
 	s.IP = cfg.IP
-	s.UDPv4 = make([]udpSocket, cfg.MaxUDPConns)
-	s.TCPv4 = make([]tcpSocket, cfg.MaxTCPConns)
+	s.UDPv4 = make([]udpPort, cfg.MaxOpenPortsUDP)
+	s.TCPv4 = make([]tcpPort, cfg.MaxOpenPortsTCP)
 	return &s
 }
 
@@ -45,8 +45,8 @@ type PortStack struct {
 	MAC           net.HardwareAddr
 	// Set IP to non-nil to ignore packets not meant for us.
 	IP               netip.Addr
-	UDPv4            []udpSocket
-	TCPv4            []tcpSocket
+	UDPv4            []udpPort
+	TCPv4            []tcpPort
 	GlobalHandler    func([]byte)
 	pendingUDPv4     uint32
 	pendingTCPv4     uint32
@@ -352,7 +352,7 @@ func (ps *PortStack) CloseUDP(port uint16) error {
 	return nil
 }
 
-func (s *PortStack) getUDP(port uint16) *udpSocket {
+func (s *PortStack) getUDP(port uint16) *udpPort {
 	for i := range s.UDPv4 {
 		socket := &s.UDPv4[i]
 		if socket.Port == port {
@@ -420,7 +420,7 @@ func (ps *PortStack) CloseTCP(port uint16) error {
 	return nil
 }
 
-func (ps *PortStack) getTCP(port uint16) *tcpSocket {
+func (ps *PortStack) getTCP(port uint16) *tcpPort {
 	for i := range ps.TCPv4 {
 		socket := &ps.TCPv4[i]
 		if socket.Port == port {

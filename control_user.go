@@ -128,6 +128,9 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 // RecvNext returns 0 before StateSynRcvd.
 func (tcb *ControlBlock) RecvNext() Value { return tcb.rcv.NXT }
 
+// RecvWindow returns the receive window size as defined in the last call to Open. If connection is closed will return 0.
+func (tcb *ControlBlock) RecvWindow() Size { return tcb.rcv.WND }
+
 // ISS returns the initial sequence number of the connection that was defined on a call to Open by user.
 func (tcb *ControlBlock) ISS() Value { return tcb.snd.ISS }
 

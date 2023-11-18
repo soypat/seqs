@@ -10,7 +10,7 @@ import (
 
 type udphandler func(response []byte, pkt *UDPPacket) (int, error)
 
-type udpSocket struct {
+type udpPort struct {
 	LastRx  time.Time
 	handler udphandler
 	Port    uint16
@@ -27,7 +27,7 @@ type UDPPacket struct {
 
 // NeedsHandling returns true if the socket needs handling before it can
 // admit more pending packets.
-func (u *udpSocket) NeedsHandling() bool {
+func (u *udpPort) NeedsHandling() bool {
 	// As of now socket has space for 1 packet so if packet is pending, queue is full.
 	// Compile time check to ensure this is fulfilled:
 	_ = u.packets[1-len(u.packets)]
@@ -35,14 +35,14 @@ func (u *udpSocket) NeedsHandling() bool {
 }
 
 // IsPendingHandling returns true if there are packet(s) pending handling.
-func (u *udpSocket) IsPendingHandling() bool {
+func (u *udpPort) IsPendingHandling() bool {
 	return u.Port != 0 && !u.packets[0].Rx.IsZero()
 }
 
 // HandleEth writes the socket's response into dst to be sent over an ethernet interface.
 // HandleEth can return 0 bytes written and a nil error to indicate no action must be taken.
 // If
-func (u *udpSocket) HandleEth(dst []byte) (int, error) {
+func (u *udpPort) HandleEth(dst []byte) (int, error) {
 	if u.handler == nil {
 		panic("nil udp handler on port " + strconv.Itoa(int(u.Port)))
 	}
@@ -56,7 +56,7 @@ func (u *udpSocket) HandleEth(dst []byte) (int, error) {
 }
 
 // Open sets the UDP handler and opens the port.
-func (u *udpSocket) Open(port uint16, h udphandler) {
+func (u *udpPort) Open(port uint16, h udphandler) {
 	if port == 0 || h == nil {
 		panic("invalid port or nil handler" + strconv.Itoa(int(u.Port)))
 	}
@@ -64,7 +64,7 @@ func (u *udpSocket) Open(port uint16, h udphandler) {
 	u.Port = port
 }
 
-func (s *udpSocket) pending() (p int) {
+func (s *udpPort) pending() (p int) {
 	for i := range s.packets {
 		if s.packets[i].HasPacket() {
 			p++
@@ -73,7 +73,7 @@ func (s *udpSocket) pending() (p int) {
 	return p
 }
 
-func (u *udpSocket) Close() {
+func (u *udpPort) Close() {
 	u.Port = 0 // Port 0 flags the port is inactive.
 	for i := range u.packets {
 		u.packets[i].Rx = time.Time{} // Invalidate packets.
@@ -84,7 +84,7 @@ func (u *udpSocket) Close() {
 // by flagging the packet's Rx time with non-zero value.
 var forcedTime = (time.Time{}).Add(1)
 
-func (u *udpSocket) forceResponse() (added bool) {
+func (u *udpPort) forceResponse() (added bool) {
 	if !u.IsPendingHandling() {
 		added = true
 		u.packets[0].Rx = forcedTime
