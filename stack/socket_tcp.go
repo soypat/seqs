@@ -108,6 +108,9 @@ func (p *TCPPacket) PutHeaders(b []byte) {
 	if len(b) < minSize {
 		panic("short tcpPacket buffer")
 	}
+	if p.IP.IHL() != 5 || p.TCP.Offset() != 5 {
+		panic("TCPPacket.PutHeaders expects no IP or TCP options")
+	}
 	p.Eth.Put(b)
 	p.IP.Put(b[eth.SizeEthernetHeader:])
 	p.TCP.Put(b[eth.SizeEthernetHeader+eth.SizeIPv4Header:])

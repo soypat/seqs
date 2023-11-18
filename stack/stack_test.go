@@ -2,7 +2,6 @@ package stack_test
 
 import (
 	"errors"
-	"fmt"
 	"net/netip"
 	"strings"
 	"testing"
@@ -31,7 +30,7 @@ func TestStackEstablish(t *testing.T) {
 	ClientTCB := seqs.ControlBlock{}
 	Client := stack.NewStack(stack.StackConfig{
 		MAC:         macClient[:],
-		IP:          ipClient.Addr().AsSlice(),
+		IP:          ipClient.Addr(),
 		MaxTCPConns: 1,
 	})
 
@@ -96,93 +95,74 @@ func TestStackEstablish(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ServerTCB := seqs.ControlBlock{}
-	err = ServerTCB.Open(serverISS, clientISS, seqs.StateListen)
-	if err != nil {
-		t.Fatal(err)
-	}
 	Server := stack.NewStack(stack.StackConfig{
 		MAC:         macServer[:],
-		IP:          ipServer.Addr().AsSlice(),
+		IP:          ipServer.Addr(),
 		MaxTCPConns: 1,
 	})
-	err = Server.OpenTCP(ipServer.Port(), func(response []byte, pkt *stack.TCPPacket) (n int, err error) {
-		defer func() {
-			if n > 0 && err == nil {
-				t.Logf("Server sent: %s", pkt.String())
-			}
-		}()
-		if pkt.HasPacket() {
-			t.Logf("Server received: %s", pkt.String())
-			payload := pkt.Payload()
-			err = ServerTCB.Recv(pkt.TCP.Segment(len(payload)))
-			if err != nil {
-				return 0, err
-			}
-			segOut, ok := ServerTCB.PendingSegment(0)
-			if !ok {
-				return 0, nil
-			}
-			pkt.InvertSrcDest()
-			pkt.CalculateHeaders(segOut, nil)
-			pkt.PutHeaders(response)
-			return 54, ServerTCB.Send(segOut)
-		}
-		return 0, nil
-	})
+	serverTCP, err := stack.ListenTCP(Server, ipServer.Port(), serverISS, serverWND)
 	if err != nil {
 		t.Fatal(err)
-	}
-
-	var pipe [2048]byte
-	zeroPipe := func() { pipe = [2048]byte{} }
-	sprintErr := func(err error) string {
-		return fmt.Sprintf("%v: client=%s server=%s", err, ClientTCB.State(), ServerTCB.State())
 	}
 
 	// 3 way handshake needs 3 exchanges to complete.
 	const maxExchanges = 3
-	loops := 0
-	for loops <= maxExchanges {
-		loops++
-		nc, err := Client.HandleEth(pipe[:])
-		if err != nil && !isDroppedPacket(err) {
-			t.Fatal("client handle:", sprintErr(err))
-		}
-		if nc > 0 {
-			err = Server.RecvEth(pipe[:nc])
-			if err != nil && !isDroppedPacket(err) {
-				t.Fatal("sv recv:", sprintErr(err))
-			}
-			zeroPipe()
-		}
-
-		ns, err := Server.HandleEth(pipe[:])
-		if err != nil && !isDroppedPacket(err) {
-			t.Fatal("sv handle:", sprintErr(err))
-		}
-		if ns > 0 {
-			err = Client.RecvEth(pipe[:ns])
-			if err != nil && !isDroppedPacket(err) {
-				t.Fatal("client recv:", sprintErr(err))
-			}
-			zeroPipe()
-		}
-		if ns == 0 && nc == 0 {
-			break // No more data being interchanged.
-		}
+	exchanges, dataExchanged := exchangeStacks(t, maxExchanges, Client, Server)
+	const expectedData = (eth.SizeEthernetHeader + eth.SizeIPv4Header + eth.SizeTCPHeader) * 4
+	if dataExchanged < expectedData {
+		t.Fatal("too little data exchanged", dataExchanged, " want>=", expectedData)
 	}
-	if loops > maxExchanges {
-		t.Fatal("unending connection established")
+	if exchanges >= 4 {
+		t.Fatal("too many exchanges for a 3 way handshake")
+	}
+	if exchanges <= 2 {
+		t.Fatal("too few exchanges for a 3 way handshake")
 	}
 	if ClientTCB.State() != seqs.StateEstablished {
 		t.Fatal("client not established")
 	}
-	if ServerTCB.State() != seqs.StateEstablished {
+	if serverTCP.State() != seqs.StateEstablished {
 		t.Fatal("server not established")
 	}
 }
 
 func isDroppedPacket(err error) bool {
 	return err != nil && (errors.Is(err, stack.ErrDroppedPacket) || strings.HasPrefix(err.Error(), "drop"))
+}
+
+func exchangeStacks(t *testing.T, maxExchanges int, stacks ...*stack.PortStack) (exchanges, totalData int) {
+	loops := 0
+	var pipe [2048]byte
+	zeroPipe := func() { pipe = [2048]byte{} }
+	sprintErr := func(err error) string {
+		return err.Error()
+		// return fmt.Sprintf("%v: client=%s server=%s", err, ClientTCB.State(), ServerTCB.State())
+	}
+	totalDataSent := 0
+	for loops <= maxExchanges {
+		loops++
+		sent := 0
+		for isender := 0; isender < len(stacks); isender++ {
+			n, err := stacks[isender].HandleEth(pipe[:])
+			if err != nil && !isDroppedPacket(err) {
+				t.Fatalf("send[%d]: %s", isender, sprintErr(err))
+			}
+			sent += n
+			for ireceiver := 0; n > 0 && ireceiver < len(stacks); ireceiver++ {
+				if ireceiver == isender {
+					continue
+				}
+				err = stacks[ireceiver].RecvEth(pipe[:n])
+				if err != nil && !isDroppedPacket(err) {
+					t.Fatalf("recv[%d]: %s", ireceiver, sprintErr(err))
+				}
+			}
+			zeroPipe()
+		}
+		totalDataSent += sent
+		if sent == 0 {
+			break // No more data being interchanged.
+		}
+	}
+	return loops, totalDataSent
 }

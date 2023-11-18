@@ -51,8 +51,9 @@ type ControlBlock struct {
 	//	1 - old sequence numbers which have been acknowledged
 	//	2 - sequence numbers allowed for new reception
 	//	3 - future sequence numbers which are not yet allowed
-	rcv    recvSpace
-	rstPtr Value // RST pointer. See RFC 3540.
+	rcv recvSpace
+	// When FlagRST is set in pending flags rstPtr will contain the sequence number of the RST segment to make it "believable" (See RFC9293)
+	rstPtr Value
 	// pending and state are modified by rcv* methods and Close method.
 	// The pending flags are only updated if the Recv method finishes with no error.
 	pending Flags
@@ -78,7 +79,7 @@ type recvSpace struct {
 	WND Size  // receive window defined by local. Permitted number unacked octets in flight.
 }
 
-// Segment represents a TCP segment as the sequence number of the first octet and the length of the segment.
+// Segment represents an incoming/outgoing TCP segment in the sequence space.
 type Segment struct {
 	SEQ     Value // sequence number of first octet of segment. If SYN is set it is the initial sequence number (ISN) and the first data octet is ISN+1.
 	ACK     Value // acknowledgment number. If ACK is set it is sequence number of first octet the sender of the segment is expecting to receive next.
@@ -112,6 +113,11 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 		payloadLen = int(tcb.snd.WND)
 	}
 
+	pending := tcb.pending
+	if payloadLen > 0 {
+		pending |= FlagPSH
+	}
+
 	var ack Value
 	if tcb.pending.HasAny(FlagACK) {
 		ack = tcb.rcv.NXT
@@ -126,7 +132,7 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 		SEQ:     seq,
 		ACK:     ack,
 		WND:     tcb.rcv.WND,
-		Flags:   tcb.pending,
+		Flags:   pending,
 		DATALEN: Size(payloadLen),
 	}
 	return seg, true
@@ -326,6 +332,25 @@ func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
 	return err
 }
 
+// close sets ControlBlock state to closed and resets all sequence numbers and pending flag.
+func (tcb *ControlBlock) close() {
+	tcb.state = StateClosed
+	tcb.pending = 0
+	tcb.resetRcv(0, 0)
+	tcb.resetSnd(0, 0)
+	tcb.debuglog += "close tcb\n"
+}
+
+// hasIRS checks if the ControlBlock has received a valid initial sequence number (IRS).
+func (tcb *ControlBlock) hasIRS() bool {
+	return tcb.isOpen() && tcb.state != StateSynSent && tcb.state != StateListen
+}
+
+// isOpen checks if the ControlBlock is in a state that allows sending and/or receiving data.
+func (tcb *ControlBlock) isOpen() bool {
+	return tcb.state != StateClosed && tcb.state != StateTimeWait
+}
+
 // Flags is a TCP flags masked implementation i.e: SYN, FIN, ACK.
 type Flags uint16
 
@@ -339,8 +364,10 @@ const (
 	FlagECE                   // FlagECE - ECN-Echo has a nonce-sum in the SYN/ACK.
 	FlagCWR                   // FlagCWR - Congestion Window Reduced.
 	FlagNS                    // FlagNS  - Nonce Sum flag (see RFC 3540).
+)
 
-	// The union of SYN and ACK flags is commonly found throughout the specification, so we define a shorthand.
+// The union of SYN|FIN|PSH and ACK flags is commonly found throughout the specification, so we define unexported shorthands.
+const (
 	synack = FlagSYN | FlagACK
 	finack = FlagFIN | FlagACK
 	pshack = FlagPSH | FlagACK

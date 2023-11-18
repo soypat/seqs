@@ -100,6 +100,9 @@ func (p *UDPPacket) PutHeaders(b []byte) {
 	if len(b) < eth.SizeEthernetHeader+eth.SizeIPv4Header+eth.SizeUDPHeader {
 		panic("short UDPPacket buffer")
 	}
+	if p.IP.IHL() != 5 {
+		panic("UDPPacket.PutHeaders expects no IP options")
+	}
 	p.Eth.Put(b)
 	p.IP.Put(b[eth.SizeEthernetHeader:])
 	p.UDP.Put(b[eth.SizeEthernetHeader+eth.SizeIPv4Header:])
