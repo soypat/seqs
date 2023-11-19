@@ -41,7 +41,6 @@ func (u *udpPort) IsPendingHandling() bool {
 
 // HandleEth writes the socket's response into dst to be sent over an ethernet interface.
 // HandleEth can return 0 bytes written and a nil error to indicate no action must be taken.
-// If
 func (u *udpPort) HandleEth(dst []byte) (int, error) {
 	if u.handler == nil {
 		panic("nil udp handler on port " + strconv.Itoa(int(u.Port)))
@@ -49,8 +48,10 @@ func (u *udpPort) HandleEth(dst []byte) (int, error) {
 	packet := &u.packets[0]
 
 	n, err := u.handler(dst, &u.packets[0])
-	if err != io.ErrNoProgress {
-		packet.Rx = time.Time{} // Invalidate packet.
+	if err == io.ErrNoProgress {
+		packet.Rx = forcedTime // Mark socket as needing handling but packet having no data.
+	} else {
+		packet.Rx = time.Time{} // Invalidate packet normally.
 	}
 	return n, err
 }

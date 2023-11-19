@@ -50,7 +50,6 @@ func (u *tcpPort) IsPendingHandling() bool {
 
 // HandleEth writes the socket's response into dst to be sent over an ethernet interface.
 // HandleEth can return 0 bytes written and a nil error to indicate no action must be taken.
-// If
 func (u *tcpPort) HandleEth(dst []byte) (n int, err error) {
 	if u.handler == nil {
 		panic("nil tcp handler on port " + strconv.Itoa(int(u.Port)))
@@ -58,8 +57,10 @@ func (u *tcpPort) HandleEth(dst []byte) (n int, err error) {
 	packet := &u.packets[0]
 
 	n, err = u.handler(dst, &u.packets[0])
-	if err != io.ErrNoProgress {
-		packet.Rx = time.Time{} // Invalidate packet.
+	if err == io.ErrNoProgress {
+		packet.Rx = forcedTime // Mark socket as needing handling but packet having no data.
+	} else {
+		packet.Rx = time.Time{} // Invalidate packet normally.
 	}
 	return n, err
 }
