@@ -36,7 +36,7 @@ func TestStackEstablish(t *testing.T) {
 	}
 }
 
-func TestStackSendReceive(t *testing.T) {
+func TestStackSendReceive_simplex(t *testing.T) {
 	client, server := createTCPClientServerPair(t)
 
 	// 3 way handshake needs2 exchanges to complete.
@@ -47,23 +47,42 @@ func TestStackSendReceive(t *testing.T) {
 
 	// Send data from client to server.
 	const data = "hello world"
-	err := client.Send([]byte(data))
-	if err != nil {
-		t.Fatal(err)
-	}
-
+	socketSendString(client, data)
 	txStacks(t, 1, client.PortStack(), server.PortStack())
 	if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
 		t.Fatal("not established")
 	}
-
-	var buf [len(data)]byte
-	n, err := server.Recv(buf[:])
-	if err != nil {
-		t.Fatal(err)
+	got := socketReadAllString(server)
+	if got != data {
+		t.Error("got", got, "want", data)
 	}
-	if string(buf[:n]) != data {
-		t.Error("got", string(buf[:n]), "want", data)
+}
+
+func TestStackSendReceive_duplex(t *testing.T) {
+	client, server := createTCPClientServerPair(t)
+	cstack, sstack := client.PortStack(), server.PortStack()
+	// 3 way handshake needs2 exchanges to complete.
+	txStacks(t, 2, cstack, sstack)
+	if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
+		t.Fatal("not established")
+	}
+
+	// Send data from client to server.
+	const data = "hello world"
+	socketSendString(client, data)
+	socketSendString(server, data)
+	tx, bytes := txStacks(t, 2, cstack, sstack)
+	if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
+		t.Fatal("not established")
+	}
+	t.Logf("tx=%d bytes=%d", tx, bytes)
+	clientstr := socketReadAllString(client)
+	serverstr := socketReadAllString(server)
+	if clientstr != data {
+		t.Error("got", clientstr, "want", data)
+	}
+	if serverstr != data {
+		t.Error("got", serverstr, "want", data)
 	}
 }
 
@@ -172,4 +191,24 @@ func createPortStacks(t *testing.T, n int) (stacks []*stack.PortStack) {
 		stacks = append(stacks, Stack)
 	}
 	return stacks
+}
+
+func socketReadAllString(s *stack.TCPSocket) string {
+	var str strings.Builder
+	var buf [1024]byte
+	for {
+		n, err := s.Recv(buf[:])
+		str.Write(buf[:n])
+		if n == 0 || err != nil {
+			break
+		}
+	}
+	return str.String()
+}
+
+func socketSendString(s *stack.TCPSocket, str string) {
+	err := s.Send([]byte(str))
+	if err != nil {
+		panic(err)
+	}
 }

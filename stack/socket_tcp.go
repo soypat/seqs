@@ -149,6 +149,11 @@ func (t *TCPSocket) handleRecv(response []byte, pkt *TCPPacket) (n int, err erro
 	// if segIncoming.SEQ != t.scb.RecvNext() {
 	// 	return 0, ErrDroppedPacket // SCB does not admit out-of-order packets.
 	// }
+
+	t.scb.Recv(segIncoming)
+	// if err != nil {
+	// 	return 0, err
+	// }
 	if segIncoming.Flags.HasAny(seqs.FlagPSH) {
 		if len(payload) != int(segIncoming.DATALEN) {
 			return 0, errors.New("segment data length does not match payload length")
@@ -163,11 +168,9 @@ func (t *TCPSocket) handleRecv(response []byte, pkt *TCPPacket) (n int, err erro
 			return 0, err
 		}
 	}
-	err = t.scb.Recv(segIncoming)
-	if err != nil {
-		return 0, err
+	if t.tx.Buffered() > 0 {
+		return t.handleUser(response, pkt) // Yield to handleUser.
 	}
-
 	segOut, ok := t.scb.PendingSegment(0)
 	if !ok {
 		return 0, nil // No pending control segment. Yield to handleUser.
@@ -294,7 +297,7 @@ func (r *ring) Read(b []byte) (int, error) {
 	if r.end >= r.off {
 		// start       off       end      len(buf)
 		//   |  sfree   |  used   |  efree   |
-		n := copy(b, r.buf[r.off:])
+		n := copy(b, r.buf[r.off:r.end])
 		r.off += n
 		r.onReadEnd()
 		return n, nil
@@ -304,7 +307,7 @@ func (r *ring) Read(b []byte) (int, error) {
 	n := copy(b, r.buf[r.off:])
 	r.off += n
 	if n < len(b) {
-		n2 := copy(b[n:], r.buf)
+		n2 := copy(b[n:], r.buf[:r.end])
 		r.off = n2
 		n += n2
 	}
