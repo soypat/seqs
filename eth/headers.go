@@ -448,6 +448,11 @@ func (a *ARPv4Header) String() string {
 		"I have ", net.IP(a.ProtoSender[:]).String(), "! Tell ", net.IP(a.ProtoTarget[:]).String(), ", aka ", net.HardwareAddr(a.HardwareTarget[:]).String())
 }
 
+// AssertEtherType returns the ProtoType field of the ARP header as EtherType.
+func (a *ARPv4Header) AssertEtherType() EtherType {
+	return EtherType(a.ProtoType)
+}
+
 // DecodeTCPHeader decodes a TCP header from buf and returns the TCPHeader
 // and the offset in bytes to the payload. Panics if buf is less than 20 bytes in length.
 func DecodeTCPHeader(buf []byte) (tcphdr TCPHeader, payloadOffset uint8) {

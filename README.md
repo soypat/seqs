@@ -10,3 +10,4 @@ How to use `seqs`
 ```sh
 go mod download github.com/soypat/seqs@latest
 ```
+

@@ -31,11 +31,31 @@ func (tcb *ControlBlock) Open(iss Value, wnd Size, state State) (err error) {
 	tcb.state = state
 	tcb.resetRcv(wnd, 0)
 	tcb.resetSnd(iss, 1)
-	tcb.pending = 0
+	tcb.pending = [2]Flags{}
 	if state == StateSynSent {
-		tcb.pending = FlagSYN
+		tcb.pending[0] = FlagSYN
 	}
 	return nil
+}
+
+func (tcb *ControlBlock) Close() (err error) {
+	// See RFC 9293: 3.10.4 CLOSE call.
+	switch tcb.state {
+	case StateClosed:
+		err = errors.New("connection does not exist")
+	case StateCloseWait:
+		tcb.state = StateLastAck
+		tcb.pending = [2]Flags{FlagFIN, FlagACK}
+	case StateListen, StateSynSent:
+		tcb.close()
+	case StateSynRcvd, StateEstablished:
+		// We suppose user has no more pending data to send, so we flag FIN to be sent.
+		// Users of this API should call Close only when they have no more data to send.
+		tcb.pending[0] = (tcb.pending[0] & FlagACK) | FlagFIN
+	case StateFinWait2, StateTimeWait:
+		err = errors.New("connection closing")
+	}
+	return err
 }
 
 // Send processes a segment that is being sent to the network. It updates the TCB
@@ -46,13 +66,13 @@ func (tcb *ControlBlock) Send(seg Segment) error {
 		return err
 	}
 
-	// The segment is valid, we can update TCB state.
-	seglen := seg.LEN()
-	tcb.snd.NXT.UpdateForward(seglen)
-	tcb.rcv.WND = seg.WND
 	hasFIN := seg.Flags.HasAny(FlagFIN)
 	hasACK := seg.Flags.HasAny(FlagACK)
 	switch tcb.state {
+	case StateSynRcvd:
+		if hasFIN {
+			tcb.state = StateFinWait1 // RFC 9293: 3.10.4 CLOSE call.
+		}
 	case StateClosing:
 		if hasACK {
 			tcb.state = StateTimeWait
@@ -65,9 +85,20 @@ func (tcb *ControlBlock) Send(seg Segment) error {
 		if hasFIN {
 			tcb.state = StateLastAck
 		} else if hasACK {
-			tcb.pending = finack
+			tcb.pending[1] = finack // Queue finack.
 		}
 	}
+
+	// Advance pending flags queue.
+	tcb.pending[0] &^= seg.Flags
+	if tcb.pending[0] == 0 {
+		tcb.pending = [2]Flags{tcb.pending[1], 0}
+	}
+
+	// The segment is valid, we can update TCB state.
+	seglen := seg.LEN()
+	tcb.snd.NXT.UpdateForward(seglen)
+	tcb.rcv.WND = seg.WND
 	return nil
 }
 
@@ -108,7 +139,7 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 		return err
 	}
 
-	tcb.pending = pending
+	tcb.pending[0] = pending
 	if prevNxt != 0 && tcb.snd.NXT != prevNxt {
 		tcb.debuglog += fmt.Sprintf("rcv %s: snd.nxt changed from %x to %x on segment %+v\n", tcb.state, prevNxt, tcb.snd.NXT, seg)
 	}

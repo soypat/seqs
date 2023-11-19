@@ -54,11 +54,11 @@ type ControlBlock struct {
 	rcv recvSpace
 	// When FlagRST is set in pending flags rstPtr will contain the sequence number of the RST segment to make it "believable" (See RFC9293)
 	rstPtr Value
-	// pending and state are modified by rcv* methods and Close method.
-	// The pending flags are only updated if the Recv method finishes with no error.
-	pending Flags
-	state   State
-
+	// pending is the queue of pending flags to be sent in the next 2 segments.
+	// On a call to Send the queue is advanced and flags set in the segment are unset.
+	// The second position of the queue is used for FIN segments.
+	pending  [2]Flags
+	state    State
 	debuglog string
 }
 
@@ -107,7 +107,7 @@ func (seg *Segment) Last() Value {
 // PendingSegment calculates a suitable next segment to send from a payload length.
 // It does not modify the ControlBlock state.
 func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
-	if (payloadLen == 0 && tcb.pending == 0) || (payloadLen > 0 && tcb.state != StateEstablished) {
+	if (payloadLen == 0 && tcb.pending[0] == 0) || (payloadLen > 0 && tcb.state != StateEstablished) {
 		return Segment{}, false // No pending segment.
 	}
 	if payloadLen > math.MaxUint16 || Size(payloadLen) > tcb.snd.WND {
@@ -116,16 +116,16 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 
 	pending := tcb.pending
 	if payloadLen > 0 {
-		pending |= FlagPSH
+		pending[0] |= FlagPSH
 	}
 
 	var ack Value
-	if tcb.pending.HasAny(FlagACK) {
+	if tcb.pending[0].HasAny(FlagACK) {
 		ack = tcb.rcv.NXT
 	}
 
 	var seq Value = tcb.snd.NXT
-	if tcb.pending.HasAny(FlagRST) {
+	if tcb.pending[0].HasAny(FlagRST) {
 		seq = tcb.rstPtr
 	}
 
@@ -133,7 +133,7 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 		SEQ:     seq,
 		ACK:     ack,
 		WND:     tcb.rcv.WND,
-		Flags:   pending,
+		Flags:   pending[0],
 		DATALEN: Size(payloadLen),
 	}
 	return seg, true
@@ -152,7 +152,7 @@ func (tcb *ControlBlock) rcvListen(seg Segment) (pending Flags, err error) {
 	tcb.resetRcv(tcb.rcv.WND, seg.SEQ)
 
 	// We must respond with SYN|ACK frame after receiving SYN in listen state (three way handshake).
-	tcb.pending = synack
+	tcb.pending[0] = synack
 	tcb.state = StateSynRcvd
 	return synack, nil
 }
@@ -287,24 +287,24 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	// https://www.rfc-editor.org/rfc/rfc9293.html#section-3.10.7.4-2.5.2.2.2.3.2.1
 	case established && acksOld && !ctlOrDataSegment:
 		err = errDropSegment
-		tcb.pending = 0 // Completely ignore duplicate ACKs.
-		tcb.debuglog += fmt.Sprintf("rcv %s: duplicate ACK %x\n", tcb.state, seg.ACK)
+		tcb.pending[0] &= FlagFIN // Completely ignore duplicate ACKs but do not erase fin bit.
+		tcb.debuglog += fmt.Sprintf("rcv %s: duplicate ACK %d\n", tcb.state, seg.ACK)
 
 	case established && acksUnsentData:
 		err = errDropSegment
-		tcb.pending = FlagACK // Send ACK for unsent data.
-		tcb.debuglog += fmt.Sprintf("rcv %s: ACK %x of unsent data\n", tcb.state, seg.ACK)
+		tcb.pending[0] = FlagACK // Send ACK for unsent data.
+		tcb.debuglog += fmt.Sprintf("rcv %s: ACK %d of unsent data\n", tcb.state, seg.ACK)
 
 	case preestablished && (acksOld || acksUnsentData):
 		err = errDropSegment
-		tcb.pending = FlagRST
+		tcb.pending[0] = FlagRST
 		tcb.rstPtr = seg.ACK
 		tcb.resetSnd(tcb.snd.ISS, seg.WND)
-		tcb.debuglog += fmt.Sprintf("rcv %s: RST %x of old data\n", tcb.state, seg.ACK)
+		tcb.debuglog += fmt.Sprintf("rcv %s: RST %d of old data\n", tcb.state, seg.ACK)
 
 	case preestablished && flags.HasAny(FlagRST):
 		err = errDropSegment
-		tcb.pending = 0
+		tcb.pending[0] = 0
 		tcb.state = StateListen
 		tcb.resetSnd(tcb.snd.ISS+rstJump, tcb.snd.WND)
 		tcb.resetRcv(tcb.rcv.WND, 3_14159_2653^tcb.rcv.IRS)
@@ -338,7 +338,7 @@ func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
 // close sets ControlBlock state to closed and resets all sequence numbers and pending flag.
 func (tcb *ControlBlock) close() {
 	tcb.state = StateClosed
-	tcb.pending = 0
+	tcb.pending = [2]Flags{}
 	tcb.resetRcv(0, 0)
 	tcb.resetSnd(0, 0)
 	tcb.debuglog += "close tcb\n"

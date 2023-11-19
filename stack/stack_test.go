@@ -2,6 +2,7 @@ package stack_test
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"net/netip"
 	"strings"
@@ -14,7 +15,7 @@ import (
 
 const exchangesToEstablish = 4
 
-func TestStackEstablish(t *testing.T) {
+func TestTCPEstablish(t *testing.T) {
 	client, server := createTCPClientServerPair(t)
 
 	// 3 way handshake needs 3 exchanges to complete.
@@ -38,11 +39,10 @@ func TestStackEstablish(t *testing.T) {
 	}
 }
 
-func TestStackSendReceive_simplex(t *testing.T) {
+func TestTCPSendReceive_simplex(t *testing.T) {
+	// Create Client+Server and establish TCP connection between them.
 	client, server := createTCPClientServerPair(t)
-
-	// 3 way handshake needs2 exchanges to complete.
-	exchangeStacks(t, 4, client.PortStack(), server.PortStack())
+	exchangeStacks(t, exchangesToEstablish, client.PortStack(), server.PortStack())
 	if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
 		t.Fatal("not established")
 	}
@@ -50,7 +50,7 @@ func TestStackSendReceive_simplex(t *testing.T) {
 	// Send data from client to server.
 	const data = "hello world"
 	socketSendString(client, data)
-	exchangeStacks(t, 1, client.PortStack(), server.PortStack())
+	exchangeStacks(t, 2, client.PortStack(), server.PortStack())
 	if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
 		t.Fatalf("not established: client=%s server=%s", client.State(), server.State())
 	}
@@ -60,11 +60,11 @@ func TestStackSendReceive_simplex(t *testing.T) {
 	}
 }
 
-func TestStackSendReceive_duplex(t *testing.T) {
+func TestTCPSendReceive_duplex_single(t *testing.T) {
+	// Create Client+Server and establish TCP connection between them.
 	client, server := createTCPClientServerPair(t)
 	cstack, sstack := client.PortStack(), server.PortStack()
-	// 3 way handshake needs2 exchanges to complete.
-	exchangeStacks(t, 4, cstack, sstack)
+	exchangeStacks(t, exchangesToEstablish, cstack, sstack)
 	if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
 		t.Fatalf("not established: client=%s server=%s", client.State(), server.State())
 	}
@@ -73,7 +73,7 @@ func TestStackSendReceive_duplex(t *testing.T) {
 	const data = "hello world"
 	socketSendString(client, data)
 	socketSendString(server, data)
-	tx, bytes := exchangeStacks(t, 3, cstack, sstack)
+	tx, bytes := exchangeStacks(t, 2, cstack, sstack)
 	if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
 		t.Fatalf("not established: client=%s server=%s", client.State(), server.State())
 	}
@@ -86,6 +86,70 @@ func TestStackSendReceive_duplex(t *testing.T) {
 	if serverstr != data {
 		t.Errorf("server: got %q want %q", serverstr, data)
 	}
+}
+
+func TestTCPSendReceive_duplex(t *testing.T) {
+	// Create Client+Server and establish TCP connection between them.
+	client, server := createTCPClientServerPair(t)
+	cstack, sstack := client.PortStack(), server.PortStack()
+	exchangeStacks(t, exchangesToEstablish, cstack, sstack)
+	if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
+		t.Fatalf("not established: client=%s server=%s", client.State(), server.State())
+	}
+
+	// Send data from client to server multiple times.
+	const messages = 1024
+	for i := 0; i < messages; i++ {
+		cdata := fmt.Sprintf("hello world %d", i)
+		sdata := fmt.Sprintf("hello yourself %d", i)
+
+		socketSendString(client, cdata)
+		socketSendString(server, sdata)
+		tx, bytes := exchangeStacks(t, 2, cstack, sstack)
+		if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
+			t.Fatalf("not established: client=%s server=%s", client.State(), server.State())
+		}
+		t.Logf("tx=%d bytes=%d", tx, bytes)
+		clientstr := socketReadAllString(client)
+		serverstr := socketReadAllString(server)
+		if clientstr != sdata {
+			t.Errorf("client: got %q want %q", clientstr, sdata)
+		}
+		if serverstr != cdata {
+			t.Errorf("server: got %q want %q", serverstr, cdata)
+		}
+	}
+}
+
+func TestTCPClose_noPendingData(t *testing.T) {
+	// Create Client+Server and establish TCP connection between them.
+	client, server := createTCPClientServerPair(t)
+	cstack, sstack := client.PortStack(), server.PortStack()
+	exchangeStacks(t, exchangesToEstablish, cstack, sstack)
+	if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
+		t.Fatalf("not established: client=%s server=%s", client.State(), server.State())
+	}
+
+	err := client.Close()
+	if err != nil {
+		t.Fatalf("client.Close(): %v", err)
+	}
+	i := 0
+	doExpect := func(t *testing.T, maxExchanges int, wantClient, wantServer seqs.State) {
+		t.Helper()
+		_, transmitted := exchangeStacks(t, maxExchanges, cstack, sstack)
+		if client.State() != wantClient || server.State() != wantServer {
+			t.Fatalf("do[%d] sent %d\nwant client=%s server=%s\ngot  client=%s server=%s",
+				i, transmitted, wantClient, wantServer, client.State(), server.State())
+		}
+		i++
+	}
+
+	// See RFC 9293 Figure 5: TCP Connection State Diagram.
+	doExpect(t, 1, seqs.StateFinWait1, seqs.StateEstablished) // do[0] Client sends FIN.
+	doExpect(t, 1, seqs.StateFinWait1, seqs.StateCloseWait)   // do[1] Server sends ACK after receiving FIN.
+	doExpect(t, 1, seqs.StateFinWait2, seqs.StateLastAck)     // do[2] Server sends FIN, client parses ACK->FinWait2.
+	doExpect(t, 1, seqs.StateTimeWait, seqs.StateLastAck)     // do[3] Cliend sends ACK after receiving FIN.
 }
 
 // exchangeStacks exchanges packets between stacks until no more data is being sent or maxExchanges is reached.
@@ -103,12 +167,15 @@ func exchangeStacks(t *testing.T, maxExchanges int, stacks ...*stack.PortStack) 
 	}
 	getPayload := func(i int) []byte { return pipes[i][:pipeN[i]] }
 	var err error
-	for ; ex <= maxExchanges; ex++ {
+	// Short hand for debug conditions. I've found setting ME==n be a good breakpoint condition since
+	// we'll usually have several exchangeStacks calls in a test with varying maxExchanges. Helps skip connection establishments and other events.
+	var ME = maxExchanges
+	for ; ex < ME; ex++ {
 		sentInTx := 0
 		for isend := 0; isend < len(stacks); isend++ {
 			// This first for loop generates packets "in-flight" contained in `pipes` data structure.
 			pipeN[isend], err = stacks[isend].HandleEth(pipes[isend][:])
-			if err != nil && !isDroppedPacket(err) {
+			if (err != nil && !isDroppedPacket(err)) || pipeN[isend] < 0 {
 				t.Errorf("ex[%d] send[%d]: %s", ex, isend, sprintErr(err))
 				return ex, bytesSent
 			} else if isDroppedPacket(err) {

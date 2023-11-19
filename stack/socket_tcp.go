@@ -10,9 +10,13 @@ import (
 	"time"
 
 	"github.com/soypat/seqs"
+	"github.com/soypat/seqs/eth"
 )
 
-const defaultSocketSize = 2048
+const (
+	defaultSocketSize = 2048
+	sizeTCPNoOptions  = eth.SizeEthernetHeader + eth.SizeIPv4Header + eth.SizeTCPHeader
+)
 
 type TCPSocket struct {
 	stack     *PortStack
@@ -26,6 +30,7 @@ type TCPSocket struct {
 	tx        ring
 	rx        ring
 	abortErr  error
+	closing   bool
 }
 
 func (t *TCPSocket) PortStack() *PortStack {
@@ -48,6 +53,9 @@ func (t *TCPSocket) Send(b []byte) error {
 	if t.scb.State() != seqs.StateEstablished {
 		return errors.New("connection not established")
 	}
+	if t.closing {
+		return errors.New("connection closing")
+	}
 	if len(b) == 0 {
 		return nil
 	}
@@ -68,6 +76,9 @@ func (t *TCPSocket) Send(b []byte) error {
 }
 
 func (t *TCPSocket) Recv(b []byte) (int, error) {
+	if t.closing {
+		return 0, io.EOF
+	}
 	n, err := t.rx.Read(b)
 	return n, err
 }
@@ -114,6 +125,19 @@ func ListenTCP(stack *PortStack, port uint16, iss seqs.Value, window seqs.Size) 
 	return &t, nil
 }
 
+func (t *TCPSocket) Close() error {
+	toSend := t.tx.Buffered()
+	if toSend == 0 {
+		err := t.scb.Close()
+		if err != nil {
+			return err
+		}
+	}
+	t.closing = true
+	t.stack.FlagTCPPending(t.localPort)
+	return nil
+}
+
 func (t *TCPSocket) handleMain(response []byte, pkt *TCPPacket) (n int, err error) {
 	defer func() {
 		if err != nil && t.abortErr == nil {
@@ -134,29 +158,28 @@ func (t *TCPSocket) handleMain(response []byte, pkt *TCPPacket) (n int, err erro
 			return 0, ErrDroppedPacket // This packet came from a different client to the one we are interacting with.
 		}
 		t.lastRx = pkt.Rx
-		n, err := t.handleRecv(response, pkt)
-		if n > 0 || err != nil {
-			return n, err // Return early if something happened, else yield to user data handler.
+		err := t.handleRecv(pkt)
+		if err != nil {
+			return 0, err // Return early if something happened, else yield to user data handler.
 		}
 	}
-	return t.handleUser(response, pkt)
+	return t.handleSend(response, pkt)
 }
 
-func (t *TCPSocket) handleRecv(response []byte, pkt *TCPPacket) (n int, err error) {
+func (t *TCPSocket) handleRecv(pkt *TCPPacket) (err error) {
 	// By this point we know that the packet is valid and contains data, we process it.
 	payload := pkt.Payload()
 	segIncoming := pkt.TCP.Segment(len(payload))
 	// if segIncoming.SEQ != t.scb.RecvNext() {
 	// 	return 0, ErrDroppedPacket // SCB does not admit out-of-order packets.
 	// }
-
-	t.scb.Recv(segIncoming)
-	// if err != nil {
-	// 	return 0, err
-	// }
+	err = t.scb.Recv(segIncoming)
+	if err != nil {
+		return nil // Segment not admitted, yield to sender.
+	}
 	if segIncoming.Flags.HasAny(seqs.FlagPSH) {
 		if len(payload) != int(segIncoming.DATALEN) {
-			return 0, errors.New("segment data length does not match payload length")
+			return errors.New("segment data length does not match payload length")
 		}
 		if t.rx.buf == nil {
 			t.rx = ring{
@@ -165,53 +188,43 @@ func (t *TCPSocket) handleRecv(response []byte, pkt *TCPPacket) (n int, err erro
 		}
 		_, err = t.rx.Write(payload)
 		if err != nil {
-			return 0, err
+			return err
 		}
-	}
-	if t.tx.Buffered() > 0 {
-		return t.handleUser(response, pkt) // Yield to handleUser.
-	}
-	segOut, ok := t.scb.PendingSegment(0)
-	if !ok {
-		return 0, nil // No pending control segment. Yield to handleUser.
-	}
-	err = t.scb.Send(segOut)
-	if err != nil {
-		return 0, err
 	}
 	if segIncoming.Flags.HasAny(seqs.FlagSYN) && t.remote == (netip.AddrPort{}) {
 		// We have a client that wants to connect to us.
 		t.remoteMAC = pkt.Eth.Source
 		t.remote = netip.AddrPortFrom(netip.AddrFrom4(pkt.IP.Source), pkt.TCP.SourcePort)
 	}
-	pkt.InvertSrcDest()
-	pkt.CalculateHeaders(segOut, nil)
-	pkt.PutHeaders(response)
-	return 54, nil
+	return nil
 }
 
-func (t *TCPSocket) handleUser(response []byte, pkt *TCPPacket) (n int, err error) {
-	available := t.tx.Buffered()
-	if available == 0 {
-		return 0, nil // No data to send.
-	}
+func (t *TCPSocket) handleSend(response []byte, pkt *TCPPacket) (n int, err error) {
+	available := min(t.tx.Buffered(), len(response)-sizeTCPNoOptions)
 	seg, ok := t.scb.PendingSegment(available)
-	if !ok {
-		return 0, errors.New("possible segment not found") // No pending control segment. Yield to handleUser.
+	if !ok && available == 0 {
+		// No pending control segment or data to send. Yield to handleUser.
+		return 0, errors.New("possible segment not found")
 	}
+
 	err = t.scb.Send(seg)
 	if err != nil {
 		return 0, err
 	}
 	t.setSrcDest(pkt)
-	payloadPlace := response[54:]
-	n, err = t.tx.Read(payloadPlace[:seg.DATALEN])
-	if err != nil || n != int(seg.DATALEN) {
-		panic("bug in handleUser") // This is a bug in ring buffer or a race condition.
+
+	// If we have user data to send we send it, else we send the control segment.
+	var payload []byte
+	if available > 0 {
+		payload = response[sizeTCPNoOptions : sizeTCPNoOptions+seg.DATALEN]
+		n, err = t.tx.Read(payload)
+		if err != nil && err != io.EOF || n != int(seg.DATALEN) {
+			panic("bug in handleUser") // This is a bug in ring buffer or a race condition.
+		}
 	}
-	pkt.CalculateHeaders(seg, payloadPlace[:seg.DATALEN])
+	pkt.CalculateHeaders(seg, payload)
 	pkt.PutHeaders(response)
-	return 54 + n, err
+	return sizeTCPNoOptions + n, nil
 }
 
 func (t *TCPSocket) setSrcDest(pkt *TCPPacket) {
@@ -229,7 +242,7 @@ func (t *TCPSocket) handleInitSyn(response []byte, pkt *TCPPacket) (n int, err e
 	t.setSrcDest(pkt)
 	pkt.CalculateHeaders(t.synsentSegment(), nil)
 	pkt.PutHeaders(response)
-	return 54, nil
+	return sizeTCPNoOptions, nil
 }
 
 func (t *TCPSocket) awaitingSyn() bool {
@@ -245,6 +258,7 @@ func (t *TCPSocket) close() {
 	t.scb = seqs.ControlBlock{}
 	t.lastTx = time.Time{}
 	t.lastRx = time.Time{}
+	t.closing = false
 }
 
 func (t *TCPSocket) synsentSegment() seqs.Segment {
