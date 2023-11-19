@@ -105,7 +105,7 @@ func (seg *Segment) Last() Value {
 }
 
 // PendingSegment calculates a suitable next segment to send from a payload length.
-// It does not modify the ControlBlock state.
+// It does not modify the ControlBlock state or pending segment queue.
 func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 	if (payloadLen == 0 && tcb.pending[0] == 0) || (payloadLen > 0 && tcb.state != StateEstablished) {
 		return Segment{}, false // No pending segment.
@@ -138,6 +138,9 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 	}
 	return seg, true
 }
+
+// HasPending returns true if there is a pending control segment to send. Calls to Send will advance the pending queue.
+func (tcb *ControlBlock) HasPending() bool { return tcb.pending[0] != 0 }
 
 func (tcb *ControlBlock) rcvListen(seg Segment) (pending Flags, err error) {
 	switch {
@@ -205,6 +208,7 @@ func (tcb *ControlBlock) rcvEstablished(seg Segment) (pending Flags, err error) 
 	if flags.HasAny(FlagFIN) {
 		// See Figure 5: TCP Connection State Diagram of RFC 9293.
 		tcb.state = StateCloseWait
+		tcb.pending[1] = FlagFIN // Queue FIN for after the CloseWait ACK.
 	}
 	return pending, nil
 }

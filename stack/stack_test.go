@@ -148,8 +148,8 @@ func TestTCPClose_noPendingData(t *testing.T) {
 	// See RFC 9293 Figure 5: TCP Connection State Diagram.
 	doExpect(t, 1, seqs.StateFinWait1, seqs.StateEstablished) // do[0] Client sends FIN.
 	doExpect(t, 1, seqs.StateFinWait1, seqs.StateCloseWait)   // do[1] Server sends ACK after receiving FIN.
-	doExpect(t, 1, seqs.StateFinWait2, seqs.StateLastAck)     // do[2] Server sends FIN, client parses ACK->FinWait2.
-	doExpect(t, 1, seqs.StateTimeWait, seqs.StateLastAck)     // do[3] Cliend sends ACK after receiving FIN.
+	doExpect(t, 1, seqs.StateFinWait2, seqs.StateLastAck)     // do[2] Server sends FIN|ACK, client parses ACK->FinWait2.
+	doExpect(t, 1, seqs.StateTimeWait, seqs.StateClosed)      // do[3] Cliend sends ACK after receiving FIN, connection terminated.
 }
 
 // exchangeStacks exchanges packets between stacks until no more data is being sent or maxExchanges is reached.
