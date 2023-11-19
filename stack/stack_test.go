@@ -14,9 +14,11 @@ import (
 
 func TestStackEstablish(t *testing.T) {
 	client, server := createTCPClientServerPair(t)
+
 	// 3 way handshake needs 3 exchanges to complete.
 	const maxTransactions = 3
 	txDone, numBytesSent := txStacks(t, maxTransactions, client.PortStack(), server.PortStack())
+
 	const expectedData = (eth.SizeEthernetHeader + eth.SizeIPv4Header + eth.SizeTCPHeader) * 4
 	if numBytesSent < expectedData {
 		t.Error("too little data exchanged", numBytesSent, " want>=", expectedData)
@@ -49,10 +51,12 @@ func TestStackSendReceive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	txStacks(t, 1, client.PortStack(), server.PortStack())
 	if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
 		t.Fatal("not established")
 	}
+
 	var buf [len(data)]byte
 	n, err := server.Recv(buf[:])
 	if err != nil {
@@ -68,6 +72,7 @@ func isDroppedPacket(err error) bool {
 }
 
 func txStacks(t *testing.T, maxTransactions int, stacks ...*stack.PortStack) (tx, bytesSent int) {
+	t.Helper()
 	var pipe [2048]byte
 	zeroPipe := func() { pipe = [2048]byte{} }
 	sprintErr := func(err error) (s string) {
@@ -116,6 +121,7 @@ func txStacks(t *testing.T, maxTransactions int, stacks ...*stack.PortStack) (tx
 }
 
 func createTCPClientServerPair(t *testing.T) (client, server *stack.TCPSocket) {
+	t.Helper()
 	const (
 		clientPort = 1025
 		clientISS  = 100
@@ -150,6 +156,7 @@ func createTCPClientServerPair(t *testing.T) (client, server *stack.TCPSocket) {
 }
 
 func createPortStacks(t *testing.T, n int) (stacks []*stack.PortStack) {
+	t.Helper()
 	if n > math.MaxUint16 {
 		t.Fatal("too many stacks")
 	}
