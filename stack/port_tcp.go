@@ -182,6 +182,9 @@ func (pkt *TCPPacket) InvertSrcDest() {
 
 func (pkt *TCPPacket) CalculateHeaders(seg seqs.Segment, payload []byte) {
 	const ipLenInWords = 5
+	if int(seg.DATALEN) != len(payload) {
+		panic("seg.DATALEN != len(payload)")
+	}
 	// Ethernet frame.
 	pkt.Eth.SizeOrEtherType = uint16(eth.EtherTypeIPv4)
 

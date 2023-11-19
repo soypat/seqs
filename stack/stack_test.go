@@ -2,6 +2,7 @@ package stack_test
 
 import (
 	"errors"
+	"math"
 	"net/netip"
 	"strings"
 	"testing"
@@ -12,48 +13,10 @@ import (
 )
 
 func TestStackEstablish(t *testing.T) {
-	const (
-		clientISS = 100
-		clientWND = 1000
-
-		serverISS = 300
-		serverWND = 1300
-	)
-
-	var (
-		macClient = [6]byte{0x01, 0x00, 0x00, 0x00, 0x00, 0x00}
-		ipClient  = netip.MustParseAddrPort("192.168.1.1:1025")
-		macServer = [6]byte{0x02, 0x00, 0x00, 0x00, 0x00, 0x00}
-		ipServer  = netip.MustParseAddrPort("192.168.1.2:80")
-	)
-
-	Client := stack.NewPortStack(stack.PortStackConfig{
-		MAC:             macClient[:],
-		IP:              ipClient.Addr(),
-		MaxOpenPortsTCP: 1,
-	})
-	clientTCP, err := stack.DialTCP(Client, ipClient.Port(), macServer, ipServer, clientISS, clientWND)
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = Client.FlagTCPPending(ipClient.Port())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	Server := stack.NewPortStack(stack.PortStackConfig{
-		MAC:             macServer[:],
-		IP:              ipServer.Addr(),
-		MaxOpenPortsTCP: 1,
-	})
-	serverTCP, err := stack.ListenTCP(Server, ipServer.Port(), serverISS, serverWND)
-	if err != nil {
-		t.Fatal(err)
-	}
-
+	client, server := createTCPClientServerPair(t)
 	// 3 way handshake needs 3 exchanges to complete.
 	const maxTransactions = 3
-	txDone, numBytesSent := txStacks(t, maxTransactions, Client, Server)
+	txDone, numBytesSent := txStacks(t, maxTransactions, client.PortStack(), server.PortStack())
 	const expectedData = (eth.SizeEthernetHeader + eth.SizeIPv4Header + eth.SizeTCPHeader) * 4
 	if numBytesSent < expectedData {
 		t.Error("too little data exchanged", numBytesSent, " want>=", expectedData)
@@ -63,72 +26,35 @@ func TestStackEstablish(t *testing.T) {
 	} else if txDone <= 1 {
 		t.Error("too few exchanges for a 3 way handshake")
 	}
-	if clientTCP.State() != seqs.StateEstablished {
-		t.Error("client not established: got", clientTCP.State(), "want", seqs.StateEstablished)
+	if client.State() != seqs.StateEstablished {
+		t.Error("client not established: got", server.State(), "want", seqs.StateEstablished)
 	}
-	if serverTCP.State() != seqs.StateEstablished {
-		t.Error("server not established: got", serverTCP.State(), "want", seqs.StateEstablished)
+	if server.State() != seqs.StateEstablished {
+		t.Error("server not established: got", server.State(), "want", seqs.StateEstablished)
 	}
 }
 
 func TestStackSendReceive(t *testing.T) {
-	const (
-		clientISS = 100
-		clientWND = 1000
-
-		serverISS = 300
-		serverWND = 1300
-	)
-
-	var (
-		macClient = [6]byte{0x01, 0x00, 0x00, 0x00, 0x00, 0x00}
-		ipClient  = netip.MustParseAddrPort("192.168.1.1:1025")
-		macServer = [6]byte{0x02, 0x00, 0x00, 0x00, 0x00, 0x00}
-		ipServer  = netip.MustParseAddrPort("192.168.1.2:80")
-	)
-
-	Client := stack.NewPortStack(stack.PortStackConfig{
-		MAC:             macClient[:],
-		IP:              ipClient.Addr(),
-		MaxOpenPortsTCP: 1,
-	})
-	clientTCP, err := stack.DialTCP(Client, ipClient.Port(), macServer, ipServer, clientISS, clientWND)
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = Client.FlagTCPPending(ipClient.Port())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	Server := stack.NewPortStack(stack.PortStackConfig{
-		MAC:             macServer[:],
-		IP:              ipServer.Addr(),
-		MaxOpenPortsTCP: 1,
-	})
-	serverTCP, err := stack.ListenTCP(Server, ipServer.Port(), serverISS, serverWND)
-	if err != nil {
-		t.Fatal(err)
-	}
+	client, server := createTCPClientServerPair(t)
 
 	// 3 way handshake needs2 exchanges to complete.
-	txStacks(t, 2, Client, Server)
-	if clientTCP.State() != seqs.StateEstablished || serverTCP.State() != seqs.StateEstablished {
+	txStacks(t, 2, client.PortStack(), server.PortStack())
+	if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
 		t.Fatal("not established")
 	}
 
 	// Send data from client to server.
 	const data = "hello world"
-	err = clientTCP.Send([]byte(data))
+	err := client.Send([]byte(data))
 	if err != nil {
 		t.Fatal(err)
 	}
-	txStacks(t, 1, Client, Server)
-	if clientTCP.State() != seqs.StateEstablished || serverTCP.State() != seqs.StateEstablished {
+	txStacks(t, 1, client.PortStack(), server.PortStack())
+	if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
 		t.Fatal("not established")
 	}
 	var buf [len(data)]byte
-	n, err := serverTCP.Recv(buf[:])
+	n, err := server.Recv(buf[:])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,6 +89,7 @@ func txStacks(t *testing.T, maxTransactions int, stacks ...*stack.PortStack) (tx
 					t.Errorf("tx[%d] send[%d]: malformed packet: %v", tx, isend, sprintErr(err))
 					return tx, bytesSent
 				}
+
 				t.Logf("tx[%d] send[%d]: %+v", tx, isend, pkt.TCP.Segment(len(pkt.Payload())))
 			}
 			bytesSent += n
@@ -186,4 +113,56 @@ func txStacks(t *testing.T, maxTransactions int, stacks ...*stack.PortStack) (tx
 		}
 	}
 	return tx, bytesSent
+}
+
+func createTCPClientServerPair(t *testing.T) (client, server *stack.TCPSocket) {
+	const (
+		clientPort = 1025
+		clientISS  = 100
+		clientWND  = 1000
+
+		serverPort = 80
+		serverISS  = 300
+		serverWND  = 1300
+	)
+	stacks := createPortStacks(t, 2)
+	clientStack := stacks[0]
+	serverStack := stacks[1]
+
+	// Configure server
+	serverIP := netip.AddrPortFrom(serverStack.IP, serverPort)
+	serverTCP, err := stack.ListenTCP(serverStack, serverIP.Port(), serverISS, serverWND)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Configure client.
+	clientTCP, err := stack.DialTCP(clientStack, clientPort, stacks[1].MACAs6(), serverIP, clientISS, clientWND)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = clientStack.FlagTCPPending(clientPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return clientTCP, serverTCP
+}
+
+func createPortStacks(t *testing.T, n int) (stacks []*stack.PortStack) {
+	if n > math.MaxUint16 {
+		t.Fatal("too many stacks")
+	}
+	for i := 0; i < n; i++ {
+		u8 := [2]uint8{uint8(i) + 1, uint8(i>>8) + 1}
+		MAC := [6]byte{0: u8[0], 1: u8[1]}
+		ip := netip.AddrFrom4([4]byte{192, 168, u8[1], u8[0]})
+		Stack := stack.NewPortStack(stack.PortStackConfig{
+			MAC:             MAC,
+			IP:              ip,
+			MaxOpenPortsTCP: 1,
+		})
+		stacks = append(stacks, Stack)
+	}
+	return stacks
 }
