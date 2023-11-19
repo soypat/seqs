@@ -56,7 +56,7 @@ func TestStackSendReceive_simplex(t *testing.T) {
 	}
 	got := socketReadAllString(server)
 	if got != data {
-		t.Errorf("got %q want %q", got, data)
+		t.Errorf("server: got %q want %q", got, data)
 	}
 }
 
@@ -81,17 +81,15 @@ func TestStackSendReceive_duplex(t *testing.T) {
 	clientstr := socketReadAllString(client)
 	serverstr := socketReadAllString(server)
 	if clientstr != data {
-		t.Errorf("got %q want %q", clientstr, data)
+		t.Errorf("client: got %q want %q", clientstr, data)
 	}
 	if serverstr != data {
-		t.Errorf("got %q want %q", serverstr, data)
+		t.Errorf("server: got %q want %q", serverstr, data)
 	}
 }
 
-func isDroppedPacket(err error) bool {
-	return err != nil && (errors.Is(err, stack.ErrDroppedPacket) || strings.HasPrefix(err.Error(), "drop"))
-}
-
+// exchangeStacks exchanges packets between stacks until no more data is being sent or maxExchanges is reached.
+// By convention client (initiator) is the first stack and server (listener) is the second when dealing with pairs.
 func exchangeStacks(t *testing.T, maxExchanges int, stacks ...*stack.PortStack) (ex, bytesSent int) {
 	t.Helper()
 	sprintErr := func(err error) (s string) {
@@ -108,6 +106,7 @@ func exchangeStacks(t *testing.T, maxExchanges int, stacks ...*stack.PortStack) 
 	for ; ex <= maxExchanges; ex++ {
 		sentInTx := 0
 		for isend := 0; isend < len(stacks); isend++ {
+			// This first for loop generates packets "in-flight" contained in `pipes` data structure.
 			pipeN[isend], err = stacks[isend].HandleEth(pipes[isend][:])
 			if err != nil && !isDroppedPacket(err) {
 				t.Errorf("ex[%d] send[%d]: %s", ex, isend, sprintErr(err))
@@ -131,11 +130,15 @@ func exchangeStacks(t *testing.T, maxExchanges int, stacks ...*stack.PortStack) 
 			break // No more data being sent.
 		}
 		for isend := 0; isend < len(stacks); isend++ {
+			// We deliver each in-flight packet to all stacks, except the one that sent it.
 			payload := getPayload(isend)
 			if len(payload) == 0 {
 				continue
 			}
 			for irecv := 0; irecv < len(stacks); irecv++ {
+				if irecv == isend {
+					continue // Don't deliver to self.
+				}
 				err = stacks[irecv].RecvEth(payload)
 				if err != nil && !isDroppedPacket(err) {
 					t.Errorf("ex[%d] recv[%d]: %s", ex, irecv, sprintErr(err))
@@ -148,6 +151,10 @@ func exchangeStacks(t *testing.T, maxExchanges int, stacks ...*stack.PortStack) 
 		}
 	}
 	return ex, bytesSent
+}
+
+func isDroppedPacket(err error) bool {
+	return err != nil && (errors.Is(err, stack.ErrDroppedPacket) || strings.HasPrefix(err.Error(), "drop"))
 }
 
 func createTCPClientServerPair(t *testing.T) (client, server *stack.TCPSocket) {

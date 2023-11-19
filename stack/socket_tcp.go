@@ -181,6 +181,7 @@ func (t *TCPSocket) handleRecv(response []byte, pkt *TCPPacket) (n int, err erro
 	}
 	if segIncoming.Flags.HasAny(seqs.FlagSYN) && t.remote == (netip.AddrPort{}) {
 		// We have a client that wants to connect to us.
+		t.remoteMAC = pkt.Eth.Source
 		t.remote = netip.AddrPortFrom(netip.AddrFrom4(pkt.IP.Source), pkt.TCP.SourcePort)
 	}
 	pkt.InvertSrcDest()
@@ -214,7 +215,7 @@ func (t *TCPSocket) handleUser(response []byte, pkt *TCPPacket) (n int, err erro
 }
 
 func (t *TCPSocket) setSrcDest(pkt *TCPPacket) {
-	pkt.Eth.Source = t.stack.mac
+	pkt.Eth.Source = t.stack.MACAs6()
 	pkt.IP.Source = t.stack.IP.As4()
 	pkt.TCP.SourcePort = t.localPort
 
