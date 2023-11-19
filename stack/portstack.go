@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"slices"
 	"time"
 
 	"github.com/soypat/seqs/eth"
@@ -18,7 +19,7 @@ const (
 )
 
 type PortStackConfig struct {
-	MAC             net.HardwareAddr
+	MAC             [6]byte
 	IP              netip.Addr
 	MaxOpenPortsUDP int
 	MaxOpenPortsTCP int
@@ -27,7 +28,7 @@ type PortStackConfig struct {
 // NewPortStack creates a ready to use TCP/UDP Stack instance.
 func NewPortStack(cfg PortStackConfig) *PortStack {
 	var s PortStack
-	s.MAC = cfg.MAC
+	s.mac = cfg.MAC
 	s.IP = cfg.IP
 	s.UDPv4 = make([]udpPort, cfg.MaxOpenPortsUDP)
 	s.TCPv4 = make([]tcpPort, cfg.MaxOpenPortsTCP)
@@ -42,7 +43,7 @@ func NewPortStack(cfg PortStackConfig) *PortStack {
 type PortStack struct {
 	lastRx        time.Time
 	lastRxSuccess time.Time
-	MAC           net.HardwareAddr
+	mac           [6]byte
 	// Set IP to non-nil to ignore packets not meant for us.
 	IP               netip.Addr
 	UDPv4            []udpPort
@@ -72,6 +73,9 @@ var (
 	errIPVersion        = errors.New("IP version not supported")
 )
 
+func (ps *PortStack) MAC() net.HardwareAddr { return slices.Clone(ps.mac[:]) }
+func (ps *PortStack) MACAs6() [6]byte       { return ps.mac }
+
 // RecvEth validates an ethernet+ipv4 frame in payload. If it is OK then it
 // defers response handling of the packets during a call to [Stack.HandleEth].
 //
@@ -100,7 +104,7 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 	// Ethernet parsing block
 	ehdr = eth.DecodeEthernetHeader(payload)
 	etype := ehdr.AssertType()
-	if ps.MAC != nil && !eth.IsBroadcastHW(ehdr.Destination[:]) && !bytes.Equal(ehdr.Destination[:], ps.MAC) {
+	if !eth.IsBroadcastHW(ehdr.Destination[:]) && !bytes.Equal(ehdr.Destination[:], ps.mac[:]) {
 		return nil // Ignore packet, is not for us.
 	} else if etype != eth.EtherTypeIPv4 && etype != eth.EtherTypeARP {
 		return nil // Ignore Non-IPv4 packets.

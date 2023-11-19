@@ -273,6 +273,8 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 		err = errors.New(errPfx + "last not in receive window")
 
 	case checkSEQ && seg.SEQ != tcb.rcv.NXT:
+		// This part diverts from TCB as described in RFC 9293. We want to support
+		// only sequential segments to keep implementation simple and maintainable.
 		err = errors.New(errPfx + "seq != rcv.nxt (use sequential segments)")
 	}
 	if err != nil {
@@ -305,7 +307,7 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 		tcb.pending = 0
 		tcb.state = StateListen
 		tcb.resetSnd(tcb.snd.ISS+rstJump, tcb.snd.WND)
-		tcb.resetRcv(tcb.rcv.WND, 3_14159_2653)
+		tcb.resetRcv(tcb.rcv.WND, 3_14159_2653^tcb.rcv.IRS)
 		tcb.debuglog += fmt.Sprintf("rcv %s: remote RST\n", tcb.state)
 	}
 	return err

@@ -4,6 +4,8 @@ import (
 	"cmp"
 	"errors"
 	"io"
+	"log/slog"
+	"net"
 	"net/netip"
 	"time"
 
@@ -12,7 +14,7 @@ import (
 
 const defaultSocketSize = 2048
 
-type tcp struct {
+type TCPSocket struct {
 	stack     *PortStack
 	scb       seqs.ControlBlock
 	localPort uint16
@@ -23,33 +25,56 @@ type tcp struct {
 	remoteMAC [6]byte
 	tx        ring
 	rx        ring
+	abortErr  error
 }
 
-func (t *tcp) State() seqs.State {
+func (t *TCPSocket) PortStack() *PortStack {
+	return t.stack
+}
+
+func (t *TCPSocket) AddrPort() netip.AddrPort {
+	return netip.AddrPortFrom(t.stack.IP, t.localPort)
+}
+
+func (t *TCPSocket) MAC() net.HardwareAddr {
+	return t.stack.MAC()
+}
+
+func (t *TCPSocket) State() seqs.State {
 	return t.scb.State()
 }
 
-func (t *tcp) Send(b []byte) error {
+func (t *TCPSocket) Send(b []byte) error {
+	if t.scb.State() != seqs.StateEstablished {
+		return errors.New("connection not established")
+	}
+	if len(b) == 0 {
+		return nil
+	}
 	if t.tx.buf == nil {
 		t.tx = ring{
 			buf: make([]byte, max(defaultSocketSize, len(b))),
 		}
 	}
-	_, err := t.tx.Write(b)
+	err := t.stack.FlagTCPPending(t.localPort)
+	if err != nil {
+		return err
+	}
+	_, err = t.tx.Write(b)
 	if err != nil {
 		return err
 	}
 	return nil
 }
 
-func (t *tcp) Recv(b []byte) (int, error) {
+func (t *TCPSocket) Recv(b []byte) (int, error) {
 	n, err := t.rx.Read(b)
 	return n, err
 }
 
 // DialTCP opens an active TCP connection to the given remote address.
-func DialTCP(stack *PortStack, localPort uint16, remoteMAC [6]byte, remote netip.AddrPort, iss seqs.Value, window seqs.Size) (*tcp, error) {
-	t := tcp{
+func DialTCP(stack *PortStack, localPort uint16, remoteMAC [6]byte, remote netip.AddrPort, iss seqs.Value, window seqs.Size) (*TCPSocket, error) {
+	t := TCPSocket{
 		stack:     stack,
 		localPort: localPort,
 		remote:    remote,
@@ -73,8 +98,8 @@ func DialTCP(stack *PortStack, localPort uint16, remoteMAC [6]byte, remote netip
 
 // ListenTCP opens a passive TCP connection that listens on the given port.
 // ListenTCP only handles one connection at a time, so API may change in future to accomodate multiple connections.
-func ListenTCP(stack *PortStack, port uint16, iss seqs.Value, window seqs.Size) (*tcp, error) {
-	t := tcp{
+func ListenTCP(stack *PortStack, port uint16, iss seqs.Value, window seqs.Size) (*TCPSocket, error) {
+	t := TCPSocket{
 		stack:     stack,
 		localPort: port,
 	}
@@ -89,7 +114,14 @@ func ListenTCP(stack *PortStack, port uint16, iss seqs.Value, window seqs.Size) 
 	return &t, nil
 }
 
-func (t *tcp) handleMain(response []byte, pkt *TCPPacket) (n int, err error) {
+func (t *TCPSocket) handleMain(response []byte, pkt *TCPPacket) (n int, err error) {
+	defer func() {
+		if err != nil && t.abortErr == nil {
+			err = nil // Only close socket if socket is aborted.
+		} else if err != nil {
+			t.stack.error("tcp socket", slog.Int("port", int(t.localPort)), slog.String("err", err.Error()))
+		}
+	}()
 	hasPacket := pkt.HasPacket()
 	if !hasPacket && t.mustSendSyn() {
 		// Connection is still closed, we need to establish
@@ -110,7 +142,7 @@ func (t *tcp) handleMain(response []byte, pkt *TCPPacket) (n int, err error) {
 	return t.handleUser(response, pkt)
 }
 
-func (t *tcp) handleRecv(response []byte, pkt *TCPPacket) (n int, err error) {
+func (t *TCPSocket) handleRecv(response []byte, pkt *TCPPacket) (n int, err error) {
 	// By this point we know that the packet is valid and contains data, we process it.
 	payload := pkt.Payload()
 	segIncoming := pkt.TCP.Segment(len(payload))
@@ -154,7 +186,7 @@ func (t *tcp) handleRecv(response []byte, pkt *TCPPacket) (n int, err error) {
 	return 54, nil
 }
 
-func (t *tcp) handleUser(response []byte, pkt *TCPPacket) (n int, err error) {
+func (t *TCPSocket) handleUser(response []byte, pkt *TCPPacket) (n int, err error) {
 	available := t.tx.Buffered()
 	if available == 0 {
 		return 0, nil // No data to send.
@@ -168,18 +200,18 @@ func (t *tcp) handleUser(response []byte, pkt *TCPPacket) (n int, err error) {
 		return 0, err
 	}
 	t.setSrcDest(pkt)
-	pkt.PutHeaders(response)
 	payloadPlace := response[54:]
 	n, err = t.tx.Read(payloadPlace[:seg.DATALEN])
 	if err != nil || n != int(seg.DATALEN) {
 		panic("bug in handleUser") // This is a bug in ring buffer or a race condition.
 	}
-
+	pkt.CalculateHeaders(seg, payloadPlace[:seg.DATALEN])
+	pkt.PutHeaders(response)
 	return 54 + n, err
 }
 
-func (t *tcp) setSrcDest(pkt *TCPPacket) {
-	copy(pkt.Eth.Source[:], t.stack.MAC)
+func (t *TCPSocket) setSrcDest(pkt *TCPPacket) {
+	pkt.Eth.Source = t.stack.mac
 	pkt.IP.Source = t.stack.IP.As4()
 	pkt.TCP.SourcePort = t.localPort
 
@@ -188,7 +220,7 @@ func (t *tcp) setSrcDest(pkt *TCPPacket) {
 	pkt.Eth.Destination = t.remoteMAC
 }
 
-func (t *tcp) handleInitSyn(response []byte, pkt *TCPPacket) (n int, err error) {
+func (t *TCPSocket) handleInitSyn(response []byte, pkt *TCPPacket) (n int, err error) {
 	// Uninitialized TCB, we start the handshake.
 	t.setSrcDest(pkt)
 	pkt.CalculateHeaders(t.synsentSegment(), nil)
@@ -196,28 +228,34 @@ func (t *tcp) handleInitSyn(response []byte, pkt *TCPPacket) (n int, err error) 
 	return 54, nil
 }
 
-func (t *tcp) awaitingSyn() bool {
+func (t *TCPSocket) awaitingSyn() bool {
 	return t.scb.State() == seqs.StateSynSent && t.remote != (netip.AddrPort{})
 }
 
-func (t *tcp) mustSendSyn() bool {
+func (t *TCPSocket) mustSendSyn() bool {
 	return t.awaitingSyn() && time.Since(t.lastTx) > 3*time.Second
 }
 
-func (t *tcp) close() {
+func (t *TCPSocket) close() {
 	t.remote = netip.AddrPort{}
 	t.scb = seqs.ControlBlock{}
 	t.lastTx = time.Time{}
 	t.lastRx = time.Time{}
 }
 
-func (t *tcp) synsentSegment() seqs.Segment {
+func (t *TCPSocket) synsentSegment() seqs.Segment {
 	return seqs.Segment{
 		SEQ:   t.scb.ISS(),
 		ACK:   0,
 		Flags: seqs.FlagSYN,
 		WND:   t.scb.RecvWindow(),
 	}
+}
+
+func (t *TCPSocket) abort(err error) error {
+	t.abortErr = err
+	t.close()
+	return err
 }
 
 type ring struct {
