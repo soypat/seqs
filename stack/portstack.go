@@ -248,7 +248,7 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 // not processed and that a future call to HandleEth is required to complete.
 //
 // If a handler returns any other error the port is closed.
-func (ps *PortStack) HandleEth(dst []byte) (n int, err error) {
+func (ps *PortStack) HandleEth(dst []byte) (int, error) {
 	switch {
 	case len(dst) < _MTU:
 		return 0, io.ErrShortBuffer
@@ -268,61 +268,57 @@ func (ps *PortStack) HandleEth(dst []byte) (n int, err error) {
 	}
 
 	ps.info("HandleEth", slog.Int("dstlen", len(dst)))
+
+	type Socket interface {
+		Close()
+		IsPendingHandling() bool
+		HandleEth(dst []byte) (int, error)
+	}
+
+	handleSocket := func(dst []byte, pending *uint32, sock Socket) (int, error) {
+		if !sock.IsPendingHandling() {
+			return 0, nil // Nothing to handle, just skip.
+		}
+		// Socket has an unhandled packet.
+		n, err := sock.HandleEth(dst)
+		if err == io.ErrNoProgress {
+			// Special case: Socket may have written data but needs future handling, flagged with the io.ErrNoProgress error.
+			return n, nil
+		}
+		// If we get here the socket has been handled, so we decrement the pending counter.
+		*pending--
+		if err != nil {
+			sock.Close()
+			return 0, err
+		}
+		return n, nil
+	}
+
 	if ps.pendingUDPv4 > 0 {
 		for i := range ps.UDPv4 {
-			socket := &ps.UDPv4[i]
-			if !socket.IsPendingHandling() {
-				return 0, nil
-			}
-			// Socket has an unhandled packet.
-			n, err = socket.HandleEth(dst)
-			if err == io.ErrNoProgress {
-				n = 0
-				err = nil
-				continue
-			}
-			ps.pendingUDPv4--
+			n, err := handleSocket(dst, &ps.pendingUDPv4, &ps.UDPv4[i])
 			if err != nil {
-				socket.Close()
 				return 0, err
+			} else if n > 0 {
+				ps.processedPackets++
+				return n, nil
 			}
-			if n == 0 {
-				continue // Nothing done or io.ErrNoProgress flag.
-			}
-			break // If we got here our packet has been processed.
 		}
 	}
 
-	if n == 0 && ps.pendingTCPv4 > 0 {
-		socketList := ps.TCPv4
-		for i := range socketList {
-			socket := &socketList[i]
-			if !socket.IsPendingHandling() {
-				return 0, nil
-			}
-			// Socket has an unhandled packet.
-			n, err = socket.HandleEth(dst)
-			if err == io.ErrNoProgress {
-				n = 0
-				err = nil
-				continue
-			}
-			ps.pendingTCPv4--
+	if ps.pendingTCPv4 > 0 {
+		for i := range ps.TCPv4 {
+			n, err := handleSocket(dst, &ps.pendingTCPv4, &ps.TCPv4[i])
 			if err != nil {
-				socket.Close()
 				return 0, err
+			} else if n > 0 {
+				ps.processedPackets++
+				return n, nil
 			}
-			if n == 0 {
-				continue
-			}
-			break // If we got here our packet has been processed.
 		}
 	}
 
-	if n != 0 && err == nil {
-		ps.processedPackets++
-	}
-	return n, err
+	return 0, nil // Nothing handled.
 }
 
 func (ps *PortStack) hasPendingARP() bool {
