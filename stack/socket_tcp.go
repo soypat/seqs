@@ -319,6 +319,11 @@ func (r *ring) Buffered() int {
 	return len(r.buf) - r.Free()
 }
 
+func (r *ring) Reset() {
+	r.off = 0
+	r.end = 0
+}
+
 func (r *ring) Free() int {
 	if r.end >= r.off {
 		// start       off       end      len(buf)
@@ -341,9 +346,7 @@ func (r *ring) midFree() int {
 
 func (r *ring) onReadEnd() {
 	if r.off == r.end {
-		// We read everything, reset.
-		r.off = 0
-		r.end = 0
+		r.Reset() // We read everything, reset.
 	}
 }
 
