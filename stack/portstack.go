@@ -2,6 +2,7 @@ package stack
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -23,6 +24,7 @@ type PortStackConfig struct {
 	IP              netip.Addr
 	MaxOpenPortsUDP int
 	MaxOpenPortsTCP int
+	Logger          *slog.Logger
 }
 
 // NewPortStack creates a ready to use TCP/UDP Stack instance.
@@ -32,6 +34,7 @@ func NewPortStack(cfg PortStackConfig) *PortStack {
 	s.IP = cfg.IP
 	s.UDPv4 = make([]udpPort, cfg.MaxOpenPortsUDP)
 	s.TCPv4 = make([]tcpPort, cfg.MaxOpenPortsTCP)
+	s.logger = cfg.Logger
 	return &s
 }
 
@@ -53,7 +56,8 @@ type PortStack struct {
 	pendingTCPv4     uint32
 	droppedPackets   uint32
 	processedPackets uint32
-	level            slog.Level
+	pendingARP       eth.ARPv4Header
+	logger           *slog.Logger
 }
 
 // Common errors.
@@ -111,7 +115,18 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 	}
 
 	if etype == eth.EtherTypeARP {
-
+		ahdr := eth.DecodeARPv4Header(payload[eth.SizeEthernetHeader:])
+		if ps.hasPendingARP() || ahdr.HardwareLength != 6 || ahdr.ProtoLength != 4 || ahdr.HardwareType != 1 || ahdr.AssertEtherType() != eth.EtherTypeIPv4 {
+			return nil // Ignore ARP replies and unsupported requests.
+		}
+		if ahdr.ProtoTarget != ps.IP.As4() {
+			return nil // Not for us.
+		}
+		// We need to respond to this ARP request.
+		ahdr.HardwareTarget = ps.MACAs6()
+		ahdr.Operation = 2 // Set as reply. This also flags the packet as pending.
+		ps.pendingARP = ahdr
+		return nil
 	}
 
 	// IP parsing block.
@@ -239,6 +254,17 @@ func (ps *PortStack) HandleEth(dst []byte) (n int, err error) {
 		return 0, io.ErrShortBuffer
 	case ps.pendingUDPv4 == 0 && ps.pendingTCPv4 == 0:
 		return 0, nil // No packets to handle
+	case ps.hasPendingARP():
+		// We need to respond to an ARP request.
+		ehdr := eth.EthernetHeader{
+			Destination:     ps.pendingARP.HardwareSender,
+			Source:          ps.MACAs6(),
+			SizeOrEtherType: uint16(eth.EtherTypeARP),
+		}
+		ehdr.Put(dst)
+		ps.pendingARP.Put(dst[eth.SizeEthernetHeader:])
+		ps.pendingARP.Operation = 0 // Clear pending ARP.
+		return eth.SizeEthernetHeader + eth.SizeARPv4Header, nil
 	}
 
 	ps.info("HandleEth", slog.Int("dstlen", len(dst)))
@@ -297,6 +323,10 @@ func (ps *PortStack) HandleEth(dst []byte) (n int, err error) {
 		ps.processedPackets++
 	}
 	return n, err
+}
+
+func (ps *PortStack) hasPendingARP() bool {
+	return ps.pendingARP.Operation == 2 // 2 means reply.
 }
 
 // OpenUDP opens a UDP port and sets the handler. If the port is already open
@@ -447,11 +477,12 @@ func (ps *PortStack) debug(msg string, attrs ...slog.Attr) {
 }
 
 func (ps *PortStack) logAttrsPrint(level slog.Level, msg string, attrs ...slog.Attr) {
-	if ps.level <= level {
-		logAttrsPrint(level, msg, attrs...)
+	if ps.logger != nil {
+		ps.logger.LogAttrs(context.Background(), level, msg, attrs...)
 	}
 }
 
+// logAttrsPrint is a hand-rolled slog.Handler implementation for use in memory contrained systems.
 func logAttrsPrint(level slog.Level, msg string, attrs ...slog.Attr) {
 	var levelStr string = level.String()
 
