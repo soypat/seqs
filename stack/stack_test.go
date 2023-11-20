@@ -230,6 +230,7 @@ func exchangeStacks(t *testing.T, maxExchanges int, stacks ...*stack.PortStack) 
 		if sentInTx == 0 {
 			break // No more data being sent.
 		}
+
 		for isend := 0; isend < len(stacks); isend++ {
 			// We deliver each in-flight packet to all stacks, except the one that sent it.
 			payload := getPayload(isend)

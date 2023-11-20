@@ -139,7 +139,7 @@ func (t *TCPSocket) Close() error {
 
 func (t *TCPSocket) handleMain(response []byte, pkt *TCPPacket) (n int, err error) {
 	defer func() {
-		if err != nil && t.abortErr == nil && err != io.ErrNoProgress {
+		if err != nil && t.abortErr == nil && err != ErrFlagPending {
 			err = nil // Only close socket if socket is aborted.
 		} else if err != nil {
 			t.stack.error("tcp socket", slog.Int("port", int(t.localPort)), slog.String("err", err.Error()))
@@ -225,7 +225,7 @@ func (t *TCPSocket) handleSend(response []byte, pkt *TCPPacket) (n int, err erro
 	pkt.PutHeaders(response)
 
 	if t.scb.HasPending() {
-		err = io.ErrNoProgress // Flag to PortStack that we have pending data to send.
+		err = ErrFlagPending // Flag to PortStack that we have pending data to send.
 	}
 	return sizeTCPNoOptions + n, err
 }

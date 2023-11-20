@@ -2,7 +2,6 @@ package stack
 
 import (
 	"errors"
-	"io"
 	"strconv"
 	"time"
 
@@ -10,6 +9,12 @@ import (
 	"github.com/soypat/seqs/eth"
 )
 
+// tcphandler represents a user provided function for handling incoming TCP packets on a port.
+// Incoming data is sent inside the `pkt` TCPPacket argument when pkt.HasPacket returns true.
+// Outgoing data is stored into the `response` byte slice. The function must return the number of
+// bytes written to `response` and an error.
+//
+// See [PortStack] for information on how to use this function and other port handlers.
 type tcphandler func(response []byte, pkt *TCPPacket) (int, error)
 
 type tcpPort struct {
@@ -57,7 +62,7 @@ func (u *tcpPort) HandleEth(dst []byte) (n int, err error) {
 	packet := &u.packets[0]
 
 	n, err = u.handler(dst, &u.packets[0])
-	if err == io.ErrNoProgress {
+	if err == ErrFlagPending {
 		packet.Rx = forcedTime // Mark socket as needing handling but packet having no data.
 	} else {
 		packet.Rx = time.Time{} // Invalidate packet normally.
