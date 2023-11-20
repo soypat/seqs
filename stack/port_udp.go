@@ -16,14 +16,6 @@ type udpPort struct {
 	packets [1]UDPPacket
 }
 
-type UDPPacket struct {
-	Rx      time.Time
-	Eth     eth.EthernetHeader
-	IP      eth.IPv4Header
-	UDP     eth.UDPHeader
-	payload [_MTU - eth.SizeEthernetHeader - eth.SizeIPv4Header - eth.SizeUDPHeader]byte
-}
-
 func (u udpPort) Port() uint16 { return u.port }
 
 // NeedsHandling returns true if the socket needs handling before it can
@@ -37,7 +29,7 @@ func (u *udpPort) NeedsHandling() bool {
 
 // IsPendingHandling returns true if there are packet(s) pending handling.
 func (u *udpPort) IsPendingHandling() bool {
-	return u.port != 0 && !u.packets[0].Rx.IsZero()
+	return u.port != 0 && u.packets[0].pendingHandling()
 }
 
 // HandleEth writes the socket's response into dst to be sent over an ethernet interface.
@@ -50,9 +42,9 @@ func (u *udpPort) HandleEth(dst []byte) (int, error) {
 
 	n, err := u.handler(dst, &u.packets[0])
 	if err == ErrFlagPending {
-		packet.Rx = forcedTime // Mark socket as needing handling but packet having no data.
+		packet.flagPendingNoPacket() // Mark socket as needing handling but packet having no data.
 	} else {
-		packet.Rx = time.Time{} // Invalidate packet normally.
+		packet.invalidate()
 	}
 	return n, err
 }
@@ -68,7 +60,7 @@ func (u *udpPort) Open(port uint16, h udphandler) {
 
 func (s *udpPort) pending() (p int) {
 	for i := range s.packets {
-		if s.packets[i].HasPacket() {
+		if s.packets[i].pendingHandling() {
 			p++
 		}
 	}
@@ -78,7 +70,7 @@ func (s *udpPort) pending() (p int) {
 func (u *udpPort) Close() {
 	u.port = 0 // Port 0 flags the port is inactive.
 	for i := range u.packets {
-		u.packets[i].Rx = time.Time{} // Invalidate packets.
+		u.packets[i].invalidate()
 	}
 }
 
@@ -89,14 +81,23 @@ var forcedTime = (time.Time{}).Add(1)
 func (u *udpPort) forceResponse() (added bool) {
 	if !u.IsPendingHandling() {
 		added = true
-		u.packets[0].Rx = forcedTime
+		u.packets[0].flagPendingNoPacket()
 	}
 	return added
 }
 
-func (u *UDPPacket) HasPacket() bool {
-	return u.Rx != forcedTime && !u.Rx.IsZero() // TODO simplify this to just IsZero
+type UDPPacket struct {
+	Rx      time.Time
+	Eth     eth.EthernetHeader
+	IP      eth.IPv4Header
+	UDP     eth.UDPHeader
+	payload [_MTU - eth.SizeEthernetHeader - eth.SizeIPv4Header - eth.SizeUDPHeader]byte
 }
+
+func (u *UDPPacket) HasPacket() bool       { return u.Rx != forcedTime && !u.Rx.IsZero() }
+func (u *UDPPacket) pendingHandling() bool { return !u.Rx.IsZero() }
+func (u *UDPPacket) invalidate()           { u.Rx = time.Time{} }
+func (u *UDPPacket) flagPendingNoPacket()  { u.Rx = forcedTime }
 
 func (p *UDPPacket) PutHeaders(b []byte) {
 	if len(b) < eth.SizeEthernetHeader+eth.SizeIPv4Header+eth.SizeUDPHeader {

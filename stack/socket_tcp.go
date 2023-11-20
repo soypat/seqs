@@ -49,6 +49,9 @@ func (t *TCPSocket) State() seqs.State {
 }
 
 func (t *TCPSocket) Send(b []byte) error {
+	if t.abortErr != nil {
+		return t.abortErr
+	}
 	if t.scb.State() != seqs.StateEstablished {
 		return errors.New("connection not established")
 	}
@@ -75,6 +78,9 @@ func (t *TCPSocket) Send(b []byte) error {
 }
 
 func (t *TCPSocket) Recv(b []byte) (int, error) {
+	if t.abortErr != nil {
+		return 0, t.abortErr
+	}
 	if t.closing {
 		return 0, io.EOF
 	}
@@ -125,6 +131,9 @@ func ListenTCP(stack *PortStack, port uint16, iss seqs.Value, window seqs.Size) 
 }
 
 func (t *TCPSocket) Close() error {
+	if t.abortErr != nil {
+		return t.abortErr
+	}
 	toSend := t.tx.Buffered()
 	if toSend == 0 {
 		err := t.scb.Close()
@@ -138,6 +147,9 @@ func (t *TCPSocket) Close() error {
 }
 
 func (t *TCPSocket) handleMain(response []byte, pkt *TCPPacket) (n int, err error) {
+	if t.abortErr != nil {
+		return 0, t.abortErr // Force close of socket.
+	}
 	defer func() {
 		if err != nil && t.abortErr == nil && err != ErrFlagPending {
 			err = nil // Only close socket if socket is aborted.
@@ -226,6 +238,8 @@ func (t *TCPSocket) handleSend(response []byte, pkt *TCPPacket) (n int, err erro
 
 	if t.scb.HasPending() {
 		err = ErrFlagPending // Flag to PortStack that we have pending data to send.
+	} else if t.scb.State() == seqs.StateClosed {
+		err = io.EOF
 	}
 	return sizeTCPNoOptions + n, err
 }
@@ -262,6 +276,8 @@ func (t *TCPSocket) close() {
 	t.lastTx = time.Time{}
 	t.lastRx = time.Time{}
 	t.closing = false
+	// t.stack.CloseTCP(t.localPort)
+	t.abortErr = io.ErrClosedPipe
 }
 
 func (t *TCPSocket) synsentSegment() seqs.Segment {
@@ -274,7 +290,7 @@ func (t *TCPSocket) synsentSegment() seqs.Segment {
 }
 
 func (t *TCPSocket) abort(err error) error {
-	t.abortErr = err
 	t.close()
+	t.abortErr = err
 	return err
 }

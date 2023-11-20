@@ -24,6 +24,73 @@ type tcpPort struct {
 	packets [1]TCPPacket
 }
 
+func (p tcpPort) Port() uint16 { return p.port }
+
+// NeedsHandling returns true if the socket needs handling before it can
+// admit more pending packets.
+func (u *tcpPort) NeedsHandling() bool {
+	// As of now socket has space for 1 packet so if packet is pending, queue is full.
+	// Compile time check to ensure this is fulfilled:
+	_ = u.packets[1-len(u.packets)]
+	return u.IsPendingHandling()
+}
+
+// IsPendingHandling returns true if there are packet(s) pending handling.
+func (u *tcpPort) IsPendingHandling() bool {
+	return u.port != 0 && u.packets[0].pendingHandling()
+}
+
+// HandleEth writes the socket's response into dst to be sent over an ethernet interface.
+// HandleEth can return 0 bytes written and a nil error to indicate no action must be taken.
+func (u *tcpPort) HandleEth(dst []byte) (n int, err error) {
+	if u.handler == nil {
+		panic("nil tcp handler on port " + strconv.Itoa(int(u.port)))
+	}
+	packet := &u.packets[0]
+
+	n, err = u.handler(dst, &u.packets[0])
+	if err == ErrFlagPending {
+		packet.flagPendingNoPacket() // Mark socket as needing handling but packet having no data.
+	} else {
+		packet.invalidate()
+	}
+	return n, err
+}
+
+// Open sets the UDP handler and opens the port.
+func (u *tcpPort) Open(port uint16, handler tcphandler) {
+	if port == 0 || handler == nil {
+		panic("invalid port or nil handler" + strconv.Itoa(int(u.port)))
+	}
+	u.handler = handler
+	u.port = port
+	for i := range u.packets {
+		u.packets[i].invalidate()
+	}
+}
+
+func (s *tcpPort) pending() (p uint32) {
+	for i := range s.packets {
+		if s.packets[i].pendingHandling() {
+			p++
+		}
+	}
+	return p
+}
+
+func (u *tcpPort) Close() {
+	u.handler = nil
+	u.port = 0 // Port 0 flags the port is inactive.
+}
+
+func (u *tcpPort) forceResponse() (added bool) {
+	if !u.IsPendingHandling() {
+		added = true
+		u.packets[0].flagPendingNoPacket()
+	}
+	return added
+}
+
 const tcpMTU = _MTU - eth.SizeEthernetHeader - eth.SizeIPv4Header - eth.SizeTCPHeader
 
 type TCPPacket struct {
@@ -39,76 +106,10 @@ func (p *TCPPacket) String() string {
 	return "TCP Packet: " + p.Eth.String() + " " + p.IP.String() + " " + p.TCP.String() + " payload:" + strconv.Quote(string(p.Payload()))
 }
 
-func (p tcpPort) Port() uint16 { return p.port }
-
-// NeedsHandling returns true if the socket needs handling before it can
-// admit more pending packets.
-func (u *tcpPort) NeedsHandling() bool {
-	// As of now socket has space for 1 packet so if packet is pending, queue is full.
-	// Compile time check to ensure this is fulfilled:
-	_ = u.packets[1-len(u.packets)]
-	return u.IsPendingHandling()
-}
-
-// IsPendingHandling returns true if there are packet(s) pending handling.
-func (u *tcpPort) IsPendingHandling() bool {
-	return u.port != 0 && !u.packets[0].Rx.IsZero()
-}
-
-// HandleEth writes the socket's response into dst to be sent over an ethernet interface.
-// HandleEth can return 0 bytes written and a nil error to indicate no action must be taken.
-func (u *tcpPort) HandleEth(dst []byte) (n int, err error) {
-	if u.handler == nil {
-		panic("nil tcp handler on port " + strconv.Itoa(int(u.port)))
-	}
-	packet := &u.packets[0]
-
-	n, err = u.handler(dst, &u.packets[0])
-	if err == ErrFlagPending {
-		packet.Rx = forcedTime // Mark socket as needing handling but packet having no data.
-	} else {
-		packet.Rx = time.Time{} // Invalidate packet normally.
-	}
-	return n, err
-}
-
-// Open sets the UDP handler and opens the port.
-func (u *tcpPort) Open(port uint16, handler tcphandler) {
-	if port == 0 || handler == nil {
-		panic("invalid port or nil handler" + strconv.Itoa(int(u.port)))
-	}
-	u.handler = handler
-	u.port = port
-	for i := range u.packets {
-		u.packets[i].Rx = time.Time{} // Invalidate packets.
-	}
-}
-
-func (s *tcpPort) pending() (p uint32) {
-	for i := range s.packets {
-		if s.packets[i].HasPacket() {
-			p++
-		}
-	}
-	return p
-}
-
-func (u *tcpPort) Close() {
-	u.handler = nil
-	u.port = 0 // Port 0 flags the port is inactive.
-}
-
-func (u *tcpPort) forceResponse() (added bool) {
-	if !u.IsPendingHandling() {
-		added = true
-		u.packets[0].Rx = forcedTime
-	}
-	return added
-}
-
-func (u *TCPPacket) HasPacket() bool {
-	return u.Rx != forcedTime && !u.Rx.IsZero()
-}
+func (u *TCPPacket) HasPacket() bool       { return u.Rx != forcedTime && !u.Rx.IsZero() }
+func (u *TCPPacket) pendingHandling() bool { return !u.Rx.IsZero() }
+func (u *TCPPacket) invalidate()           { u.Rx = time.Time{} }
+func (u *TCPPacket) flagPendingNoPacket()  { u.Rx = forcedTime }
 
 // PutHeaders puts 54 bytes including the Ethernet, IPv4 and TCP headers into b.
 // b must be at least 54 bytes in length or else PutHeaders panics. No options are marshalled.

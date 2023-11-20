@@ -60,7 +60,10 @@ var ErrFlagPending = io.ErrNoProgress
 //   - Users can safely use pkt even if pkt.HasPacket() returns false.
 //
 //   - If the handler returns an error that is not ErrFlagPending then the port
-//     is immediately closed and written data is discarded.
+//     is immediately closed.
+//
+//   - [io.EOF] and ErrFlagPending: When returned by handler data written is not discarded.
+//     This means that the handler can write data and close port in same operation returning non-zero `n` and EOF.
 //
 //   - ErrFlagPending: When returned by the handler then the port is flagged as
 //     pending and the written data is handled normally if there is any. If no data is written
@@ -74,27 +77,29 @@ type PortStack struct {
 	lastRx        time.Time
 	lastRxSuccess time.Time
 	lastTx        time.Time
-	mac           [6]byte
-	// Set ip to non-nil to ignore packets not meant for us.
-	ip               [4]byte
-	portsUDP         []udpPort
-	portsTCP         []tcpPort
-	glob             func([]byte)
+	glob          func([]byte)
+	logger        *slog.Logger
+	portsUDP      []udpPort
+	portsTCP      []tcpPort
+
 	pendingUDPv4     uint32
 	pendingTCPv4     uint32
-	droppedPackets   uint32
 	processedPackets uint32
+	// droppedPackets counts amount of packets corresponding to TCP/UDP ports
+	// that have been dropped due to the port requiring handling before admitting more packets.
+	droppedPackets uint32
 	// pending ARP reply that must be sent out.
 	pendingARPresponse eth.ARPv4Header
 	ARPresult          eth.ARPv4Header
-	logger             *slog.Logger
+	mac                [6]byte
+	ip                 [4]byte
 }
 
 // Common errors.
 var (
 	ErrDroppedPacket    = errors.New("dropped packet")
 	errPacketExceedsMTU = errors.New("packet exceeds MTU")
-	errNotIPv4          = errors.New("require IPv4")
+	// errNotIPv4          = errors.New("require IPv4")
 	errPacketSmol       = errors.New("packet too small")
 	errTooShortTCPOrUDP = errors.New("packet too short to be TCP/UDP")
 	errZeroPort         = errors.New("zero port in TCP/UDP")
@@ -113,7 +118,7 @@ var (
 func (ps *PortStack) Addr() netip.Addr { return netip.AddrFrom4(ps.ip) }
 func (ps *PortStack) SetAddr(addr netip.Addr) {
 	if !addr.Is4() {
-		panic("SetAddr only supports IPv4, or argument is not an IP address")
+		panic("SetAddr only supports IPv4, or argument not initialized")
 	}
 	ps.ip = addr.As4()
 }
@@ -358,7 +363,12 @@ func (ps *PortStack) HandleEth(dst []byte) (n int, err error) {
 		}
 		if err != nil {
 			sock.Close()
-			n = 0
+			if err == io.EOF {
+				// Special case: If error is EOF we don't return it to caller but we do write the packet if any.
+				err = nil
+			} else {
+				n = 0 // Clear n on unknown error and return error up the call stack.
+			}
 		}
 		return n, false, err
 	}
