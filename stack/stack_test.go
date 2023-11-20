@@ -15,6 +15,43 @@ import (
 
 const exchangesToEstablish = 4
 
+func TestARP(t *testing.T) {
+	const networkSize = 20 // How many distinct IP/MAC addresses on network.
+	stacks := createPortStacks(t, networkSize)
+
+	sender := stacks[0]
+	target := stacks[1]
+	const expectedARP = eth.SizeEthernetHeader + eth.SizeARPv4Header
+	// Send ARP request from sender to target.
+	sender.BeginResolveARPv4(target.IP.As4())
+	ex, n := exchangeStacks(t, 1, stacks...)
+	if n != expectedARP {
+		t.Errorf("ex[%d] sent=%d want=%d", ex, n, expectedARP)
+	}
+	// Target responds to sender.
+	ex, n = exchangeStacks(t, 1, stacks...)
+	if n != expectedARP {
+		t.Errorf("ex[%d] sent=%d want=%d", ex, n, expectedARP)
+	}
+
+	result, ok := sender.ARPv4Result()
+	if !ok {
+		t.Fatal("no ARP result")
+	}
+	if result.HardwareTarget != target.MACAs6() {
+		t.Errorf("result.HardwareTarget=%s want=%s", result.HardwareTarget, target.MACAs6())
+	}
+	if result.ProtoTarget != target.IP.As4() {
+		t.Errorf("result.ProtoTarget=%s want=%s", result.ProtoTarget, target.IP.As4())
+	}
+
+	// No more data to exchange.
+	ex, n = exchangeStacks(t, 1, stacks...)
+	if n != 0 {
+		t.Fatalf("ex[%d] sent=%d want=0", ex, n)
+	}
+}
+
 func TestTCPEstablish(t *testing.T) {
 	client, server := createTCPClientServerPair(t)
 
@@ -183,12 +220,9 @@ func exchangeStacks(t *testing.T, maxExchanges int, stacks ...*stack.PortStack) 
 			}
 			if pipeN[isend] > 0 {
 				pkt, err := stack.ParseTCPPacket(getPayload(isend))
-				if err != nil {
-					t.Errorf("ex[%d] send[%d]: malformed packet: %v", ex, isend, sprintErr(err))
-					return ex, bytesSent
+				if err == nil {
+					t.Logf("ex[%d] send[%d]: %+v", ex, isend, pkt.TCP.Segment(len(pkt.Payload())))
 				}
-
-				t.Logf("ex[%d] send[%d]: %+v", ex, isend, pkt.TCP.Segment(len(pkt.Payload())))
 			}
 			bytesSent += pipeN[isend]
 			sentInTx += pipeN[isend]
