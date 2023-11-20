@@ -43,8 +43,8 @@ func NewPortStack(cfg PortStackConfig) *PortStack {
 	s.portsUDP = make([]udpPort, cfg.MaxOpenPortsUDP)
 	s.portsTCP = make([]tcpPort, cfg.MaxOpenPortsTCP)
 	s.logger = cfg.Logger
-	if cfg.MTU < defaultMTU {
-		panic("please use a larger MTU. min=" + strconv.Itoa(defaultMTU))
+	if cfg.MTU > defaultMTU {
+		panic("please use a smaller MTU. max=" + strconv.Itoa(defaultMTU))
 	}
 	s.mtu = cfg.MTU
 	return &s
@@ -159,6 +159,9 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 	payload := ethernetFrame
 	if len(payload) < eth.SizeEthernetHeader+eth.SizeIPv4Header {
 		return errPacketSmol
+	} else if len(payload) > int(ps.mtu) {
+		println("recv", payload, ps.mtu)
+		return errPacketExceedsMTU
 	}
 	ps.debug("Stack.RecvEth:start", slog.Int("plen", len(payload)))
 	ps.lastRx = ps.now()
@@ -338,6 +341,7 @@ func (ps *PortStack) HandleEth(dst []byte) (n int, err error) {
 	}()
 	switch {
 	case len(dst) < int(ps.mtu):
+		println("handle", dst, ps.mtu)
 		return 0, io.ErrShortBuffer
 
 	case ps.pendingRequestARP():
