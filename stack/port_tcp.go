@@ -20,7 +20,7 @@ type tcphandler func(response []byte, pkt *TCPPacket) (int, error)
 type tcpPort struct {
 	LastRx  time.Time
 	handler tcphandler
-	Port    uint16
+	port    uint16
 	packets [1]TCPPacket
 }
 
@@ -39,6 +39,8 @@ func (p *TCPPacket) String() string {
 	return "TCP Packet: " + p.Eth.String() + " " + p.IP.String() + " " + p.TCP.String() + " payload:" + strconv.Quote(string(p.Payload()))
 }
 
+func (p tcpPort) Port() uint16 { return p.port }
+
 // NeedsHandling returns true if the socket needs handling before it can
 // admit more pending packets.
 func (u *tcpPort) NeedsHandling() bool {
@@ -50,14 +52,14 @@ func (u *tcpPort) NeedsHandling() bool {
 
 // IsPendingHandling returns true if there are packet(s) pending handling.
 func (u *tcpPort) IsPendingHandling() bool {
-	return u.Port != 0 && !u.packets[0].Rx.IsZero()
+	return u.port != 0 && !u.packets[0].Rx.IsZero()
 }
 
 // HandleEth writes the socket's response into dst to be sent over an ethernet interface.
 // HandleEth can return 0 bytes written and a nil error to indicate no action must be taken.
 func (u *tcpPort) HandleEth(dst []byte) (n int, err error) {
 	if u.handler == nil {
-		panic("nil tcp handler on port " + strconv.Itoa(int(u.Port)))
+		panic("nil tcp handler on port " + strconv.Itoa(int(u.port)))
 	}
 	packet := &u.packets[0]
 
@@ -73,10 +75,10 @@ func (u *tcpPort) HandleEth(dst []byte) (n int, err error) {
 // Open sets the UDP handler and opens the port.
 func (u *tcpPort) Open(port uint16, handler tcphandler) {
 	if port == 0 || handler == nil {
-		panic("invalid port or nil handler" + strconv.Itoa(int(u.Port)))
+		panic("invalid port or nil handler" + strconv.Itoa(int(u.port)))
 	}
 	u.handler = handler
-	u.Port = port
+	u.port = port
 	for i := range u.packets {
 		u.packets[i].Rx = time.Time{} // Invalidate packets.
 	}
@@ -93,7 +95,7 @@ func (s *tcpPort) pending() (p uint32) {
 
 func (u *tcpPort) Close() {
 	u.handler = nil
-	u.Port = 0 // Port 0 flags the port is inactive.
+	u.port = 0 // Port 0 flags the port is inactive.
 }
 
 func (u *tcpPort) forceResponse() (added bool) {

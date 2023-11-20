@@ -37,7 +37,7 @@ func (t *TCPSocket) PortStack() *PortStack {
 }
 
 func (t *TCPSocket) AddrPort() netip.AddrPort {
-	return netip.AddrPortFrom(t.stack.IP, t.localPort)
+	return netip.AddrPortFrom(t.stack.Addr(), t.localPort)
 }
 
 func (t *TCPSocket) MAC() net.HardwareAddr {
@@ -63,7 +63,7 @@ func (t *TCPSocket) Send(b []byte) error {
 			buf: make([]byte, max(defaultSocketSize, len(b))),
 		}
 	}
-	err := t.stack.FlagTCPPending(t.localPort)
+	err := t.stack.FlagPendingTCP(t.localPort)
 	if err != nil {
 		return err
 	}
@@ -133,7 +133,7 @@ func (t *TCPSocket) Close() error {
 		}
 	}
 	t.closing = true
-	t.stack.FlagTCPPending(t.localPort)
+	t.stack.FlagPendingTCP(t.localPort)
 	return nil
 }
 
@@ -232,7 +232,7 @@ func (t *TCPSocket) handleSend(response []byte, pkt *TCPPacket) (n int, err erro
 
 func (t *TCPSocket) setSrcDest(pkt *TCPPacket) {
 	pkt.Eth.Source = t.stack.MACAs6()
-	pkt.IP.Source = t.stack.IP.As4()
+	pkt.IP.Source = t.stack.ip
 	pkt.TCP.SourcePort = t.localPort
 
 	pkt.IP.Destination = t.remote.Addr().As4()

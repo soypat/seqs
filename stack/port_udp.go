@@ -12,7 +12,7 @@ type udphandler func(response []byte, pkt *UDPPacket) (int, error)
 type udpPort struct {
 	LastRx  time.Time
 	handler udphandler
-	Port    uint16
+	port    uint16
 	packets [1]UDPPacket
 }
 
@@ -23,6 +23,8 @@ type UDPPacket struct {
 	UDP     eth.UDPHeader
 	payload [_MTU - eth.SizeEthernetHeader - eth.SizeIPv4Header - eth.SizeUDPHeader]byte
 }
+
+func (u udpPort) Port() uint16 { return u.port }
 
 // NeedsHandling returns true if the socket needs handling before it can
 // admit more pending packets.
@@ -35,14 +37,14 @@ func (u *udpPort) NeedsHandling() bool {
 
 // IsPendingHandling returns true if there are packet(s) pending handling.
 func (u *udpPort) IsPendingHandling() bool {
-	return u.Port != 0 && !u.packets[0].Rx.IsZero()
+	return u.port != 0 && !u.packets[0].Rx.IsZero()
 }
 
 // HandleEth writes the socket's response into dst to be sent over an ethernet interface.
 // HandleEth can return 0 bytes written and a nil error to indicate no action must be taken.
 func (u *udpPort) HandleEth(dst []byte) (int, error) {
 	if u.handler == nil {
-		panic("nil udp handler on port " + strconv.Itoa(int(u.Port)))
+		panic("nil udp handler on port " + strconv.Itoa(int(u.port)))
 	}
 	packet := &u.packets[0]
 
@@ -58,10 +60,10 @@ func (u *udpPort) HandleEth(dst []byte) (int, error) {
 // Open sets the UDP handler and opens the port.
 func (u *udpPort) Open(port uint16, h udphandler) {
 	if port == 0 || h == nil {
-		panic("invalid port or nil handler" + strconv.Itoa(int(u.Port)))
+		panic("invalid port or nil handler" + strconv.Itoa(int(u.port)))
 	}
 	u.handler = h
-	u.Port = port
+	u.port = port
 }
 
 func (s *udpPort) pending() (p int) {
@@ -74,7 +76,7 @@ func (s *udpPort) pending() (p int) {
 }
 
 func (u *udpPort) Close() {
-	u.Port = 0 // Port 0 flags the port is inactive.
+	u.port = 0 // Port 0 flags the port is inactive.
 	for i := range u.packets {
 		u.packets[i].Rx = time.Time{} // Invalidate packets.
 	}
