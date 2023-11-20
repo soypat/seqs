@@ -114,12 +114,12 @@ func DialTCP(stack *PortStack, localPort uint16, remoteMAC [6]byte, remote netip
 
 // ListenTCP opens a passive TCP connection that listens on the given port.
 // ListenTCP only handles one connection at a time, so API may change in future to accomodate multiple connections.
-func ListenTCP(stack *PortStack, port uint16, iss seqs.Value, window seqs.Size) (*TCPSocket, error) {
+func ListenTCP(stack *PortStack, portNum uint16, iss seqs.Value, window seqs.Size) (*TCPSocket, error) {
 	t := TCPSocket{
 		stack:     stack,
-		localPort: port,
+		localPort: portNum,
 	}
-	err := stack.OpenTCP(port, t.handleMain)
+	err := stack.OpenTCP(portNum, t.handleMain)
 	if err != nil {
 		return nil, err
 	}
@@ -240,6 +240,7 @@ func (t *TCPSocket) handleSend(response []byte, pkt *TCPPacket) (n int, err erro
 		err = ErrFlagPending // Flag to PortStack that we have pending data to send.
 	} else if t.scb.State() == seqs.StateClosed {
 		err = io.EOF
+		t.close()
 	}
 	return sizeTCPNoOptions + n, err
 }
@@ -289,8 +290,8 @@ func (t *TCPSocket) synsentSegment() seqs.Segment {
 	}
 }
 
-func (t *TCPSocket) abort(err error) error {
-	t.close()
-	t.abortErr = err
-	return err
-}
+// func (t *TCPSocket) abort(err error) error {
+// 	t.close()
+// 	t.abortErr = err
+// 	return err
+// }
