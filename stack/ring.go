@@ -1,7 +1,6 @@
 package stack
 
 import (
-	"cmp"
 	"errors"
 	"io"
 )
@@ -95,14 +94,14 @@ func (r *ring) onReadEnd() {
 	}
 }
 
-func max[T cmp.Ordered](a, b T) T {
+func max(a, b int) int {
 	if a > b {
 		return a
 	}
 	return b
 }
 
-func min[T cmp.Ordered](a, b T) T {
+func min(a, b int) int {
 	if a < b {
 		return a
 	}

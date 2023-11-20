@@ -23,7 +23,7 @@ func TestARP(t *testing.T) {
 	target := stacks[1]
 	const expectedARP = eth.SizeEthernetHeader + eth.SizeARPv4Header
 	// Send ARP request from sender to target.
-	sender.BeginResolveARPv4(target.IP.As4())
+	sender.BeginResolveARPv4(target.Addr().As4())
 	ex, n := exchangeStacks(t, 1, stacks...)
 	if n != expectedARP {
 		t.Errorf("ex[%d] sent=%d want=%d", ex, n, expectedARP)
@@ -41,8 +41,8 @@ func TestARP(t *testing.T) {
 	if result.HardwareTarget != target.MACAs6() {
 		t.Errorf("result.HardwareTarget=%s want=%s", result.HardwareTarget, target.MACAs6())
 	}
-	if result.ProtoTarget != target.IP.As4() {
-		t.Errorf("result.ProtoTarget=%s want=%s", result.ProtoTarget, target.IP.As4())
+	if result.ProtoTarget != target.Addr().As4() {
+		t.Errorf("result.ProtoTarget=%s want=%s", result.ProtoTarget, target.Addr().As4())
 	}
 
 	// No more data to exchange.
@@ -275,7 +275,7 @@ func createTCPClientServerPair(t *testing.T) (client, server *stack.TCPSocket) {
 	serverStack := stacks[1]
 
 	// Configure server
-	serverIP := netip.AddrPortFrom(serverStack.IP, serverPort)
+	serverIP := netip.AddrPortFrom(serverStack.Addr(), serverPort)
 	serverTCP, err := stack.ListenTCP(serverStack, serverIP.Port(), serverISS, serverWND)
 	if err != nil {
 		t.Fatal(err)
@@ -286,7 +286,7 @@ func createTCPClientServerPair(t *testing.T) (client, server *stack.TCPSocket) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = clientStack.FlagTCPPending(clientPort)
+	err = clientStack.FlagPendingTCP(clientPort)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,9 +305,9 @@ func createPortStacks(t *testing.T, n int) (stacks []*stack.PortStack) {
 		ip := netip.AddrFrom4([4]byte{192, 168, u8[1], u8[0]})
 		Stack := stack.NewPortStack(stack.PortStackConfig{
 			MAC:             MAC,
-			IP:              ip,
 			MaxOpenPortsTCP: 1,
 		})
+		Stack.SetAddr(ip)
 		stacks = append(stacks, Stack)
 	}
 	return stacks
