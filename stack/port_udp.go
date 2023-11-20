@@ -50,6 +50,8 @@ func (port *udpPort) HandleEth(dst []byte) (int, error) {
 func (port *udpPort) Open(portNum uint16, h udphandler) {
 	if portNum == 0 || h == nil {
 		panic("invalid port or nil handler" + strconv.Itoa(int(port.port)))
+	} else if port.port != 0 {
+		panic("port already open")
 	}
 	port.handler = h
 	port.port = portNum
@@ -110,7 +112,7 @@ type UDPPacket struct {
 	Eth     eth.EthernetHeader
 	IP      eth.IPv4Header
 	UDP     eth.UDPHeader
-	payload [_MTU - eth.SizeEthernetHeader - eth.SizeIPv4Header - eth.SizeUDPHeader]byte
+	payload [defaultMTU - eth.SizeEthernetHeader - eth.SizeIPv4Header - eth.SizeUDPHeader]byte
 }
 
 func (pkt *UDPPacket) HasPacket() bool       { return pkt.Rx != forcedTime && !pkt.Rx.IsZero() }

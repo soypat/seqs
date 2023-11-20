@@ -306,6 +306,7 @@ func createPortStacks(t *testing.T, n int) (stacks []*stack.PortStack) {
 		Stack := stack.NewPortStack(stack.PortStackConfig{
 			MAC:             MAC,
 			MaxOpenPortsTCP: 1,
+			MTU:             2048,
 		})
 		Stack.SetAddr(ip)
 		stacks = append(stacks, Stack)

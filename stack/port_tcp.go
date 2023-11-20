@@ -78,6 +78,8 @@ func (port *tcpPort) freePacket() *TCPPacket {
 func (port *tcpPort) Open(portNum uint16, handler tcphandler) {
 	if portNum == 0 || handler == nil {
 		panic("invalid port or nil handler" + strconv.Itoa(int(port.port)))
+	} else if port.port != 0 {
+		panic("port already open")
 	}
 	port.handler = handler
 	port.port = portNum
@@ -110,7 +112,7 @@ func (port *tcpPort) forceResponse() (added bool) {
 	return false
 }
 
-const tcpMTU = _MTU - eth.SizeEthernetHeader - eth.SizeIPv4Header - eth.SizeTCPHeader
+const tcpMTU = defaultMTU - eth.SizeEthernetHeader - eth.SizeIPv4Header - eth.SizeTCPHeader
 
 type TCPPacket struct {
 	Rx  time.Time
