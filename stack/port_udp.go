@@ -1,7 +1,6 @@
 package stack
 
 import (
-	"io"
 	"strconv"
 	"time"
 
@@ -48,7 +47,7 @@ func (u *udpPort) HandleEth(dst []byte) (int, error) {
 	packet := &u.packets[0]
 
 	n, err := u.handler(dst, &u.packets[0])
-	if err == io.ErrNoProgress {
+	if err == ErrFlagPending {
 		packet.Rx = forcedTime // Mark socket as needing handling but packet having no data.
 	} else {
 		packet.Rx = time.Time{} // Invalidate packet normally.
