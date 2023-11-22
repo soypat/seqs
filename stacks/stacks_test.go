@@ -1,4 +1,4 @@
-package stack_test
+package stacks_test
 
 import (
 	"errors"
@@ -10,7 +10,7 @@ import (
 
 	"github.com/soypat/seqs"
 	"github.com/soypat/seqs/eth"
-	"github.com/soypat/seqs/stack"
+	"github.com/soypat/seqs/stacks"
 )
 
 const exchangesToEstablish = 4
@@ -191,13 +191,13 @@ func TestTCPClose_noPendingData(t *testing.T) {
 
 // exchangeStacks exchanges packets between stacks until no more data is being sent or maxExchanges is reached.
 // By convention client (initiator) is the first stack and server (listener) is the second when dealing with pairs.
-func exchangeStacks(t *testing.T, maxExchanges int, stacks ...*stack.PortStack) (ex, bytesSent int) {
+func exchangeStacks(t *testing.T, maxExchanges int, stcks ...*stacks.PortStack) (ex, bytesSent int) {
 	t.Helper()
 	sprintErr := func(err error) (s string) {
 		return err.Error()
 	}
-	pipeN := make([]int, len(stacks))
-	pipes := make([][2048]byte, len(stacks))
+	pipeN := make([]int, len(stcks))
+	pipes := make([][2048]byte, len(stcks))
 	zeroPayload := func(i int) {
 		pipeN[i] = 0
 		pipes[i] = [2048]byte{}
@@ -209,9 +209,9 @@ func exchangeStacks(t *testing.T, maxExchanges int, stacks ...*stack.PortStack) 
 	var ME = maxExchanges
 	for ; ex < ME; ex++ {
 		sentInTx := 0
-		for isend := 0; isend < len(stacks); isend++ {
+		for isend := 0; isend < len(stcks); isend++ {
 			// This first for loop generates packets "in-flight" contained in `pipes` data structure.
-			pipeN[isend], err = stacks[isend].HandleEth(pipes[isend][:])
+			pipeN[isend], err = stcks[isend].HandleEth(pipes[isend][:])
 			if (err != nil && !isDroppedPacket(err)) || pipeN[isend] < 0 {
 				t.Errorf("ex[%d] send[%d]: %s", ex, isend, sprintErr(err))
 				return ex, bytesSent
@@ -219,7 +219,7 @@ func exchangeStacks(t *testing.T, maxExchanges int, stacks ...*stack.PortStack) 
 				t.Logf("ex[%d] send[%d]: %s", ex, isend, sprintErr(err))
 			}
 			if pipeN[isend] > 0 {
-				pkt, err := stack.ParseTCPPacket(getPayload(isend))
+				pkt, err := stacks.ParseTCPPacket(getPayload(isend))
 				if err == nil {
 					t.Logf("ex[%d] send[%d]: %+v", ex, isend, pkt.TCP.Segment(len(pkt.Payload())))
 				}
@@ -231,17 +231,17 @@ func exchangeStacks(t *testing.T, maxExchanges int, stacks ...*stack.PortStack) 
 			break // No more data being sent.
 		}
 
-		for isend := 0; isend < len(stacks); isend++ {
+		for isend := 0; isend < len(stcks); isend++ {
 			// We deliver each in-flight packet to all stacks, except the one that sent it.
 			payload := getPayload(isend)
 			if len(payload) == 0 {
 				continue
 			}
-			for irecv := 0; irecv < len(stacks); irecv++ {
+			for irecv := 0; irecv < len(stcks); irecv++ {
 				if irecv == isend {
 					continue // Don't deliver to self.
 				}
-				err = stacks[irecv].RecvEth(payload)
+				err = stcks[irecv].RecvEth(payload)
 				if err != nil && !isDroppedPacket(err) {
 					t.Errorf("ex[%d] recv[%d]: %s", ex, irecv, sprintErr(err))
 					return ex, bytesSent
@@ -256,10 +256,10 @@ func exchangeStacks(t *testing.T, maxExchanges int, stacks ...*stack.PortStack) 
 }
 
 func isDroppedPacket(err error) bool {
-	return err != nil && (errors.Is(err, stack.ErrDroppedPacket) || strings.HasPrefix(err.Error(), "drop"))
+	return err != nil && (errors.Is(err, stacks.ErrDroppedPacket) || strings.HasPrefix(err.Error(), "drop"))
 }
 
-func createTCPClientServerPair(t *testing.T) (client, server *stack.TCPSocket) {
+func createTCPClientServerPair(t *testing.T) (client, server *stacks.TCPSocket) {
 	t.Helper()
 	const (
 		clientPort = 1025
@@ -270,19 +270,19 @@ func createTCPClientServerPair(t *testing.T) (client, server *stack.TCPSocket) {
 		serverISS  = 300
 		serverWND  = 1300
 	)
-	stacks := createPortStacks(t, 2)
-	clientStack := stacks[0]
-	serverStack := stacks[1]
+	Stacks := createPortStacks(t, 2)
+	clientStack := Stacks[0]
+	serverStack := Stacks[1]
 
 	// Configure server
 	serverIP := netip.AddrPortFrom(serverStack.Addr(), serverPort)
-	serverTCP, err := stack.ListenTCP(serverStack, serverIP.Port(), serverISS, serverWND)
+	serverTCP, err := stacks.ListenTCP(serverStack, serverIP.Port(), serverISS, serverWND)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Configure client.
-	clientTCP, err := stack.DialTCP(clientStack, clientPort, stacks[1].MACAs6(), serverIP, clientISS, clientWND)
+	clientTCP, err := stacks.DialTCP(clientStack, clientPort, Stacks[1].MACAs6(), serverIP, clientISS, clientWND)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +294,7 @@ func createTCPClientServerPair(t *testing.T) (client, server *stack.TCPSocket) {
 	return clientTCP, serverTCP
 }
 
-func createPortStacks(t *testing.T, n int) (stacks []*stack.PortStack) {
+func createPortStacks(t *testing.T, n int) (Stacks []*stacks.PortStack) {
 	t.Helper()
 	if n > math.MaxUint16 {
 		t.Fatal("too many stacks")
@@ -303,18 +303,18 @@ func createPortStacks(t *testing.T, n int) (stacks []*stack.PortStack) {
 		u8 := [2]uint8{uint8(i) + 1, uint8(i>>8) + 1}
 		MAC := [6]byte{0: u8[0], 1: u8[1]}
 		ip := netip.AddrFrom4([4]byte{192, 168, u8[1], u8[0]})
-		Stack := stack.NewPortStack(stack.PortStackConfig{
+		Stack := stacks.NewPortStack(stacks.PortStackConfig{
 			MAC:             MAC,
 			MaxOpenPortsTCP: 1,
 			MTU:             2048,
 		})
 		Stack.SetAddr(ip)
-		stacks = append(stacks, Stack)
+		Stacks = append(Stacks, Stack)
 	}
-	return stacks
+	return Stacks
 }
 
-func socketReadAllString(s *stack.TCPSocket) string {
+func socketReadAllString(s *stacks.TCPSocket) string {
 	var str strings.Builder
 	var buf [1024]byte
 	for {
@@ -327,7 +327,7 @@ func socketReadAllString(s *stack.TCPSocket) string {
 	return str.String()
 }
 
-func socketSendString(s *stack.TCPSocket, str string) {
+func socketSendString(s *stacks.TCPSocket, str string) {
 	err := s.Send([]byte(str))
 	if err != nil {
 		panic(err)
