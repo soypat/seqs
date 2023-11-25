@@ -181,6 +181,7 @@ type DHCPHeader struct {
 	// CIAddr is the client IP address. If the client has not obtained an IP
 	// address yet, this field is set to 0.
 	CIAddr [4]byte // 12:16
+	// YIAddr is the IP address offered by the server to the client.
 	YIAddr [4]byte // 16:20
 	SIAddr [4]byte // 20:24
 	GIAddr [4]byte // 24:28
@@ -222,7 +223,7 @@ func IsBroadcastHW(hwaddr net.HardwareAddr) bool {
 	return string(hwaddr) == broadcast
 }
 
-func BroadcastHW() net.HardwareAddr { return net.HardwareAddr(broadcast) }
+func BroadcastHW6() [6]byte { return [6]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff} }
 
 // Broadcast is a special hardware address which indicates a Frame should
 // be sent to every device on a given LAN segment.

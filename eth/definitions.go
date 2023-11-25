@@ -109,7 +109,7 @@ const (
 	DHCP_RequestedIPaddress          DHCPOption = 50 // Requested IP address
 	DHCP_IPAddressLeaseTime          DHCPOption = 51 // IP address lease time
 	DHCP_OptionOverload              DHCPOption = 52 // Overload “sname” or “file”
-	DHCP_MessageType                 DHCPOption = 53 // DHCP message type
+	DHCP_MessageType                 DHCPOption = 53 // DHCP message type.
 	DHCP_ServerIdentification        DHCPOption = 54 // DHCP server identification
 	DHCP_ParameterRequestList        DHCPOption = 55 // Parameter request list
 	DHCP_Message                     DHCPOption = 56 // DHCP error message
