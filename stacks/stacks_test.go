@@ -15,6 +15,46 @@ import (
 
 const exchangesToEstablish = 4
 
+func TestDHCP(t *testing.T) {
+	const networkSize = 20 // How many distinct IP/MAC addresses on network.
+	Stacks := createPortStacks(t, networkSize)
+	clientStack := Stacks[0]
+	serverStack := Stacks[1]
+
+	client := stacks.DHCPv4Client{
+		MAC: clientStack.MACAs6(),
+	}
+	server := stacks.NewDHCPServer(67, serverStack.MACAs6(), serverStack.Addr())
+
+	err := clientStack.OpenUDP(68, client.HandleUDP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = clientStack.FlagPendingUDP(68) // Force a DHCP discovery.
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = serverStack.OpenUDP(67, server.HandleUDP)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Client performs DISCOVER.
+	ex, n := exchangeStacks(t, 1, Stacks...)
+	if n < eth.SizeEthernetHeader+eth.SizeIPv4Header+eth.SizeUDPHeader+eth.SizeDHCPHeader {
+		t.Errorf("ex[%d] sent=%d want>=%d", ex, n, eth.SizeEthernetHeader+eth.SizeIPv4Header+eth.SizeUDPHeader+eth.SizeDHCPHeader)
+	}
+	if client.Done() {
+		t.Fatal("client done on first exchange?!")
+	}
+
+	// Server responds with OFFER.
+	ex, n = exchangeStacks(t, 1, Stacks...)
+	if n < eth.SizeEthernetHeader+eth.SizeIPv4Header+eth.SizeUDPHeader+eth.SizeDHCPHeader {
+		t.Errorf("ex[%d] sent=%d want>=%d", ex, n, eth.SizeEthernetHeader+eth.SizeIPv4Header+eth.SizeUDPHeader+eth.SizeDHCPHeader)
+	}
+}
+
 func TestARP(t *testing.T) {
 	const networkSize = 20 // How many distinct IP/MAC addresses on network.
 	stacks := createPortStacks(t, networkSize)
@@ -306,6 +346,7 @@ func createPortStacks(t *testing.T, n int) (Stacks []*stacks.PortStack) {
 		Stack := stacks.NewPortStack(stacks.PortStackConfig{
 			MAC:             MAC,
 			MaxOpenPortsTCP: 1,
+			MaxOpenPortsUDP: 1,
 			MTU:             2048,
 		})
 		Stack.SetAddr(ip)

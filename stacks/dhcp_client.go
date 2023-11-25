@@ -11,7 +11,7 @@ import (
 
 type DHCPv4Client struct {
 	ourHeader eth.DHCPHeader
-	State     uint8
+	state     uint8
 	MAC       [6]byte
 	// The result IP of the DHCP transaction (our new IP).
 	YourIP [4]byte
@@ -26,6 +26,10 @@ const (
 	dhcpStateWaitAck
 	dhcpStateDone
 )
+
+func (d *DHCPv4Client) Done() bool {
+	return d.state == dhcpStateDone
+}
 
 // Reset resets the DHCP client to its initial state and discards all state.
 // After being reset the client will try to obtain a new IP address if it is attached to a PortStack.
@@ -70,8 +74,8 @@ func (d *DHCPv4Client) HandleUDP(resp []byte, packet *UDPPacket) (_ int, err err
 			option := eth.DHCPOption(incpayload[ptr])
 			optlen := incpayload[ptr+1]
 			optionData := incpayload[ptr+2 : ptr+2+int(optlen)]
-			if d.State == dhcpStateWaitAck && option == eth.DHCP_MessageType && len(optionData) > 0 && optionData[0] == 5 {
-				d.State = dhcpStateDone
+			if d.state == dhcpStateWaitAck && option == eth.DHCP_MessageType && len(optionData) > 0 && optionData[0] == 5 {
+				d.state = dhcpStateDone
 				return 0, nil
 			}
 			ptr += int(optlen) + 2
@@ -80,27 +84,23 @@ func (d *DHCPv4Client) HandleUDP(resp []byte, packet *UDPPacket) (_ int, err err
 
 	// Switch statement prepares DHCP response depending on whether we're waiting
 	// for offer, ack or if we still need to send a discover (StateNone).
-	type option struct {
-		code byte
-		data []byte
-	}
-	var Options []option
+	var Options []dhcpOption
 	switch {
-	case !hasPacket && d.State == dhcpStateNone:
+	case !hasPacket && d.state == dhcpStateNone:
 		d.initOurHeader(xid)
 		// DHCP options.
-		Options = []option{
+		Options = []dhcpOption{
 			{53, []byte{1}},           // DHCP Message Type: Discover
 			{55, []byte{1, 3, 15, 6}}, // Parameter request list
 		}
 		if d.RequestedIP != [4]byte{} {
-			Options = append(Options, option{50, d.RequestedIP[:]})
+			Options = append(Options, dhcpOption{50, d.RequestedIP[:]})
 		}
-		d.State = dhcpStateWaitOffer
+		d.state = dhcpStateWaitOffer
 
-	case hasPacket && d.State == dhcpStateWaitOffer:
+	case hasPacket && d.state == dhcpStateWaitOffer:
 		offer := net.IP(rcvHdr.YIAddr[:])
-		Options = []option{
+		Options = []dhcpOption{
 			{53, []byte{3}},        // DHCP Message Type: Request
 			{50, offer},            // Requested IP
 			{54, rcvHdr.SIAddr[:]}, // DHCP server IP
@@ -108,7 +108,7 @@ func (d *DHCPv4Client) HandleUDP(resp []byte, packet *UDPPacket) (_ int, err err
 		// Accept this server's offer.
 		copy(d.ourHeader.SIAddr[:], rcvHdr.SIAddr[:])
 		copy(d.YourIP[:], offer) // Store our new IP.
-		d.State = dhcpStateWaitAck
+		d.state = dhcpStateWaitAck
 	default:
 		err = fmt.Errorf("UNHANDLED CASE %v %+v", hasPacket, d)
 	}
@@ -125,7 +125,7 @@ func (d *DHCPv4Client) HandleUDP(resp []byte, packet *UDPPacket) (_ int, err err
 	binary.BigEndian.PutUint32(resp[ptr:], magicCookie)
 	ptr += 4
 	for _, opt := range Options {
-		ptr += encodeDHCPOption(resp[ptr:], opt.code, opt.data)
+		ptr += encodeDHCPOption(resp[ptr:], opt)
 	}
 	resp[ptr] = 0xff // endmark
 	// Set Ethernet+IP+UDP headers.
@@ -155,12 +155,15 @@ func (d *DHCPv4Client) initOurHeader(xid uint32) {
 func (d *DHCPv4Client) setResponseUDP(packet *UDPPacket, payload []byte) {
 	const ipLenInWords = 5
 	// Ethernet frame.
-	copy(packet.Eth.Destination[:], eth.BroadcastHW())
+	broadcast := eth.BroadcastHW6()
+	packet.Eth.Destination = broadcast
 	copy(packet.Eth.Source[:], d.MAC[:])
 	packet.Eth.SizeOrEtherType = uint16(eth.EtherTypeIPv4)
 
 	// IPv4 frame.
-	copy(packet.IP.Destination[:], eth.BroadcastHW())
+	packet.IP.Destination = [4]byte(broadcast[:4])
+	packet.IP.Source = packet.IP.Destination
+
 	packet.IP.Source = [4]byte{} // Source IP is always zeroed when client sends.
 	packet.IP.Protocol = 17      // UDP
 	packet.IP.TTL = 64
@@ -173,7 +176,7 @@ func (d *DHCPv4Client) setResponseUDP(packet *UDPPacket, payload []byte) {
 	// If left fixed at 192, DHCP does not work.
 	// If left fixed at 0, DHCP does not work.
 	// Apparently ToS is a function of which state of DHCP one is in. Not sure why code below works.
-	if d.State <= dhcpStateWaitOffer {
+	if d.state <= dhcpStateWaitOffer {
 		packet.IP.ToS = 0
 	} else {
 		packet.IP.ToS = 192
@@ -187,12 +190,12 @@ func (d *DHCPv4Client) setResponseUDP(packet *UDPPacket, payload []byte) {
 	packet.UDP.Checksum = packet.UDP.CalculateChecksumIPv4(&packet.IP, payload)
 }
 
-func encodeDHCPOption(dst []byte, code byte, data []byte) int {
-	if len(data)+2 > len(dst) {
+func encodeDHCPOption(dst []byte, opt dhcpOption) int {
+	if len(opt.Data)+2 > len(dst) {
 		panic("small dst size for DHCP encoding")
 	}
-	dst[0] = code
-	dst[1] = byte(len(data))
-	copy(dst[2:], data)
-	return 2 + len(data)
+	dst[0] = byte(opt.Opt)
+	dst[1] = byte(len(opt.Data))
+	copy(dst[2:], opt.Data)
+	return 2 + len(opt.Data)
 }
