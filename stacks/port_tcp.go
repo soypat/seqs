@@ -56,12 +56,17 @@ func (port *tcpPort) HandleEth(dst []byte) (n int, err error) {
 
 // nextPacket returns the next packet that is pending handling or the first packet if none are pending.
 func (port *tcpPort) nextPacket() *TCPPacket {
-	for i := range port.packets {
-		if port.packets[i].pendingHandling() {
-			return &port.packets[i]
+	idx := 0
+	minSeq := port.packets[0].TCP.Seq
+	for i := 1; i < len(port.packets); i++ {
+		pkt := &port.packets[i]
+		if pkt.pendingHandling() && pkt.TCP.Seq < minSeq {
+			// We are interested in the minimum incoming sequence number.
+			minSeq = pkt.TCP.Seq
+			idx = i
 		}
 	}
-	return &port.packets[0]
+	return &port.packets[idx]
 }
 
 // freePacket returns the first packet that is not pending handling or nil if all packets are pending.
