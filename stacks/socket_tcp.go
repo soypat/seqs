@@ -32,6 +32,25 @@ type TCPSocket struct {
 	closing   bool
 }
 
+type TCPSocketConfig struct {
+	TxBufSize int
+	RxBufSize int
+}
+
+func NewTCPSocket(stack *PortStack, cfg TCPSocketConfig) (*TCPSocket, error) {
+	if cfg.RxBufSize == 0 {
+		cfg.RxBufSize = defaultSocketSize
+	}
+	if cfg.TxBufSize == 0 {
+		cfg.TxBufSize = defaultSocketSize
+	}
+	t := &TCPSocket{
+		stack: stack,
+		tx:    ring{buf: make([]byte, cfg.TxBufSize)},
+		rx:    ring{buf: make([]byte, cfg.RxBufSize)},
+	}
+	return t, nil
+}
 func (t *TCPSocket) PortStack() *PortStack {
 	return t.stack
 }
@@ -88,46 +107,43 @@ func (t *TCPSocket) Recv(b []byte) (int, error) {
 	return n, err
 }
 
-// DialTCP opens an active TCP connection to the given remote address.
-func DialTCP(stack *PortStack, localPort uint16, remoteMAC [6]byte, remote netip.AddrPort, iss seqs.Value, window seqs.Size) (*TCPSocket, error) {
-	t := TCPSocket{
-		stack:     stack,
-		localPort: localPort,
-		remote:    remote,
-		remoteMAC: remoteMAC,
+// OpenDialTCP opens an active TCP connection to the given remote address.
+func (t *TCPSocket) OpenDialTCP(localPort uint16, remoteMAC [6]byte, remote netip.AddrPort, iss seqs.Value, bufsize int) error {
+	err := t.scb.Open(iss, seqs.Size(bufsize), seqs.StateSynSent)
+	if err != nil {
+		return err
 	}
+	t.localPort = localPort
+	t.remoteMAC = remoteMAC
+	t.remote = remote
 
-	err := stack.OpenTCP(localPort, t.handleMain)
+	err = t.stack.OpenTCP(localPort, t.handleMain)
 	if err != nil {
-		return nil, err
-	}
-	err = t.scb.Open(iss, window, seqs.StateSynSent)
-	if err != nil {
-		return nil, err
+		return err
 	}
 	err = t.scb.Send(t.synsentSegment())
 	if err != nil {
-		return nil, err
+		return err
 	}
-	return &t, nil
+	return nil
 }
 
-// ListenTCP opens a passive TCP connection that listens on the given port.
-// ListenTCP only handles one connection at a time, so API may change in future to accomodate multiple connections.
-func ListenTCP(stack *PortStack, portNum uint16, iss seqs.Value, window seqs.Size) (*TCPSocket, error) {
-	t := TCPSocket{
-		stack:     stack,
-		localPort: portNum,
-	}
-	err := stack.OpenTCP(portNum, t.handleMain)
+// OpenListenTCP opens a passive TCP connection that listens on the given port.
+// OpenListenTCP only handles one connection at a time, so API may change in future to accomodate multiple connections.
+func (t *TCPSocket) OpenListenTCP(localPortNum uint16, iss seqs.Value, bufsize int) error {
+	err := t.scb.Open(iss, seqs.Size(bufsize), seqs.StateListen)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	err = t.scb.Open(iss, window, seqs.StateListen)
+	t.remoteMAC = [6]byte{}
+	t.remote = netip.AddrPort{}
+	t.localPort = localPortNum
+
+	err = t.stack.OpenTCP(localPortNum, t.handleMain)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	return &t, nil
+	return nil
 }
 
 func (t *TCPSocket) Close() error {
