@@ -343,13 +343,30 @@ func createTCPClientServerPair(t *testing.T) (client, server *stacks.TCPSocket) 
 
 	// Configure server
 	serverIP := netip.AddrPortFrom(serverStack.Addr(), serverPort)
-	serverTCP, err := stacks.ListenTCP(serverStack, serverIP.Port(), serverISS, serverWND)
+
+	serverTCP, err := stacks.NewTCPSocket(serverStack, stacks.TCPSocketConfig{
+		TxBufSize: 2048,
+		RxBufSize: 2048,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = serverTCP.OpenListenTCP(serverIP.Port(), serverISS, serverWND)
+	// serverTCP, err := stacks.ListenTCP(serverStack, serverIP.Port(), serverISS, serverWND)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Configure client.
-	clientTCP, err := stacks.DialTCP(clientStack, clientPort, Stacks[1].MACAs6(), serverIP, clientISS, clientWND)
+	clientTCP, err := stacks.NewTCPSocket(clientStack, stacks.TCPSocketConfig{
+		TxBufSize: 2048,
+		RxBufSize: 2048,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = clientTCP.OpenDialTCP(clientPort, Stacks[1].MACAs6(), serverIP, clientISS, clientWND)
+	// clientTCP, err := stacks.DialTCP(clientStack, clientPort, Stacks[1].MACAs6(), serverIP, clientISS, clientWND)
 	if err != nil {
 		t.Fatal(err)
 	}
