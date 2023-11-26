@@ -16,16 +16,19 @@ import (
 const exchangesToEstablish = 4
 
 func TestDHCP(t *testing.T) {
-	const networkSize = 20 // How many distinct IP/MAC addresses on network.
+	const networkSize = 2 // How many distinct IP/MAC addresses on network.
+	requestedIP := netip.AddrFrom4([4]byte{192, 168, 1, 69})
 	Stacks := createPortStacks(t, networkSize)
 	clientStack := Stacks[0]
 	serverStack := Stacks[1]
 
 	client := stacks.DHCPv4Client{
-		MAC: clientStack.MACAs6(),
+		MAC:         clientStack.MACAs6(),
+		RequestedIP: requestedIP.As4(),
 	}
 	server := stacks.NewDHCPServer(67, serverStack.MACAs6(), serverStack.Addr())
-
+	clientStack.SetAddr(netip.AddrFrom4([4]byte{}))
+	serverStack.SetAddr(netip.AddrFrom4([4]byte{}))
 	err := clientStack.OpenUDP(68, client.HandleUDP)
 	if err != nil {
 		t.Fatal(err)
