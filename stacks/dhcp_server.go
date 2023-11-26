@@ -100,7 +100,7 @@ func (d *DHCPServer) HandleUDP(resp []byte, packet *UDPPacket) (_ int, err error
 	}
 
 	mac := packet.Eth.Source
-	client, _ := d.hosts[mac]
+	client := d.hosts[mac]
 	var msgType uint8
 	rcvHdr, err = parseDHCP(incpayload, func(opt dhcpOption) error {
 		switch opt.Opt {

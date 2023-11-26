@@ -220,7 +220,7 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 	case ipOffset < eth.SizeIPv4Header:
 		return errInvalidIHL
 
-	case ps.ip != ihdr.Destination:
+	case ps.ip != ihdr.Destination && ps.ip != [4]byte{}:
 		return nil // Not for us.
 	case uint16(offset) > end || int(offset) > len(payload) || int(end) > len(payload):
 		return errors.New("bad IP TotalLength/IHL")
