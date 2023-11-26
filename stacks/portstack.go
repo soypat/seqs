@@ -99,9 +99,8 @@ type PortStack struct {
 	// droppedPackets counts amount of packets corresponding to TCP/UDP ports
 	// that have been dropped due to the port requiring handling before admitting more packets.
 	droppedPackets uint32
-	// pending ARP reply that must be sent out.
-	pendingARPresponse eth.ARPv4Header
-	ARPresult          eth.ARPv4Header
+	// ARP state. See arp.go for detailed information on the ARP state machine.
+	pendingARPresponse, arpResult eth.ARPv4Header
 	// Auxiliary struct to avoid allocations passed to global handler.
 	auxEth eth.EthernetHeader
 	mac    [6]byte
@@ -163,7 +162,7 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 		println("recv", payload, ps.mtu)
 		return errPacketExceedsMTU
 	}
-	ps.debug("Stack.RecvEth:start", slog.Int("plen", len(payload)))
+	ps.trace("Stack.RecvEth:start", slog.Int("plen", len(payload)))
 	ps.lastRx = ps.now()
 
 	// Ethernet parsing block
@@ -183,30 +182,7 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 	}
 
 	if etype == eth.EtherTypeARP {
-		ahdr := eth.DecodeARPv4Header(payload[eth.SizeEthernetHeader:])
-		if ahdr.HardwareLength != 6 || ahdr.ProtoLength != 4 || ahdr.HardwareType != 1 || ahdr.AssertEtherType() != eth.EtherTypeIPv4 {
-			return errors.New("unsupported ARP") // Ignore ARP unsupported requests.
-		}
-		switch ahdr.Operation {
-		case 1: // ARP request.
-			if ps.pendingReplyToARP() || ahdr.ProtoTarget != ps.ip {
-				return nil // ARP reply pending or not for us.
-			}
-			// We need to respond to this ARP request.
-			ahdr.HardwareTarget = ps.MACAs6()
-			ahdr.Operation = 2 // Set as reply. This also flags the packet as pending.
-			ps.pendingARPresponse = ahdr
-
-		case 2: // ARP reply.
-			if ps.ARPresult.Operation != arpOpWait || ahdr.ProtoSender != ps.ip ||
-				ahdr.ProtoTarget != ps.ARPresult.ProtoTarget {
-				return nil // Result already received | not for us | does not correspond to last request.
-			}
-			ps.ARPresult = ahdr
-		default:
-			return errors.New("unsupported ARP operation")
-		}
-		return nil
+		return ps.recvARP(payload[eth.SizeEthernetHeader:])
 	}
 
 	// IP parsing block.
@@ -337,42 +313,23 @@ func (ps *PortStack) HandleEth(dst []byte) (n int, err error) {
 	defer func() {
 		if n > 0 && err == nil {
 			ps.lastTx = ps.now()
+			ps.processedPackets++
 		}
 	}()
+	ps.trace("HandleEth", slog.Int("dstlen", len(dst)))
 	switch {
 	case len(dst) < int(ps.mtu):
 		println("handle", dst, ps.mtu)
 		return 0, io.ErrShortBuffer
 
-	case ps.pendingRequestARP():
-		// We have a pending request from user to perform ARP.
-		ehdr := eth.EthernetHeader{
-			Destination:     broadcastMAC,
-			Source:          ps.MACAs6(),
-			SizeOrEtherType: uint16(eth.EtherTypeARP),
-		}
-		ehdr.Put(dst)
-		ps.ARPresult.Put(dst[eth.SizeEthernetHeader:])
-		ps.ARPresult.Operation = arpOpWait // Clear pending ARP to not loop.
-		return eth.SizeEthernetHeader + eth.SizeARPv4Header, nil
-
-	case ps.pendingReplyToARP():
-		// We need to respond to an ARP request that queries our address.
-		ehdr := eth.EthernetHeader{
-			Destination:     ps.pendingARPresponse.HardwareSender,
-			Source:          ps.MACAs6(),
-			SizeOrEtherType: uint16(eth.EtherTypeARP),
-		}
-		ehdr.Put(dst)
-		ps.pendingARPresponse.Put(dst[eth.SizeEthernetHeader:])
-		ps.pendingARPresponse.Operation = 0 // Clear pending ARP.
-		return eth.SizeEthernetHeader + eth.SizeARPv4Header, nil
-
-	case ps.pendingUDPv4 == 0 && ps.pendingTCPv4 == 0:
-		return 0, nil // No ARP or packets to handle.
+	case !ps.IsPendingHandling():
+		return 0, nil // No remaining packets to handle.
 	}
 
-	ps.info("HandleEth", slog.Int("dstlen", len(dst)))
+	n = ps.handleARP(dst)
+	if n != 0 {
+		return n, nil
+	}
 
 	type Socket interface {
 		Close()
@@ -411,7 +368,6 @@ func (ps *PortStack) HandleEth(dst []byte) (n int, err error) {
 			if err != nil {
 				return 0, err
 			} else if n > 0 {
-				ps.processedPackets++
 				return n, nil
 			}
 		}
@@ -426,7 +382,6 @@ func (ps *PortStack) HandleEth(dst []byte) (n int, err error) {
 			if err != nil {
 				return 0, err
 			} else if n > 0 {
-				ps.processedPackets++
 				return n, nil
 			}
 		}
@@ -435,38 +390,9 @@ func (ps *PortStack) HandleEth(dst []byte) (n int, err error) {
 	return 0, nil // Nothing handled.
 }
 
-var broadcastMAC = [6]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
-
-func (ps *PortStack) BeginResolveARPv4(target [4]byte) {
-	ps.ARPresult = eth.ARPv4Header{
-		Operation:      1, // Request.
-		HardwareType:   1, // Ethernet.
-		ProtoType:      uint16(eth.EtherTypeIPv4),
-		HardwareLength: 6,
-		ProtoLength:    4,
-		HardwareSender: ps.MACAs6(),
-		ProtoSender:    ps.ip,
-		HardwareTarget: [6]byte{}, // Zeroes, is filled by target.
-		ProtoTarget:    target,
-	}
-}
-
-// ARPv4Result returns the result of the last ARPv4 request.
-func (ps *PortStack) ARPv4Result() (eth.ARPv4Header, bool) {
-	return ps.ARPresult, ps.ARPresult.Operation == 2
-}
-
-func (ps *PortStack) pendingReplyToARP() bool {
-	return ps.pendingARPresponse.Operation == 2 // 2 means reply.
-}
-
-func (ps *PortStack) pendingRequestARP() bool {
-	return ps.ARPresult.Operation == 1 // User asked for a ARP request.
-}
-
 // IsPendingHandling checks if a call to HandleEth could possibly result in a packet being generated by the PortStack.
 func (ps *PortStack) IsPendingHandling() bool {
-	return ps.pendingUDPv4 > 0 || ps.pendingTCPv4 > 0 || ps.pendingRequestARP() || ps.pendingReplyToARP()
+	return ps.pendingUDPv4 > 0 || ps.pendingTCPv4 > 0 || ps.pendingResolveARPv4() || ps.pendingReplyToARP()
 }
 
 // OpenUDP opens a UDP port and sets the handler.
@@ -588,6 +514,10 @@ func (ps *PortStack) error(msg string, attrs ...slog.Attr) {
 
 func (ps *PortStack) debug(msg string, attrs ...slog.Attr) {
 	ps.logAttrsPrint(slog.LevelDebug, msg, attrs...)
+}
+
+func (ps *PortStack) trace(msg string, attrs ...slog.Attr) {
+	ps.logAttrsPrint(slog.LevelDebug-2, msg, attrs...)
 }
 
 func (ps *PortStack) logAttrsPrint(level slog.Level, msg string, attrs ...slog.Attr) {

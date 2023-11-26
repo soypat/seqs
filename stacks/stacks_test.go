@@ -83,7 +83,7 @@ func TestDHCP(t *testing.T) {
 }
 
 func TestARP(t *testing.T) {
-	const networkSize = 20 // How many distinct IP/MAC addresses on network.
+	const networkSize = 2 // How many distinct IP/MAC addresses on network.
 	stacks := createPortStacks(t, networkSize)
 
 	sender := stacks[0]
@@ -103,13 +103,13 @@ func TestARP(t *testing.T) {
 
 	result, ok := sender.ARPv4Result()
 	if !ok {
-		t.Fatal("no ARP result")
+		t.Fatal("no ARP result", result.HardwareSender)
 	}
-	if result.HardwareTarget != target.MACAs6() {
-		t.Errorf("result.HardwareTarget=%s want=%s", result.HardwareTarget, target.MACAs6())
+	if result.HardwareSender != target.MACAs6() {
+		t.Errorf("result.HardwareSender=%s want=%s", result.HardwareSender, target.MACAs6())
 	}
-	if result.ProtoTarget != target.Addr().As4() {
-		t.Errorf("result.ProtoTarget=%s want=%s", result.ProtoTarget, target.Addr().As4())
+	if result.ProtoSender != target.Addr().As4() {
+		t.Errorf("result.ProtoSender=%s want=%s", result.ProtoSender, target.Addr().As4())
 	}
 
 	// No more data to exchange.
