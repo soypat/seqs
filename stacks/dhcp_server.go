@@ -118,7 +118,7 @@ func (d *DHCPServer) HandleUDP(resp []byte, packet *UDPPacket) (_ int, err error
 		}
 		return nil
 	})
-	if err != nil || (rcvHdr.SIAddr != d.siaddr.As4()) {
+	if err != nil || (msgType != 1 && rcvHdr.SIAddr != d.siaddr.As4()) {
 		return 0, err
 	}
 
@@ -133,7 +133,9 @@ func (d *DHCPServer) HandleUDP(resp []byte, packet *UDPPacket) (_ int, err error
 		Options = []dhcpOption{
 			{eth.DHCP_MessageType, []byte{2}}, // DHCP Message Type: Offer
 		}
+		rcvHdr.SIAddr = d.siaddr.As4()
 		client.port = packet.UDP.SourcePort
+		client.state = dhcpStateWaitOffer
 
 	case 3: // DHCP Request.
 		if client.state != dhcpStateWaitOffer {
@@ -147,6 +149,7 @@ func (d *DHCPServer) HandleUDP(resp []byte, packet *UDPPacket) (_ int, err error
 	if err != nil {
 		return 0, nil
 	}
+	d.hosts[mac] = client
 	for i := dhcpOffset + 14; i < len(resp); i++ {
 		resp[i] = 0 // Zero out BOOTP and options fields.
 	}
@@ -162,7 +165,7 @@ func (d *DHCPServer) HandleUDP(resp []byte, packet *UDPPacket) (_ int, err error
 	resp[ptr] = 0xff // endmark
 	// Set Ethernet+IP+UDP headers.
 	payload := resp[dhcpOffset : dhcpOffset+sizeDHCPTotal]
-	d.setResponseUDP(packet, payload)
+	d.setResponseUDP(client.port, packet, payload)
 	packet.PutHeaders(resp)
 	return dhcpOffset + sizeDHCPTotal, nil
 }
@@ -174,7 +177,7 @@ func (d *DHCPServer) next(requested [4]byte) [4]byte {
 	return [4]byte{192, 168, 1, 2}
 }
 
-func (d *DHCPServer) setResponseUDP(packet *UDPPacket, payload []byte) {
+func (d *DHCPServer) setResponseUDP(clientport uint16, packet *UDPPacket, payload []byte) {
 	const ipLenInWords = 5
 	// Ethernet frame.
 	packet.Eth.Destination = eth.BroadcastHW6()
@@ -199,8 +202,8 @@ func (d *DHCPServer) setResponseUDP(packet *UDPPacket, payload []byte) {
 	packet.IP.Flags = 0
 
 	// UDP frame.
-	packet.UDP.DestinationPort = 67
-	packet.UDP.SourcePort = 68
+	packet.UDP.DestinationPort = clientport
+	packet.UDP.SourcePort = d.port
 	packet.UDP.Length = packet.IP.TotalLength - 4*ipLenInWords
 	packet.UDP.Checksum = packet.UDP.CalculateChecksumIPv4(&packet.IP, payload)
 }
