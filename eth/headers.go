@@ -231,9 +231,6 @@ const broadcast = "\xff\xff\xff" + "\xff\xff\xff"
 
 type EtherType uint16
 
-// AssertType returns the Size or EtherType field of the Ethernet frame as EtherType.
-func (e EthernetHeader) AssertType() EtherType { return EtherType(e.SizeOrEtherType) }
-
 // DecodeEthernetHeader decodes an ethernet frame from the first 14 bytes of buf.
 // It does not handle 802.1Q VLAN situation where at least 4 more bytes must be decoded from wire.
 func DecodeEthernetHeader(b []byte) (ethdr EthernetHeader) {
@@ -250,25 +247,28 @@ func DecodeEthernetHeader(b []byte) (ethdr EthernetHeader) {
 // must be read from the wire, of which the last 2 of these bytes contain the actual
 // SizeOrEtherType field, which needs to be validated yet again in case the packet is
 // a VLAN double-tap packet.
-func (ethdr *EthernetHeader) IsVLAN() bool { return ethdr.SizeOrEtherType == uint16(EtherTypeVLAN) }
+func (ehdr *EthernetHeader) IsVLAN() bool { return ehdr.SizeOrEtherType == uint16(EtherTypeVLAN) }
+
+// AssertType returns the Size or EtherType field of the Ethernet frame as EtherType.
+func (ehdr EthernetHeader) AssertType() EtherType { return EtherType(ehdr.SizeOrEtherType) }
 
 // Put marshals the ethernet frame onto buf. buf needs to be 14 bytes in length or Put panics.
-func (ethdr *EthernetHeader) Put(buf []byte) {
+func (ehdr *EthernetHeader) Put(buf []byte) {
 	_ = buf[13]
-	copy(buf[0:], ethdr.Destination[0:])
-	copy(buf[6:], ethdr.Source[0:])
-	binary.BigEndian.PutUint16(buf[12:14], ethdr.SizeOrEtherType)
+	copy(buf[0:], ehdr.Destination[0:])
+	copy(buf[6:], ehdr.Source[0:])
+	binary.BigEndian.PutUint16(buf[12:14], ehdr.SizeOrEtherType)
 }
 
 // String returns a human readable representation of the Ethernet frame.
-func (f *EthernetHeader) String() string {
+func (ehdr *EthernetHeader) String() string {
 	var vlanstr string
-	if f.IsVLAN() {
+	if ehdr.IsVLAN() {
 		vlanstr = "(VLAN)"
 	}
 	// Default case for most common IPv4 traffic.
 	ethertpStr := "IPv4"
-	ethertp := f.AssertType()
+	ethertp := ehdr.AssertType()
 	if ethertp != EtherTypeIPv4 {
 		var ok bool
 		ethertpStr, ok = _EtherType_map[EtherType(ethertp)]
@@ -276,8 +276,8 @@ func (f *EthernetHeader) String() string {
 			ethertpStr = strconv.Itoa(int(ethertp))
 		}
 	}
-	return strcat("dst: ", net.HardwareAddr(f.Destination[:]).String(), ", ",
-		"src: ", net.HardwareAddr(f.Source[:]).String(), ", ",
+	return strcat("dst: ", net.HardwareAddr(ehdr.Destination[:]).String(), ", ",
+		"src: ", net.HardwareAddr(ehdr.Source[:]).String(), ", ",
 		"etype: ", ethertpStr, vlanstr)
 }
 
@@ -296,10 +296,10 @@ func (iphdr *IPv4Header) PayloadLength() int {
 	return int(iphdr.TotalLength) - 20
 }
 
-func (ip *IPv4Header) String() string {
-	return strcat(net.IP(ip.Source[:]).String(), " -> ",
-		net.IP(ip.Destination[:]).String(), " proto=", strconv.Itoa(int(ip.Protocol)),
-		" len=", strconv.Itoa(int(ip.TotalLength)),
+func (iphdr *IPv4Header) String() string {
+	return strcat(net.IP(iphdr.Source[:]).String(), " -> ",
+		net.IP(iphdr.Destination[:]).String(), " proto=", strconv.Itoa(int(iphdr.Protocol)),
+		" len=", strconv.Itoa(int(iphdr.TotalLength)),
 	)
 }
 
@@ -400,86 +400,86 @@ func DecodeUDPHeader(buf []byte) (udp UDPHeader) {
 }
 
 // Put marshals the UDPHeader onto buf. If buf's length is less than 8 then Put panics.
-func (udphdr *UDPHeader) Put(buf []byte) {
+func (uhdr *UDPHeader) Put(buf []byte) {
 	_ = buf[7]
-	binary.BigEndian.PutUint16(buf[0:2], udphdr.SourcePort)
-	binary.BigEndian.PutUint16(buf[2:4], udphdr.DestinationPort)
-	binary.BigEndian.PutUint16(buf[4:6], udphdr.Length)
-	binary.BigEndian.PutUint16(buf[6:8], udphdr.Checksum)
+	binary.BigEndian.PutUint16(buf[0:2], uhdr.SourcePort)
+	binary.BigEndian.PutUint16(buf[2:4], uhdr.DestinationPort)
+	binary.BigEndian.PutUint16(buf[4:6], uhdr.Length)
+	binary.BigEndian.PutUint16(buf[6:8], uhdr.Checksum)
 }
 
 // CalculateChecksumIPv4 calculates the checksum for a UDP packet over IPv4.
-func (udphdr *UDPHeader) CalculateChecksumIPv4(pseudoHeader *IPv4Header, payload []byte) uint16 {
+func (uhdr *UDPHeader) CalculateChecksumIPv4(pseudoHeader *IPv4Header, payload []byte) uint16 {
 	var crc CRC791
 	crc.Write(pseudoHeader.Source[:])
 	crc.Write(pseudoHeader.Destination[:])
 	crc.AddUint16(uint16(pseudoHeader.Protocol)) // Pads with 0.
-	crc.AddUint16(udphdr.Length)                 // UDP length appears twice: https://stackoverflow.com/questions/45908909/my-udp-checksum-calculation-gives-wrong-results-every-time
-	crc.AddUint16(udphdr.SourcePort)
-	crc.AddUint16(udphdr.DestinationPort)
-	crc.AddUint16(udphdr.Length)
+	crc.AddUint16(uhdr.Length)                   // UDP length appears twice: https://stackoverflow.com/questions/45908909/my-udp-checksum-calculation-gives-wrong-results-every-time
+	crc.AddUint16(uhdr.SourcePort)
+	crc.AddUint16(uhdr.DestinationPort)
+	crc.AddUint16(uhdr.Length)
 	crc.Write(payload)
 	return crc.Sum16()
 }
 
-func (udphdr *UDPHeader) String() string {
-	return fmt.Sprintf("%d->%d len=%d", udphdr.SourcePort, udphdr.DestinationPort, udphdr.Length)
+func (uhdr *UDPHeader) String() string {
+	return fmt.Sprintf("%d->%d len=%d", uhdr.SourcePort, uhdr.DestinationPort, uhdr.Length)
 }
 
 // Put marshals the ARP header onto buf. buf needs to be 28 bytes in length or Put panics.
-func (arphdr *ARPv4Header) Put(buf []byte) {
+func (ahdr *ARPv4Header) Put(buf []byte) {
 	_ = buf[27]
-	binary.BigEndian.PutUint16(buf[0:], arphdr.HardwareType)
-	binary.BigEndian.PutUint16(buf[2:], arphdr.ProtoType)
-	buf[4] = arphdr.HardwareLength
-	buf[5] = arphdr.ProtoLength
-	binary.BigEndian.PutUint16(buf[6:], arphdr.Operation)
-	copy(buf[8:14], arphdr.HardwareSender[:])
-	copy(buf[14:18], arphdr.ProtoSender[:])
-	copy(buf[18:24], arphdr.HardwareTarget[:])
-	copy(buf[24:28], arphdr.ProtoTarget[:])
+	binary.BigEndian.PutUint16(buf[0:], ahdr.HardwareType)
+	binary.BigEndian.PutUint16(buf[2:], ahdr.ProtoType)
+	buf[4] = ahdr.HardwareLength
+	buf[5] = ahdr.ProtoLength
+	binary.BigEndian.PutUint16(buf[6:], ahdr.Operation)
+	copy(buf[8:14], ahdr.HardwareSender[:])
+	copy(buf[14:18], ahdr.ProtoSender[:])
+	copy(buf[18:24], ahdr.HardwareTarget[:])
+	copy(buf[24:28], ahdr.ProtoTarget[:])
 }
 
-func (a *ARPv4Header) String() string {
-	if bytesAreAll(a.HardwareTarget[:], 0) {
-		return strcat("ARP ", net.HardwareAddr(a.HardwareTarget[:]).String(), "->",
-			"who has ", net.IP(a.ProtoTarget[:]).String(), "?", " Tell ", net.IP(a.ProtoSender[:]).String())
+func (ahdr *ARPv4Header) String() string {
+	if bytesAreAll(ahdr.HardwareTarget[:], 0) {
+		return strcat("ARP ", net.HardwareAddr(ahdr.HardwareTarget[:]).String(), "->",
+			"who has ", net.IP(ahdr.ProtoTarget[:]).String(), "?", " Tell ", net.IP(ahdr.ProtoSender[:]).String())
 	}
-	return strcat("ARP ", net.HardwareAddr(a.HardwareSender[:]).String(), "->",
-		"I have ", net.IP(a.ProtoSender[:]).String(), "! Tell ", net.IP(a.ProtoTarget[:]).String(), ", aka ", net.HardwareAddr(a.HardwareTarget[:]).String())
+	return strcat("ARP ", net.HardwareAddr(ahdr.HardwareSender[:]).String(), "->",
+		"I have ", net.IP(ahdr.ProtoSender[:]).String(), "! Tell ", net.IP(ahdr.ProtoTarget[:]).String(), ", aka ", net.HardwareAddr(ahdr.HardwareTarget[:]).String())
 }
 
 // AssertEtherType returns the ProtoType field of the ARP header as EtherType.
-func (a *ARPv4Header) AssertEtherType() EtherType {
-	return EtherType(a.ProtoType)
+func (ahdr *ARPv4Header) AssertEtherType() EtherType {
+	return EtherType(ahdr.ProtoType)
 }
 
 // DecodeTCPHeader decodes a TCP header from buf and returns the TCPHeader
 // and the offset in bytes to the payload. Panics if buf is less than 20 bytes in length.
-func DecodeTCPHeader(buf []byte) (tcphdr TCPHeader, payloadOffset uint8) {
+func DecodeTCPHeader(buf []byte) (thdr TCPHeader, payloadOffset uint8) {
 	_ = buf[19]
-	tcphdr.SourcePort = binary.BigEndian.Uint16(buf[0:])
-	tcphdr.DestinationPort = binary.BigEndian.Uint16(buf[2:])
-	tcphdr.Seq = seqs.Value(binary.BigEndian.Uint32(buf[4:]))
-	tcphdr.Ack = seqs.Value(binary.BigEndian.Uint32(buf[8:]))
-	tcphdr.OffsetAndFlags[0] = binary.BigEndian.Uint16(buf[12:])
-	tcphdr.WindowSizeRaw = binary.BigEndian.Uint16(buf[14:])
-	tcphdr.Checksum = binary.BigEndian.Uint16(buf[16:])
-	tcphdr.UrgentPtr = binary.BigEndian.Uint16(buf[18:])
-	return tcphdr, tcphdr.OffsetInBytes()
+	thdr.SourcePort = binary.BigEndian.Uint16(buf[0:])
+	thdr.DestinationPort = binary.BigEndian.Uint16(buf[2:])
+	thdr.Seq = seqs.Value(binary.BigEndian.Uint32(buf[4:]))
+	thdr.Ack = seqs.Value(binary.BigEndian.Uint32(buf[8:]))
+	thdr.OffsetAndFlags[0] = binary.BigEndian.Uint16(buf[12:])
+	thdr.WindowSizeRaw = binary.BigEndian.Uint16(buf[14:])
+	thdr.Checksum = binary.BigEndian.Uint16(buf[16:])
+	thdr.UrgentPtr = binary.BigEndian.Uint16(buf[18:])
+	return thdr, thdr.OffsetInBytes()
 }
 
 // Put marshals the TCP frame onto buf. buf needs to be 20 bytes in length or Put panics.
-func (tcphdr *TCPHeader) Put(buf []byte) {
+func (thdr *TCPHeader) Put(buf []byte) {
 	_ = buf[19]
-	binary.BigEndian.PutUint16(buf[0:], tcphdr.SourcePort)
-	binary.BigEndian.PutUint16(buf[2:], tcphdr.DestinationPort)
-	binary.BigEndian.PutUint32(buf[4:], uint32(tcphdr.Seq))
-	binary.BigEndian.PutUint32(buf[8:], uint32(tcphdr.Ack))
-	binary.BigEndian.PutUint16(buf[12:], tcphdr.OffsetAndFlags[0])
-	binary.BigEndian.PutUint16(buf[14:], tcphdr.WindowSizeRaw)
-	binary.BigEndian.PutUint16(buf[16:], tcphdr.Checksum)
-	binary.BigEndian.PutUint16(buf[18:], tcphdr.UrgentPtr)
+	binary.BigEndian.PutUint16(buf[0:], thdr.SourcePort)
+	binary.BigEndian.PutUint16(buf[2:], thdr.DestinationPort)
+	binary.BigEndian.PutUint32(buf[4:], uint32(thdr.Seq))
+	binary.BigEndian.PutUint32(buf[8:], uint32(thdr.Ack))
+	binary.BigEndian.PutUint16(buf[12:], thdr.OffsetAndFlags[0])
+	binary.BigEndian.PutUint16(buf[14:], thdr.WindowSizeRaw)
+	binary.BigEndian.PutUint16(buf[16:], thdr.Checksum)
+	binary.BigEndian.PutUint16(buf[18:], thdr.UrgentPtr)
 }
 
 // Segment returns a [seqs.Segment] representation of the TCP header. It requires
@@ -489,13 +489,13 @@ func (tcphdr *TCPHeader) Put(buf []byte) {
 //	end := ip.TotalLength + eth.SizeEthernetHeader
 //	payload := buf[offset:end]
 //	payloadSize := len(payload)
-func (tcphdr *TCPHeader) Segment(payloadSize int) seqs.Segment {
+func (thdr *TCPHeader) Segment(payloadSize int) seqs.Segment {
 	return seqs.Segment{
-		SEQ:     tcphdr.Seq,
-		ACK:     tcphdr.Ack,
-		WND:     tcphdr.WindowSize(),
+		SEQ:     thdr.Seq,
+		ACK:     thdr.Ack,
+		WND:     thdr.WindowSize(),
 		DATALEN: seqs.Size(payloadSize),
-		Flags:   tcphdr.Flags(),
+		Flags:   thdr.Flags(),
 	}
 }
 
@@ -504,45 +504,45 @@ func (tcphdr *TCPHeader) Segment(payloadSize int) seqs.Segment {
 // 20 bytes and maximum of 60 bytes, allowing for up to 40 bytes of options in
 // the header. This field gets its name from the fact that it is also the offset
 // from the start of the TCP segment to the actual data.
-func (tcphdr *TCPHeader) Offset() (tcpWords uint8) {
-	return uint8(tcphdr.OffsetAndFlags[0] >> (8 + 4))
+func (thdr *TCPHeader) Offset() (tcpWords uint8) {
+	return uint8(thdr.OffsetAndFlags[0] >> (8 + 4))
 }
 
 // OffsetInBytes returns the size of the TCP header in bytes, including options.
 // See [TCPHeader.Offset] for more information.
-func (tcphdr *TCPHeader) OffsetInBytes() uint8 {
-	return tcphdr.Offset() * tcpWordlen
+func (thdr *TCPHeader) OffsetInBytes() uint8 {
+	return thdr.Offset() * tcpWordlen
 }
 
-func (tcphdr *TCPHeader) Flags() seqs.Flags {
-	return seqs.Flags(tcphdr.OffsetAndFlags[0] & tcpFlagmask)
+func (thdr *TCPHeader) Flags() seqs.Flags {
+	return seqs.Flags(thdr.OffsetAndFlags[0] & tcpFlagmask)
 }
 
-func (tcphdr *TCPHeader) SetFlags(v seqs.Flags) {
-	onlyOffset := tcphdr.OffsetAndFlags[0] &^ tcpFlagmask
-	tcphdr.OffsetAndFlags[0] = onlyOffset | uint16(v)&tcpFlagmask
+func (thdr *TCPHeader) SetFlags(v seqs.Flags) {
+	onlyOffset := thdr.OffsetAndFlags[0] &^ tcpFlagmask
+	thdr.OffsetAndFlags[0] = onlyOffset | uint16(v)&tcpFlagmask
 }
 
-func (tcphdr *TCPHeader) SetOffset(tcpWords uint8) {
+func (thdr *TCPHeader) SetOffset(tcpWords uint8) {
 	if tcpWords > 0b1111 {
 		panic("attempted to set an offset too large")
 	}
-	onlyFlags := tcphdr.OffsetAndFlags[0] & tcpFlagmask
-	tcphdr.OffsetAndFlags[0] = onlyFlags | (uint16(tcpWords) << 12)
+	onlyFlags := thdr.OffsetAndFlags[0] & tcpFlagmask
+	thdr.OffsetAndFlags[0] = onlyFlags | (uint16(tcpWords) << 12)
 }
 
 // WindowSize is a convenience method for obtaining a seqs.Size from the TCP header internal WindowSize 16bit field.
-func (tcphdr *TCPHeader) WindowSize() seqs.Size {
-	return seqs.Size(tcphdr.WindowSizeRaw)
+func (thdr *TCPHeader) WindowSize() seqs.Size {
+	return seqs.Size(thdr.WindowSizeRaw)
 }
 
 // CalculateChecksumIPv4 calculates the checksum of the TCP header, options and payload.
-func (tcphdr *TCPHeader) CalculateChecksumIPv4(pseudoHeader *IPv4Header, tcpOptions, payload []byte) uint16 {
+func (thdr *TCPHeader) CalculateChecksumIPv4(pseudoHeader *IPv4Header, tcpOptions, payload []byte) uint16 {
 	const sizePseudo = 12
 	var crc CRC791
 	var buf [sizePseudo + 20]byte
 	pseudoHeader.PutPseudo(buf[:sizePseudo])
-	tcphdr.Put(buf[sizePseudo:])
+	thdr.Put(buf[sizePseudo:])
 	// Zero out checksum field.
 	binary.BigEndian.PutUint16(buf[sizePseudo+16:sizePseudo+18], 0)
 	crc.Write(buf[:])
@@ -551,9 +551,9 @@ func (tcphdr *TCPHeader) CalculateChecksumIPv4(pseudoHeader *IPv4Header, tcpOpti
 	return crc.Sum16()
 }
 
-func (tcp *TCPHeader) String() string {
-	return strcat("TCP port ", u32toa(uint32(tcp.SourcePort)), "->", u32toa(uint32(tcp.DestinationPort)),
-		tcp.Flags().String(), "seq ", u32toa(uint32(tcp.Seq)), " ack ", u32toa(uint32(tcp.Ack)))
+func (thdr *TCPHeader) String() string {
+	return strcat("TCP port ", u32toa(uint32(thdr.SourcePort)), "->", u32toa(uint32(thdr.DestinationPort)),
+		thdr.Flags().String(), "seq ", u32toa(uint32(thdr.Seq)), " ack ", u32toa(uint32(thdr.Ack)))
 }
 
 func u32toa(u uint32) string {
@@ -582,20 +582,20 @@ func hexascii(b byte) [2]byte {
 	return [2]byte{hexstr[b>>4], hexstr[b&0b1111]}
 }
 
-func (d *DHCPHeader) Put(dst []byte) {
+func (dhdr *DHCPHeader) Put(dst []byte) {
 	_ = dst[43]
-	dst[0] = d.OP
-	dst[1] = d.HType
-	dst[2] = d.HLen
-	dst[3] = d.HOps
-	binary.BigEndian.PutUint32(dst[4:8], d.Xid)
-	binary.BigEndian.PutUint16(dst[8:10], d.Secs)
-	binary.BigEndian.PutUint16(dst[10:12], d.Flags)
-	copy(dst[12:16], d.CIAddr[:])
-	copy(dst[16:20], d.YIAddr[:])
-	copy(dst[20:24], d.SIAddr[:])
-	copy(dst[24:28], d.GIAddr[:])
-	copy(dst[28:44], d.CHAddr[:])
+	dst[0] = dhdr.OP
+	dst[1] = dhdr.HType
+	dst[2] = dhdr.HLen
+	dst[3] = dhdr.HOps
+	binary.BigEndian.PutUint32(dst[4:8], dhdr.Xid)
+	binary.BigEndian.PutUint16(dst[8:10], dhdr.Secs)
+	binary.BigEndian.PutUint16(dst[10:12], dhdr.Flags)
+	copy(dst[12:16], dhdr.CIAddr[:])
+	copy(dst[16:20], dhdr.YIAddr[:])
+	copy(dst[20:24], dhdr.SIAddr[:])
+	copy(dst[24:28], dhdr.GIAddr[:])
+	copy(dst[28:44], dhdr.CHAddr[:])
 }
 
 func DecodeDHCPHeader(src []byte) (d DHCPHeader) {
@@ -615,22 +615,22 @@ func DecodeDHCPHeader(src []byte) (d DHCPHeader) {
 	return d
 }
 
-func (d *DHCPHeader) String() (s string) {
-	s = "DHCP op=" + strconv.Itoa(int(d.OP)) + " "
-	if d.CIAddr != [4]byte{} {
-		s += "ciaddr=" + net.IP(d.CIAddr[:]).String() + " "
+func (dhdr *DHCPHeader) String() (s string) {
+	s = "DHCP op=" + strconv.Itoa(int(dhdr.OP)) + " "
+	if dhdr.CIAddr != [4]byte{} {
+		s += "ciaddr=" + net.IP(dhdr.CIAddr[:]).String() + " "
 	}
-	if d.YIAddr != [4]byte{} {
-		s += "yiaddr=" + net.IP(d.YIAddr[:]).String() + " "
+	if dhdr.YIAddr != [4]byte{} {
+		s += "yiaddr=" + net.IP(dhdr.YIAddr[:]).String() + " "
 	}
-	if d.SIAddr != [4]byte{} {
-		s += "siaddr=" + net.IP(d.SIAddr[:]).String() + " "
+	if dhdr.SIAddr != [4]byte{} {
+		s += "siaddr=" + net.IP(dhdr.SIAddr[:]).String() + " "
 	}
-	if d.GIAddr != [4]byte{} {
-		s += "giaddr=" + net.IP(d.GIAddr[:]).String() + " "
+	if dhdr.GIAddr != [4]byte{} {
+		s += "giaddr=" + net.IP(dhdr.GIAddr[:]).String() + " "
 	}
-	if d.CHAddr != [16]byte{} && d.HLen < 16 && d.HLen > 0 {
-		s += "chaddr=" + net.HardwareAddr(d.CHAddr[:d.HLen]).String() + " "
+	if dhdr.CHAddr != [16]byte{} && dhdr.HLen < 16 && dhdr.HLen > 0 {
+		s += "chaddr=" + net.HardwareAddr(dhdr.CHAddr[:dhdr.HLen]).String() + " "
 	}
 	return s
 }
