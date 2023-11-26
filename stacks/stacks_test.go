@@ -41,11 +41,11 @@ func TestDHCP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
+	const minDHCPSize = eth.SizeEthernetHeader + eth.SizeIPv4Header + eth.SizeUDPHeader + eth.SizeDHCPHeader
 	// Client performs DISCOVER.
 	ex, n := exchangeStacks(t, 1, Stacks...)
-	if n < eth.SizeEthernetHeader+eth.SizeIPv4Header+eth.SizeUDPHeader+eth.SizeDHCPHeader {
-		t.Errorf("ex[%d] sent=%d want>=%d", ex, n, eth.SizeEthernetHeader+eth.SizeIPv4Header+eth.SizeUDPHeader+eth.SizeDHCPHeader)
+	if n < minDHCPSize {
+		t.Errorf("ex[%d] sent=%d want>=%d", ex, n, minDHCPSize)
 	}
 	if client.Done() {
 		t.Fatal("client done on first exchange?!")
@@ -53,8 +53,32 @@ func TestDHCP(t *testing.T) {
 
 	// Server responds with OFFER.
 	ex, n = exchangeStacks(t, 1, Stacks...)
-	if n < eth.SizeEthernetHeader+eth.SizeIPv4Header+eth.SizeUDPHeader+eth.SizeDHCPHeader {
-		t.Errorf("ex[%d] sent=%d want>=%d", ex, n, eth.SizeEthernetHeader+eth.SizeIPv4Header+eth.SizeUDPHeader+eth.SizeDHCPHeader)
+	if n < minDHCPSize {
+		t.Errorf("ex[%d] sent=%d want>=%d", ex, n, minDHCPSize)
+	}
+
+	// Client performs REQUEST.
+	ex, n = exchangeStacks(t, 1, Stacks...)
+	if n < minDHCPSize {
+		t.Errorf("ex[%d] sent=%d want>=%d", ex, n, minDHCPSize)
+	}
+	if client.Done() {
+		t.Fatal("client done on request?!")
+	}
+
+	// Server performs ACK.
+	ex, n = exchangeStacks(t, 1, Stacks...)
+	if n < minDHCPSize {
+		t.Errorf("ex[%d] sent=%d want>=%d", ex, n, minDHCPSize)
+	}
+	if client.Done() {
+		t.Fatal("client not processed ACK yet")
+	}
+
+	// Client processes ACK
+	exchangeStacks(t, 1, Stacks...)
+	if !client.Done() {
+		t.Fatal("client should be done")
 	}
 }
 
