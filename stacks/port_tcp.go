@@ -229,11 +229,10 @@ func (pkt *TCPPacket) CalculateHeaders(seg seqs.Segment, payload []byte) {
 	pkt.IP.ID = prand16(pkt.IP.ID)
 	pkt.IP.VersionAndIHL = ipLenInWords // Sets IHL: No IP options. Version set automatically.
 	pkt.IP.TotalLength = 4*ipLenInWords + eth.SizeTCPHeader + uint16(len(payload))
+	// TODO(soypat): Document how to handle ToS. For now just use ToS used by other side.
+	pkt.IP.Flags = 0 // packet.IP.ToS = 0
 	pkt.IP.Checksum = pkt.IP.CalculateChecksum()
 
-	// TODO(soypat): Document how to handle ToS. For now just use ToS used by other side.
-	// packet.IP.ToS = 0
-	pkt.IP.Flags = 0
 	// TCP frame.
 	const offset = 5
 

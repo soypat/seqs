@@ -3,15 +3,13 @@ package eth
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"math/rand"
 	"testing"
 )
 
 func TestTCPChecksum(t *testing.T) {
-	// ip="{VersionAndIHL:69 ToS:0 TotalLength:60 ID:5534 Flags:16384 TTL:64 Protocol:6 Checksum:41160 Source:[192 168 1 116] Destination:[192 168 1 145]}" stacks.tcp="{SourcePort:46468 DestinationPort:1234 Seq:1104871141 Ack:0 OffsetAndFlags:[40962] WindowSizeRaw:64240 Checksum:30430 UrgentPtr:0}" stacks.payload="" stacks.tcpOptions="\x02\x04\x05\xb4\x04\x02\b\nFP\x10t\x00\x00\x00\x00\x01\x03\x03\a" stacks.gotsum=30410 stacks.thdr.Checksum=30430
-	// ip="{VersionAndIHL:69 ToS:0 TotalLength:60 ID:5535 Flags:16384 TTL:64 Protocol:6 Checksum:41159 Source:[192 168 1 116] Destination:[192 168 1 145]}" stacks.tcp="{SourcePort:46468 DestinationPort:1234 Seq:1104871141 Ack:0 OffsetAndFlags:[40962] WindowSizeRaw:64240 Checksum:29399 UrgentPtr:0}" stacks.payload="" stacks.tcpOptions="\x02\x04\x05\xb4\x04\x02\b\nFP\x14{\x00\x00\x00\x00\x01\x03\x03\a" stacks.gotsum=29379 stacks.thdr.Checksum=29399
-
 	type ttest struct {
 		ihdr     IPv4Header
 		thdr     TCPHeader
@@ -215,4 +213,17 @@ func sum(b []byte) uint16 {
 		sum = (sum & 0xffff) + (sum >> 16)
 	}
 	return uint16(^sum) // One's complement.
+}
+
+func TestIPChecksum(t *testing.T) {
+	const expected = 0x5c14
+	ipFrame, _ := hex.DecodeString("450000289a61000040061c14c0a80178c0a80192")
+	ihdr, offset := DecodeIPv4Header(ipFrame)
+	if offset != 20 {
+		t.Errorf("incorrect IP header offset: %d", offset)
+	}
+	got := ihdr.CalculateChecksum()
+	if got != expected {
+		t.Errorf("checksum mismatch, got %#04x; expected %#04x", got, expected)
+	}
 }
