@@ -8,6 +8,34 @@ import (
 	"testing"
 )
 
+func TestTCPChecksum(t *testing.T) {
+	// ip="{VersionAndIHL:69 ToS:0 TotalLength:60 ID:5534 Flags:16384 TTL:64 Protocol:6 Checksum:41160 Source:[192 168 1 116] Destination:[192 168 1 145]}" stacks.tcp="{SourcePort:46468 DestinationPort:1234 Seq:1104871141 Ack:0 OffsetAndFlags:[40962] WindowSizeRaw:64240 Checksum:30430 UrgentPtr:0}" stacks.payload="" stacks.tcpOptions="\x02\x04\x05\xb4\x04\x02\b\nFP\x10t\x00\x00\x00\x00\x01\x03\x03\a" stacks.gotsum=30410 stacks.thdr.Checksum=30430
+	// ip="{VersionAndIHL:69 ToS:0 TotalLength:60 ID:5535 Flags:16384 TTL:64 Protocol:6 Checksum:41159 Source:[192 168 1 116] Destination:[192 168 1 145]}" stacks.tcp="{SourcePort:46468 DestinationPort:1234 Seq:1104871141 Ack:0 OffsetAndFlags:[40962] WindowSizeRaw:64240 Checksum:29399 UrgentPtr:0}" stacks.payload="" stacks.tcpOptions="\x02\x04\x05\xb4\x04\x02\b\nFP\x14{\x00\x00\x00\x00\x01\x03\x03\a" stacks.gotsum=29379 stacks.thdr.Checksum=29399
+	type ttest struct {
+		ihdr     IPv4Header
+		thdr     TCPHeader
+		payload  string
+		options  string
+		expected uint16
+	}
+	var tests = []ttest{
+		{
+			ihdr:     IPv4Header{VersionAndIHL: 69, TotalLength: 60, ID: 5534, Flags: 16384, TTL: 64, Protocol: 6, Checksum: 41160, Source: [4]byte{192, 168, 1, 116}, Destination: [4]byte{192, 168, 1, 145}},
+			thdr:     TCPHeader{SourcePort: 46468, DestinationPort: 1234, Seq: 1104871141, Ack: 0, OffsetAndFlags: [1]uint16{40962}, WindowSizeRaw: 64240, Checksum: 30430},
+			options:  "\x02\x04\x05\xb4\x04\x02\b\nFP\x10t\x00\x00\x00\x00\x01\x03\x03\a",
+			expected: 30430,
+		},
+	}
+
+	for i := range tests {
+		thdr := tests[i].thdr
+		got := thdr.CalculateChecksumIPv4(&tests[i].ihdr, []byte(tests[i].options), []byte(tests[i].payload))
+		if got != tests[i].expected {
+			t.Errorf("checksum mismatch, got %#04[1]x(%[1]d); expected %#04[2]x(%[2]d)", got, tests[i].expected)
+		}
+	}
+}
+
 func TestUDPChecksum(t *testing.T) {
 	var testUDPPacket = []byte{
 		0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x78, 0x44, 0x76, 0xc4, 0x8d, 0xb0, 0x08, 0x00, 0x45, 0x00, // |......xDv.....E.|

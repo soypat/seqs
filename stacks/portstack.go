@@ -271,6 +271,12 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 		tcpOptions := payload[eth.SizeTCPHeader:offset]
 		payload = payload[offset:]
 		gotsum := thdr.CalculateChecksumIPv4(&ihdr, tcpOptions, payload)
+		ps.info("TCP:rx",
+			bytesAttr("payload", payload),
+			bytesAttr("tcpOptions", tcpOptions),
+			slog.Uint64("gotsum", uint64(gotsum)),
+			slog.Uint64("thdr.Checksum", uint64(thdr.Checksum)),
+		)
 		if gotsum != thdr.Checksum {
 			// return errChecksumTCPorUDP
 			println("bad checksum")
@@ -582,4 +588,11 @@ func findAvailPort[T porter](list []T, portNum uint16) (*T, error) {
 		return nil, errPortNoneAvail
 	}
 	return &list[availableIdx], nil
+}
+
+func bytesAttr(name string, b []byte) slog.Attr {
+	return slog.Attr{
+		Key:   name,
+		Value: slog.StringValue(string(b)),
+	}
 }
