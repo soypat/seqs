@@ -288,14 +288,6 @@ func (iphdr *IPv4Header) Version() uint8 { return iphdr.VersionAndIHL >> 4 }
 func (iphdr *IPv4Header) DSCP() uint8    { return iphdr.ToS >> 2 }
 func (iphdr *IPv4Header) ECN() uint8     { return iphdr.ToS & 0b11 }
 
-func (iphdr *IPv4Header) FrameLength() int {
-	return int(iphdr.TotalLength)
-}
-
-func (iphdr *IPv4Header) PayloadLength() int {
-	return int(iphdr.TotalLength) - 20
-}
-
 func (iphdr *IPv4Header) String() string {
 	return strcat(net.IP(iphdr.Source[:]).String(), " -> ",
 		net.IP(iphdr.Destination[:]).String(), " proto=", strconv.Itoa(int(iphdr.Protocol)),
@@ -543,8 +535,8 @@ func (thdr *TCPHeader) CalculateChecksumIPv4(pseudoHeader *IPv4Header, tcpOption
 		var crc CRC791
 		crc.Write(pseudoHeader.Source[:])
 		crc.Write(pseudoHeader.Destination[:])
-		crc.AddUint16(pseudoHeader.TotalLength)
-		crc.AddUint16(uint16(pseudoHeader.Protocol)) // Pads with 0.
+		crc.AddUint16(pseudoHeader.TotalLength - uint16(pseudoHeader.IHL()*4)) // TCP length.
+		crc.AddUint16(uint16(pseudoHeader.Protocol))                           // Pads with 0.
 		crc.AddUint16(thdr.SourcePort)
 		crc.AddUint16(thdr.DestinationPort)
 		crc.AddUint32(uint32(thdr.Seq))
