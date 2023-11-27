@@ -108,14 +108,16 @@ func (t *TCPSocket) Recv(b []byte) (int, error) {
 }
 
 // OpenDialTCP opens an active TCP connection to the given remote address.
-func (t *TCPSocket) OpenDialTCP(localPort uint16, remoteMAC [6]byte, remote netip.AddrPort, iss seqs.Value, bufsize int) error {
-	err := t.scb.Open(iss, seqs.Size(bufsize), seqs.StateSynSent)
+func (t *TCPSocket) OpenDialTCP(localPort uint16, remoteMAC [6]byte, remote netip.AddrPort, iss seqs.Value) error {
+	err := t.scb.Open(iss, seqs.Size(len(t.rx.buf)), seqs.StateSynSent)
 	if err != nil {
 		return err
 	}
 	t.localPort = localPort
 	t.remoteMAC = remoteMAC
 	t.remote = remote
+	t.rx.Reset()
+	t.tx.Reset()
 
 	err = t.stack.OpenTCP(localPort, t.handleMain)
 	if err != nil {
@@ -130,14 +132,16 @@ func (t *TCPSocket) OpenDialTCP(localPort uint16, remoteMAC [6]byte, remote neti
 
 // OpenListenTCP opens a passive TCP connection that listens on the given port.
 // OpenListenTCP only handles one connection at a time, so API may change in future to accomodate multiple connections.
-func (t *TCPSocket) OpenListenTCP(localPortNum uint16, iss seqs.Value, bufsize int) error {
-	err := t.scb.Open(iss, seqs.Size(bufsize), seqs.StateListen)
+func (t *TCPSocket) OpenListenTCP(localPortNum uint16, iss seqs.Value) error {
+	err := t.scb.Open(iss, seqs.Size(len(t.rx.buf)), seqs.StateListen)
 	if err != nil {
 		return err
 	}
 	t.remoteMAC = [6]byte{}
 	t.remote = netip.AddrPort{}
 	t.localPort = localPortNum
+	t.rx.Reset()
+	t.tx.Reset()
 
 	err = t.stack.OpenTCP(localPortNum, t.handleMain)
 	if err != nil {
