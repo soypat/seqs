@@ -150,7 +150,7 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 	var ehdr eth.EthernetHeader
 	defer func() {
 		if err != nil {
-			ps.error("Stack.RecvEth", slog.String("err", err.Error()), slog.Any("IP", ihdr))
+			ps.error("Stack.RecvEth", slog.String("err", err.Error()))
 		} else {
 			ps.lastRxSuccess = ps.lastRx
 		}
@@ -240,7 +240,7 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 			return ErrDroppedPacket // Our socket needs handling before admitting more packets.
 		}
 		// The packet is meant for us. We handle it.
-		ps.info("UDP packet stored", slog.Int("plen", len(payload)))
+		ps.info("UDP:stored", slog.Int("plen", len(payload)))
 		// Flag packets as needing processing.
 		ps.pendingUDPv4++
 		port.LastRx = ps.lastRx // set as unhandled here.
@@ -252,7 +252,6 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 		copy(pkt.payload[:], payload)
 
 	case 6:
-		ps.info("TCP packet received", slog.Int("plen", len(payload)))
 		// TCP (Transport Control Protocol).
 		switch {
 		case len(ps.portsTCP) == 0:
@@ -271,17 +270,13 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 		tcpOptions := payload[eth.SizeTCPHeader:offset]
 		payload = payload[offset:]
 		gotsum := thdr.CalculateChecksumIPv4(&ihdr, tcpOptions, payload)
-		ps.info("TCP:rx",
-			bytesAttr("payload", payload),
-			bytesAttr("tcpOptions", tcpOptions),
-			slog.Uint64("gotsum", uint64(gotsum)),
-			slog.Uint64("thdr.Checksum", uint64(thdr.Checksum)),
-		)
+
 		if gotsum != thdr.Checksum {
 			return errChecksumTCPorUDP
 		}
 		port := findPort(ps.portsTCP, thdr.DestinationPort)
 		if port == nil {
+			ps.debug("tcp:noSocket", slog.Int("port", int(thdr.DestinationPort)), slog.Int("avail", len(ps.portsTCP)))
 			break // No socket listening on this port.
 		}
 
@@ -291,8 +286,11 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 			ps.droppedPackets++
 			return ErrDroppedPacket // Our socket needs handling before admitting more packets.
 		}
-
-		ps.info("TCP packet stored", slog.Int("plen", len(payload)))
+		ps.info("TCP:stored",
+			slog.Int("opt", len(tcpOptions)),
+			slog.Int("ipopt", len(ipOptions)),
+			slog.Int("payload", len(payload)),
+		)
 		// Flag packets as needing processing.
 		ps.pendingTCPv4++
 		port.LastRx = ps.lastRx // set as unhandled here.
