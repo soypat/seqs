@@ -278,8 +278,7 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 			slog.Uint64("thdr.Checksum", uint64(thdr.Checksum)),
 		)
 		if gotsum != thdr.Checksum {
-			// return errChecksumTCPorUDP
-			println("bad checksum")
+			return errChecksumTCPorUDP
 		}
 		port := findPort(ps.portsTCP, thdr.DestinationPort)
 		if port == nil {
