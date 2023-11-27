@@ -421,7 +421,7 @@ func createTCPClientServerPair(t *testing.T) (client, server *stacks.TCPSocket) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = serverTCP.OpenListenTCP(serverIP.Port(), serverISS, serverWND)
+	err = serverTCP.OpenListenTCP(serverIP.Port(), serverISS)
 	// serverTCP, err := stacks.ListenTCP(serverStack, serverIP.Port(), serverISS, serverWND)
 	if err != nil {
 		t.Fatal(err)
@@ -435,7 +435,7 @@ func createTCPClientServerPair(t *testing.T) (client, server *stacks.TCPSocket) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = clientTCP.OpenDialTCP(clientPort, Stacks[1].MACAs6(), serverIP, clientISS, clientWND)
+	err = clientTCP.OpenDialTCP(clientPort, serverStack.MACAs6(), serverIP, clientISS)
 	// clientTCP, err := stacks.DialTCP(clientStack, clientPort, Stacks[1].MACAs6(), serverIP, clientISS, clientWND)
 	if err != nil {
 		t.Fatal(err)
