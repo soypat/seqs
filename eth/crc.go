@@ -43,6 +43,12 @@ func (c *CRC791) Write(buff []byte) (n int, err error) {
 }
 
 // Add16 adds value to the running checksum interpreted as BigEndian (network order).
+func (c *CRC791) AddUint32(value uint32) {
+	c.AddUint16(uint16(value >> 16))
+	c.AddUint16(uint16(value))
+}
+
+// Add16 adds value to the running checksum interpreted as BigEndian (network order).
 func (c *CRC791) AddUint16(value uint16) {
 	if c.needPad {
 		c.sum += uint32(c.excedent)<<8 | uint32(value>>8)
