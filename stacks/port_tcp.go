@@ -293,6 +293,6 @@ func ParseTCPPacket(b []byte) (pkt TCPPacket, err error) {
 	n += copy(pkt.data[n:], tcpOptions)
 	copy(pkt.data[n:], tcpPayload)
 
-	pkt.Rx = forcedTime // Mark packet as containing data.
+	pkt.Rx = forcedTime.Add(1) // Mark packet as containing data.
 	return pkt, nil
 }

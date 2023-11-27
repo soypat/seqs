@@ -538,6 +538,23 @@ func (thdr *TCPHeader) WindowSize() seqs.Size {
 
 // CalculateChecksumIPv4 calculates the checksum of the TCP header, options and payload.
 func (thdr *TCPHeader) CalculateChecksumIPv4(pseudoHeader *IPv4Header, tcpOptions, payload []byte) uint16 {
+	const directMethod = true
+	if directMethod {
+		var crc CRC791
+		crc.Write(pseudoHeader.Source[:])
+		crc.Write(pseudoHeader.Destination[:])
+		crc.AddUint16(pseudoHeader.TotalLength)
+		crc.AddUint16(uint16(pseudoHeader.Protocol)) // Pads with 0.
+		crc.AddUint16(thdr.SourcePort)
+		crc.AddUint16(thdr.DestinationPort)
+		crc.AddUint32(uint32(thdr.Seq))
+		crc.AddUint32(uint32(thdr.Ack))
+		crc.AddUint16(thdr.OffsetAndFlags[0])
+		crc.AddUint16(thdr.WindowSizeRaw)
+		crc.Write(tcpOptions)
+		crc.Write(payload)
+		return crc.Sum16()
+	}
 	const sizePseudo = 12
 	var crc CRC791
 	var buf [sizePseudo + 20]byte
