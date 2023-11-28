@@ -116,7 +116,7 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 
 	pending := tcb.pending
 	if payloadLen > 0 {
-		pending[0] |= FlagPSH
+		pending[0] |= FlagPSH // TODO(soypat): Add ACK here without breaking tests.
 	}
 
 	var ack Value
