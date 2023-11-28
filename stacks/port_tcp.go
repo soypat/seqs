@@ -21,7 +21,7 @@ type tcpPort struct {
 	LastRx  time.Time
 	handler tcphandler
 	port    uint16
-	packets [1]TCPPacket
+	packets []TCPPacket
 }
 
 func (port tcpPort) Port() uint16 { return port.port }

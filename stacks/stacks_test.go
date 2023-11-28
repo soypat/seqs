@@ -15,10 +15,13 @@ import (
 	"github.com/soypat/seqs/stacks"
 )
 
-const exchangesToEstablish = 4
+const (
+	testingLargeNetworkSize = 2 // Minimum=2
+	exchangesToEstablish    = 4
+)
 
 func TestDHCP(t *testing.T) {
-	const networkSize = 2 // How many distinct IP/MAC addresses on network.
+	const networkSize = testingLargeNetworkSize // How many distinct IP/MAC addresses on network.
 	requestedIP := netip.AddrFrom4([4]byte{192, 168, 1, 69})
 	Stacks := createPortStacks(t, networkSize)
 	clientStack := Stacks[0]
@@ -85,7 +88,7 @@ func TestDHCP(t *testing.T) {
 }
 
 func TestARP(t *testing.T) {
-	const networkSize = 2 // How many distinct IP/MAC addresses on network.
+	const networkSize = testingLargeNetworkSize // How many distinct IP/MAC addresses on network.
 	stacks := createPortStacks(t, networkSize)
 
 	sender := stacks[0]
@@ -125,8 +128,14 @@ func TestTCPEstablish(t *testing.T) {
 	client, server := createTCPClientServerPair(t)
 
 	// 3 way handshake needs 3 exchanges to complete.
-	const maxTransactions = exchangesToEstablish + 1
+	const maxTransactions = exchangesToEstablish
 	txDone, numBytesSent := exchangeStacks(t, maxTransactions, client.PortStack(), server.PortStack())
+
+	_, remnant := exchangeStacks(t, 1, client.PortStack(), server.PortStack())
+	if remnant != 0 {
+		// TODO(soypat): prevent duplicate ACKs from being sent.
+		// t.Fatalf("duplicate ACK detected? remnant=%d want=0", remnant)
+	}
 
 	const expectedData = (eth.SizeEthernetHeader + eth.SizeIPv4Header + eth.SizeTCPHeader) * 4
 	if numBytesSent < expectedData {
@@ -258,7 +267,7 @@ func TestTCPClose_noPendingData(t *testing.T) {
 	doExpect(t, 1, seqs.StateTimeWait, seqs.StateClosed)      // do[3] Cliend sends ACK after receiving FIN, connection terminated.
 }
 
-func TestPortStackTCP(t *testing.T) {
+func TestPortStackTCPDecoding(t *testing.T) {
 	const dataport = 1234
 	packets := []string{
 		"28cdc1054d3ed85ed34303eb08004500003c76eb400040063f76c0a80192c0a80178ee1604d2a0ceb98a00000000a002faf06e800000020405b40402080a14ccf8250000000001030307",
