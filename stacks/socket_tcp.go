@@ -3,7 +3,6 @@ package stacks
 import (
 	"errors"
 	"io"
-	"log/slog"
 	"net"
 	"net/netip"
 	"time"
@@ -11,6 +10,8 @@ import (
 	"github.com/soypat/seqs"
 	"github.com/soypat/seqs/eth"
 )
+
+var _ itcphandler = (*TCPSocket)(nil)
 
 const (
 	defaultSocketSize = 2048
@@ -20,6 +21,7 @@ const (
 type TCPSocket struct {
 	stack     *PortStack
 	scb       seqs.ControlBlock
+	pkt       TCPPacket
 	localPort uint16
 	lastTx    time.Time
 	lastRx    time.Time
@@ -118,8 +120,7 @@ func (t *TCPSocket) OpenDialTCP(localPort uint16, remoteMAC [6]byte, remote neti
 	t.remote = remote
 	t.rx.Reset()
 	t.tx.Reset()
-
-	err = t.stack.OpenTCP(localPort, t.handleMain)
+	err = t.stack.OpenTCP(localPort, t)
 	if err != nil {
 		return err
 	}
@@ -142,8 +143,7 @@ func (t *TCPSocket) OpenListenTCP(localPortNum uint16, iss seqs.Value) error {
 	t.localPort = localPortNum
 	t.rx.Reset()
 	t.tx.Reset()
-
-	err = t.stack.OpenTCP(localPortNum, t.handleMain)
+	err = t.stack.OpenTCP(localPortNum, t)
 	if err != nil {
 		return err
 	}
@@ -166,38 +166,16 @@ func (t *TCPSocket) Close() error {
 	return nil
 }
 
-func (t *TCPSocket) handleMain(response []byte, pkt *TCPPacket) (n int, err error) {
-	if t.abortErr != nil {
-		return 0, t.abortErr // Force close of socket.
-	}
-	defer func() {
-		if err != nil && t.abortErr == nil && err != ErrFlagPending {
-			err = nil // Only close socket if socket is aborted.
-		} else if err != nil {
-			t.stack.error("tcp socket", slog.Int("port", int(t.localPort)), slog.String("err", err.Error()))
-		}
-	}()
-	hasPacket := pkt.HasPacket()
-	if !hasPacket && t.mustSendSyn() {
-		// Connection is still closed, we need to establish
-		return t.handleInitSyn(response, pkt)
-	}
-
-	if hasPacket {
-		remotePort := t.remote.Port()
-		if remotePort != 0 && pkt.TCP.SourcePort != remotePort {
-			return 0, ErrDroppedPacket // This packet came from a different client to the one we are interacting with.
-		}
-		t.lastRx = pkt.Rx
-		err := t.handleRecv(pkt)
-		if err != nil {
-			return 0, err // Return early if something happened, else yield to user data handler.
-		}
-	}
-	return t.handleSend(response, pkt)
+func (t *TCPSocket) IsPendingHandling() bool {
+	return t.scb.HasPending() || t.tx.Buffered() > 0 || t.closing
 }
 
-func (t *TCPSocket) handleRecv(pkt *TCPPacket) (err error) {
+func (t *TCPSocket) RecvTCP(pkt *TCPPacket) (err error) {
+	remotePort := t.remote.Port()
+	if remotePort != 0 && pkt.TCP.SourcePort != remotePort {
+		return nil // This packet came from a different client to the one we are interacting with.
+	}
+	t.lastRx = pkt.Rx
 	// By this point we know that the packet is valid and contains data, we process it.
 	payload := pkt.Payload()
 	segIncoming := pkt.TCP.Segment(len(payload))
@@ -230,7 +208,11 @@ func (t *TCPSocket) handleRecv(pkt *TCPPacket) (err error) {
 	return nil
 }
 
-func (t *TCPSocket) handleSend(response []byte, pkt *TCPPacket) (n int, err error) {
+func (t *TCPSocket) HandleEth(response []byte) (n int, err error) {
+	if t.mustSendSyn() {
+		// Connection is still closed, we need to establish
+		return t.handleInitSyn(response)
+	}
 	available := min(t.tx.Buffered(), len(response)-sizeTCPNoOptions)
 	seg, ok := t.scb.PendingSegment(available)
 	if !ok && available == 0 {
@@ -252,9 +234,9 @@ func (t *TCPSocket) handleSend(response []byte, pkt *TCPPacket) (n int, err erro
 			panic("bug in handleUser") // This is a bug in ring buffer or a race condition.
 		}
 	}
-	t.setSrcDest(pkt)
-	pkt.CalculateHeaders(seg, payload)
-	pkt.PutHeaders(response)
+	t.setSrcDest(&t.pkt)
+	t.pkt.CalculateHeaders(seg, payload)
+	t.pkt.PutHeaders(response)
 
 	if t.scb.HasPending() {
 		err = ErrFlagPending // Flag to PortStack that we have pending data to send.
@@ -275,11 +257,11 @@ func (t *TCPSocket) setSrcDest(pkt *TCPPacket) {
 	pkt.Eth.Destination = t.remoteMAC
 }
 
-func (t *TCPSocket) handleInitSyn(response []byte, pkt *TCPPacket) (n int, err error) {
+func (t *TCPSocket) handleInitSyn(response []byte) (n int, err error) {
 	// Uninitialized TCB, we start the handshake.
-	t.setSrcDest(pkt)
-	pkt.CalculateHeaders(t.synsentSegment(), nil)
-	pkt.PutHeaders(response)
+	t.setSrcDest(&t.pkt)
+	t.pkt.CalculateHeaders(t.synsentSegment(), nil)
+	t.pkt.PutHeaders(response)
 	return sizeTCPNoOptions, nil
 }
 

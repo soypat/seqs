@@ -305,6 +305,7 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 		n := copy(pkt.data[:], ipOptions)
 		n += copy(pkt.data[n:], tcpOptions)
 		copy(pkt.data[n:], payload)
+		return port.handler.RecvTCP(pkt)
 	}
 	return nil
 }
@@ -459,7 +460,7 @@ func (ps *PortStack) CloseUDP(portNum uint16) error {
 // or if there is no socket available it returns an error.
 //
 // See [PortStack] for information on handler argument.
-func (ps *PortStack) OpenTCP(portNum uint16, handler tcphandler) error {
+func (ps *PortStack) OpenTCP(portNum uint16, handler itcphandler) error {
 	switch {
 	case portNum == 0:
 		return errZeroPort
