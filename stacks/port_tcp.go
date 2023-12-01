@@ -17,9 +17,16 @@ import (
 // See [PortStack] for information on how to use this function and other port handlers.
 type tcphandler func(response []byte, pkt *TCPPacket) (int, error)
 
+type itcphandler interface {
+	HandleEth(dst []byte) (n int, err error)
+	RecvTCP(pkt *TCPPacket) error
+	// needsHandling() bool
+	IsPendingHandling() bool
+}
+
 type tcpPort struct {
 	LastRx  time.Time
-	handler tcphandler
+	handler itcphandler
 	port    uint16
 	packets []TCPPacket
 }
@@ -45,7 +52,7 @@ func (port *tcpPort) HandleEth(dst []byte) (n int, err error) {
 	}
 
 	packet := port.nextPacket()
-	n, err = port.handler(dst, packet)
+	n, err = port.handler.HandleEth(dst)
 	if err == ErrFlagPending {
 		packet.flagPendingNoPacket() // Mark socket as needing handling but packet having no data.
 	} else {
@@ -80,7 +87,7 @@ func (port *tcpPort) freePacket() *TCPPacket {
 }
 
 // Open sets the UDP handler and opens the port.
-func (port *tcpPort) Open(portNum uint16, handler tcphandler) {
+func (port *tcpPort) Open(portNum uint16, handler itcphandler) {
 	if portNum == 0 || handler == nil {
 		panic("invalid port or nil handler" + strconv.Itoa(int(port.port)))
 	} else if port.port != 0 {
