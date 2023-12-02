@@ -44,19 +44,23 @@ func TestExchange_rfc9293_figure6(t *testing.T) {
 			Outgoing:  &seqs.Segment{SEQ: issA + 1, ACK: issB + 1, Flags: seqs.FlagACK, WND: windowA},
 			WantState: seqs.StateEstablished,
 		},
-		{ // A sends data to B?
-			Outgoing:  &seqs.Segment{SEQ: issA + 1, ACK: issB + 1, Flags: seqs.FlagACK, WND: windowA},
-			WantState: seqs.StateEstablished,
-		},
 	}
 	var tcbA seqs.ControlBlock
 	tcbA.HelperInitState(seqs.StateSynSent, issA, issA, windowA)
 	tcbA.HelperExchange(t, exchangeA)
-	exchangeB := reverseExchange(exchangeA, seqs.StateSynRcvd, seqs.StateSynRcvd, seqs.StateEstablished, seqs.StateEstablished)
+	segA, ok := tcbA.PendingSegment(0)
+	if ok {
+		t.Error("unexpected Client pending segment after establishment: ", segA)
+	}
+	exchangeB := reverseExchange(exchangeA, seqs.StateSynRcvd, seqs.StateSynRcvd, seqs.StateEstablished)
 
 	var tcbB seqs.ControlBlock
 	tcbB.HelperInitState(seqs.StateListen, issB, issB, windowB)
 	tcbB.HelperExchange(t, exchangeB) // TODO remove [:3] after snd.UNA bugfix
+	segB, ok := tcbB.PendingSegment(0)
+	if ok {
+		t.Error("unexpected Listener pending segment after establishment: ", segB)
+	}
 }
 
 /*

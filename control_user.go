@@ -165,9 +165,9 @@ func (tcb *ControlBlock) RecvWindow() Size { return tcb.rcv.WND }
 // ISS returns the initial sequence number of the connection that was defined on a call to Open by user.
 func (tcb *ControlBlock) ISS() Value { return tcb.snd.ISS }
 
-// MaxOutgoingSegmentSize returns the maximum size of a segment that can be sent by taking into account
+// MaxInFlightData returns the maximum size of a segment that can be sent by taking into account
 // the send window size and the unacked data. Returns 0 before StateSynRcvd.
-func (tcb *ControlBlock) MaxOutgoingSegmentSize() Size {
+func (tcb *ControlBlock) MaxInFlightData() Size {
 	if !tcb.hasIRS() {
 		return 0 // SYN not yet received.
 	}
