@@ -215,9 +215,9 @@ func (t *TCPSocket) HandleEth(response []byte) (n int, err error) {
 	}
 	available := min(t.tx.Buffered(), len(response)-sizeTCPNoOptions)
 	seg, ok := t.scb.PendingSegment(available)
-	if !ok && available == 0 {
+	if !ok {
 		// No pending control segment or data to send. Yield to handleUser.
-		return 0, errors.New("possible segment not found")
+		return 0, nil
 	}
 
 	err = t.scb.Send(seg)
