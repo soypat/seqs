@@ -266,7 +266,7 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	// Short circuit SEQ checks if SYN present since the incoming segment initializes connection.
 	checkSEQ := !flags.HasAny(FlagSYN)
 	established := tcb.state == StateEstablished
-	preestablished := tcb.state.preEstablished()
+	preestablished := tcb.state.IsPreestablished()
 	acksOld := hasAck && !LessThan(tcb.snd.UNA, seg.ACK)
 	acksUnsentData := hasAck && !LessThanEq(seg.ACK, tcb.snd.NXT)
 	ctlOrDataSegment := established && flags.HasAny(FlagFIN|FlagRST|FlagPSH)
@@ -435,7 +435,7 @@ func (flags Flags) String() string {
 type State uint8
 
 const (
-	// CLOSED - represents no connection state at all.
+	// CLOSED - represents no connection state at all. Is not a valid state of the TCP state machine but rather a pseudo-state pre-initialization.
 	StateClosed State = iota
 	// LISTEN - represents waiting for a connection request from any remote TCP and port.
 	StateListen
@@ -469,6 +469,18 @@ const (
 	StateLastAck
 )
 
-func (s State) preEstablished() bool {
+// IsPreestablished returns true if the connection is in a state preceding the established state.
+func (s State) IsPreestablished() bool {
 	return s == StateSynRcvd || s == StateSynSent || s == StateListen
+}
+
+// IsClosing returns true if the connection is in a closing state but not yet terminated (relieved of remote connection state).
+// Does not return true if connection is StateClosed.
+func (s State) IsClosing() bool {
+	return s > StateEstablished
+}
+
+// IsClosed returns true if the connection closed and relieved of all state related to the remote connection.
+func (s State) IsClosed() bool {
+	return s == StateClosed || s == StateTimeWait
 }

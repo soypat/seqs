@@ -243,7 +243,7 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 			return ErrDroppedPacket // Our socket needs handling before admitting more packets.
 		}
 		// The packet is meant for us. We handle it.
-		ps.info("UDP:stored", slog.Int("plen", len(payload)))
+		ps.info("UDP:recv", slog.Int("plen", len(payload)))
 		// Flag packets as needing processing.
 		ps.pendingUDPv4++
 		port.LastRx = ps.lastRx // set as unhandled here.
@@ -289,7 +289,7 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 			ps.droppedPackets++
 			return ErrDroppedPacket // Our socket needs handling before admitting more packets.
 		}
-		ps.info("TCP:stored",
+		ps.info("TCP:recv",
 			slog.Int("opt", len(tcpOptions)),
 			slog.Int("ipopt", len(ipOptions)),
 			slog.Int("payload", len(payload)),
@@ -305,9 +305,14 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 		n := copy(pkt.data[:], ipOptions)
 		n += copy(pkt.data[n:], tcpOptions)
 		copy(pkt.data[n:], payload)
-		return port.handler.RecvTCP(pkt)
+		err = port.handler.RecvTCP(pkt)
+		if err == io.EOF {
+			// Special case; EOF is flag to close port
+			err = nil
+			port.Close()
+		}
 	}
-	return nil
+	return err
 }
 
 // HandleEth searches for a socket with a pending packet and writes the response
