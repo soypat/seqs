@@ -109,8 +109,10 @@ func (seg *Segment) Last() Value {
 func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 	pending := tcb.pending[0]
 	established := tcb.state == StateEstablished
-	pendingPayload := payloadLen > 0 && established
-	if pending == 0 && !pendingPayload {
+	if !established {
+		payloadLen = 0 // Can't send data if not established.
+	}
+	if pending == 0 && payloadLen == 0 {
 		return Segment{}, false // No pending segment.
 	}
 	if payloadLen > math.MaxUint16 || Size(payloadLen) > tcb.snd.WND {
