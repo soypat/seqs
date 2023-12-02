@@ -107,25 +107,29 @@ func (seg *Segment) Last() Value {
 // PendingSegment calculates a suitable next segment to send from a payload length.
 // It does not modify the ControlBlock state or pending segment queue.
 func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
-	if (payloadLen == 0 && tcb.pending[0] == 0) || (payloadLen > 0 && tcb.state != StateEstablished) {
+	pending := tcb.pending[0]
+	if (payloadLen == 0 && pending == 0) || (payloadLen > 0 && tcb.state != StateEstablished) {
 		return Segment{}, false // No pending segment.
 	}
 	if payloadLen > math.MaxUint16 || Size(payloadLen) > tcb.snd.WND {
 		payloadLen = int(tcb.snd.WND)
 	}
 
-	pending := tcb.pending
-	if payloadLen > 0 {
-		pending[0] |= FlagPSH // TODO(soypat): Add ACK here without breaking tests.
+	established := tcb.state == StateEstablished
+	if established {
+		pending |= FlagACK // ACK is always set in established state. Not in RFC9293 but somehow expected?
+		if payloadLen > 0 {
+			pending |= FlagPSH // TODO(soypat): Add ACK here without breaking tests.
+		}
 	}
 
 	var ack Value
-	if tcb.pending[0].HasAny(FlagACK) {
+	if pending.HasAny(FlagACK) {
 		ack = tcb.rcv.NXT
 	}
 
 	var seq Value = tcb.snd.NXT
-	if tcb.pending[0].HasAny(FlagRST) {
+	if pending.HasAny(FlagRST) {
 		seq = tcb.rstPtr
 	}
 
@@ -133,7 +137,7 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 		SEQ:     seq,
 		ACK:     ack,
 		WND:     tcb.rcv.WND,
-		Flags:   pending[0],
+		Flags:   pending,
 		DATALEN: Size(payloadLen),
 	}
 	return seg, true
