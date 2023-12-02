@@ -17,7 +17,7 @@ import (
 
 const (
 	testingLargeNetworkSize = 2 // Minimum=2
-	exchangesToEstablish    = 4
+	exchangesToEstablish    = 3
 )
 
 func TestDHCP(t *testing.T) {
@@ -134,7 +134,7 @@ func TestTCPEstablish(t *testing.T) {
 	_, remnant := exchangeStacks(t, 1, client.PortStack(), server.PortStack())
 	if remnant != 0 {
 		// TODO(soypat): prevent duplicate ACKs from being sent.
-		// t.Fatalf("duplicate ACK detected? remnant=%d want=0", remnant)
+		t.Fatalf("duplicate ACK detected? remnant=%d want=0", remnant)
 	}
 
 	const expectedData = (eth.SizeEthernetHeader + eth.SizeIPv4Header + eth.SizeTCPHeader) * 4

@@ -199,7 +199,7 @@ func (tcb *ControlBlock) rcvSynRcvd(seg Segment) (pending Flags, err error) {
 		return 0, err
 	}
 	tcb.state = StateEstablished
-	return FlagACK, nil
+	return 0, nil
 }
 
 func (tcb *ControlBlock) rcvEstablished(seg Segment) (pending Flags, err error) {
