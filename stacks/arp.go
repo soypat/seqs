@@ -2,6 +2,7 @@ package stacks
 
 import (
 	"errors"
+	"log/slog"
 
 	"github.com/soypat/seqs/eth"
 )
@@ -52,9 +53,10 @@ PortStack.pendingARPresponse contains state:
 2. Upon `handleARP`: Packet sent out. PortStack.pendingARPresponse.Operation = 0 (no pending response) Ready to receive.
 */
 
-func (ps *PortStack) handleARP(dst []byte) int {
+func (ps *PortStack) handleARP(dst []byte) (n int) {
+	pendingResolve := ps.pendingResolveARPv4()
 	switch {
-	case ps.pendingResolveARPv4():
+	case pendingResolve:
 		// We have a pending request from user to perform ARP.
 		ehdr := eth.EthernetHeader{
 			Destination:     eth.BroadcastHW6(),
@@ -64,7 +66,7 @@ func (ps *PortStack) handleARP(dst []byte) int {
 		ehdr.Put(dst)
 		ps.arpResult.Put(dst[eth.SizeEthernetHeader:])
 		ps.arpResult.Operation = arpOpWait // Clear pending ARP to not loop.
-		return eth.SizeEthernetHeader + eth.SizeARPv4Header
+		n = eth.SizeEthernetHeader + eth.SizeARPv4Header
 
 	case ps.pendingReplyToARP():
 		// We need to respond to an ARP request that queries our address.
@@ -76,11 +78,15 @@ func (ps *PortStack) handleARP(dst []byte) int {
 		ehdr.Put(dst)
 		ps.pendingARPresponse.Put(dst[eth.SizeEthernetHeader:])
 		ps.pendingARPresponse.Operation = 0 // Clear pending ARP.
-		return eth.SizeEthernetHeader + eth.SizeARPv4Header
+		n = eth.SizeEthernetHeader + eth.SizeARPv4Header
 
 	default:
-		return 0 // Nothing to do.
+		// return 0 // Nothing to do, n=0.
 	}
+	if n > 0 {
+		ps.debug("ARP:send", slog.Bool("isReply", !pendingResolve))
+	}
+	return n
 }
 
 func (ps *PortStack) recvARP(ethPayload []byte) error {
@@ -115,5 +121,6 @@ func (ps *PortStack) recvARP(ethPayload []byte) error {
 	default:
 		return errors.New("unsupported ARP operation")
 	}
+	ps.debug("ARP:recv", slog.Int("op", int(ahdr.Operation)))
 	return nil
 }
