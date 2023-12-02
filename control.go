@@ -107,25 +107,32 @@ func (seg *Segment) Last() Value {
 // PendingSegment calculates a suitable next segment to send from a payload length.
 // It does not modify the ControlBlock state or pending segment queue.
 func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
-	if (payloadLen == 0 && tcb.pending[0] == 0) || (payloadLen > 0 && tcb.state != StateEstablished) {
+	pending := tcb.pending[0]
+	established := tcb.state == StateEstablished
+	if !established {
+		payloadLen = 0 // Can't send data if not established.
+	}
+	if pending == 0 && payloadLen == 0 {
 		return Segment{}, false // No pending segment.
 	}
 	if payloadLen > math.MaxUint16 || Size(payloadLen) > tcb.snd.WND {
 		payloadLen = int(tcb.snd.WND)
 	}
 
-	pending := tcb.pending
-	if payloadLen > 0 {
-		pending[0] |= FlagPSH // TODO(soypat): Add ACK here without breaking tests.
+	if established {
+		pending |= FlagACK // ACK is always set in established state. Not in RFC9293 but somehow expected?
+		if payloadLen > 0 {
+			pending |= FlagPSH // TODO(soypat): Add ACK here without breaking tests.
+		}
 	}
 
 	var ack Value
-	if tcb.pending[0].HasAny(FlagACK) {
+	if pending.HasAny(FlagACK) {
 		ack = tcb.rcv.NXT
 	}
 
 	var seq Value = tcb.snd.NXT
-	if tcb.pending[0].HasAny(FlagRST) {
+	if pending.HasAny(FlagRST) {
 		seq = tcb.rstPtr
 	}
 
@@ -133,7 +140,7 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 		SEQ:     seq,
 		ACK:     ack,
 		WND:     tcb.rcv.WND,
-		Flags:   pending[0],
+		Flags:   pending,
 		DATALEN: Size(payloadLen),
 	}
 	return seg, true
@@ -199,7 +206,7 @@ func (tcb *ControlBlock) rcvSynRcvd(seg Segment) (pending Flags, err error) {
 		return 0, err
 	}
 	tcb.state = StateEstablished
-	return FlagACK, nil
+	return 0, nil
 }
 
 func (tcb *ControlBlock) rcvEstablished(seg Segment) (pending Flags, err error) {
@@ -259,7 +266,7 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	// Short circuit SEQ checks if SYN present since the incoming segment initializes connection.
 	checkSEQ := !flags.HasAny(FlagSYN)
 	established := tcb.state == StateEstablished
-	preestablished := tcb.state.preEstablished()
+	preestablished := tcb.state.IsPreestablished()
 	acksOld := hasAck && !LessThan(tcb.snd.UNA, seg.ACK)
 	acksUnsentData := hasAck && !LessThanEq(seg.ACK, tcb.snd.NXT)
 	ctlOrDataSegment := established && flags.HasAny(FlagFIN|FlagRST|FlagPSH)
@@ -428,7 +435,7 @@ func (flags Flags) String() string {
 type State uint8
 
 const (
-	// CLOSED - represents no connection state at all.
+	// CLOSED - represents no connection state at all. Is not a valid state of the TCP state machine but rather a pseudo-state pre-initialization.
 	StateClosed State = iota
 	// LISTEN - represents waiting for a connection request from any remote TCP and port.
 	StateListen
@@ -462,6 +469,18 @@ const (
 	StateLastAck
 )
 
-func (s State) preEstablished() bool {
+// IsPreestablished returns true if the connection is in a state preceding the established state.
+func (s State) IsPreestablished() bool {
 	return s == StateSynRcvd || s == StateSynSent || s == StateListen
+}
+
+// IsClosing returns true if the connection is in a closing state but not yet terminated (relieved of remote connection state).
+// Does not return true if connection is StateClosed.
+func (s State) IsClosing() bool {
+	return s > StateEstablished
+}
+
+// IsClosed returns true if the connection closed and relieved of all state related to the remote connection.
+func (s State) IsClosed() bool {
+	return s == StateClosed || s == StateTimeWait
 }
