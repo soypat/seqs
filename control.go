@@ -108,14 +108,15 @@ func (seg *Segment) Last() Value {
 // It does not modify the ControlBlock state or pending segment queue.
 func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 	pending := tcb.pending[0]
-	if (payloadLen == 0 && pending == 0) || (payloadLen > 0 && tcb.state != StateEstablished) {
+	established := tcb.state == StateEstablished
+	pendingPayload := payloadLen > 0 && established
+	if pending == 0 && !pendingPayload {
 		return Segment{}, false // No pending segment.
 	}
 	if payloadLen > math.MaxUint16 || Size(payloadLen) > tcb.snd.WND {
 		payloadLen = int(tcb.snd.WND)
 	}
 
-	established := tcb.state == StateEstablished
 	if established {
 		pending |= FlagACK // ACK is always set in established state. Not in RFC9293 but somehow expected?
 		if payloadLen > 0 {

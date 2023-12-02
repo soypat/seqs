@@ -137,7 +137,7 @@ func TestTCPEstablish(t *testing.T) {
 		t.Fatalf("duplicate ACK detected? remnant=%d want=0", remnant)
 	}
 
-	const expectedData = (eth.SizeEthernetHeader + eth.SizeIPv4Header + eth.SizeTCPHeader) * 4
+	const expectedData = (eth.SizeEthernetHeader + eth.SizeIPv4Header + eth.SizeTCPHeader) * maxTransactions
 	if numBytesSent < expectedData {
 		t.Error("too little data exchanged", numBytesSent, " want>=", expectedData)
 	}
