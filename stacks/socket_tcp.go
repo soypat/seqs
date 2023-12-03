@@ -133,10 +133,6 @@ func (sock *TCPSocket) OpenListenTCP(localPortNum uint16, iss seqs.Value) error 
 }
 
 func (sock *TCPSocket) open(state seqs.State, localPortNum uint16, iss seqs.Value, remoteMAC [6]byte, remoteAddr netip.AddrPort) error {
-	prevState := sock.scb.State()
-	if !prevState.IsClosed() && sock.tx.Buffered() == 0 && prevState == seqs.StateLastAck {
-		sock.close() // Delete previous connection. TODO(soypat): This is a hack. Write test to reproduce.
-	}
 	err := sock.scb.Open(iss, seqs.Size(len(sock.rx.buf)), seqs.StateSynSent)
 	if err != nil {
 		return err
@@ -193,7 +189,7 @@ func (sock *TCPSocket) RecvTCP(pkt *TCPPacket) (err error) {
 		return nil // Segment not admitted, yield to sender.
 	}
 	if prevState != sock.scb.State() {
-		sock.stack.debug("TCP:rx-statechange", slog.Uint64("port", uint64(sock.localPort)), slog.String("old", prevState.String()), slog.String("new", sock.scb.State().String()), slog.String("flags", segIncoming.Flags.String()))
+		sock.stack.debug("TCP:rx-statechange", slog.Uint64("port", uint64(sock.localPort)), slog.String("old", prevState.String()), slog.String("new", sock.scb.State().String()), slog.String("rxflags", segIncoming.Flags.String()))
 	}
 	if segIncoming.Flags.HasAny(seqs.FlagPSH) {
 		if len(payload) != int(segIncoming.DATALEN) {
@@ -209,8 +205,8 @@ func (sock *TCPSocket) RecvTCP(pkt *TCPPacket) (err error) {
 		sock.remoteMAC = pkt.Eth.Source
 		sock.remote = netip.AddrPortFrom(netip.AddrFrom4(pkt.IP.Source), pkt.TCP.SourcePort)
 	}
-	sock.stateCheck()
-	return nil
+	err = sock.stateCheck()
+	return err
 }
 
 func (sock *TCPSocket) HandleEth(response []byte) (n int, err error) {
@@ -244,7 +240,7 @@ func (sock *TCPSocket) HandleEth(response []byte) (n int, err error) {
 	sock.pkt.CalculateHeaders(seg, payload)
 	sock.pkt.PutHeaders(response)
 	if prevState != sock.scb.State() {
-		sock.stack.debug("TCP:tx-statechange", slog.Uint64("port", uint64(sock.localPort)), slog.String("old", prevState.String()), slog.String("new", sock.scb.State().String()), slog.String("flags", seg.Flags.String()))
+		sock.stack.debug("TCP:tx-statechange", slog.Uint64("port", uint64(sock.localPort)), slog.String("old", prevState.String()), slog.String("new", sock.scb.State().String()), slog.String("txflags", seg.Flags.String()))
 	}
 	err = sock.stateCheck()
 	return sizeTCPNoOptions + n, err
@@ -276,12 +272,12 @@ func (sock *TCPSocket) mustSendSyn() bool {
 	return sock.awaitingSyn() && time.Since(sock.lastTx) > 3*time.Second
 }
 
-func (sock *TCPSocket) close() {
-	sock.remote = netip.AddrPort{}
-	sock.scb = seqs.ControlBlock{}
-	sock.lastTx = time.Time{}
-	sock.lastRx = time.Time{}
-	sock.closing = false
+func (sock *TCPSocket) deleteState() {
+	*sock = TCPSocket{
+		stack: sock.stack,
+		rx:    ring{buf: sock.rx.buf},
+		tx:    ring{buf: sock.tx.buf},
+	}
 }
 
 func (sock *TCPSocket) synsentSegment() seqs.Segment {
@@ -305,13 +301,10 @@ func (sock *TCPSocket) stateCheck() (portStackErr error) {
 		portStackErr = ErrFlagPending // Flag to PortStack that we have pending data to send.
 	} else if state.IsClosed() {
 		portStackErr = io.EOF
-		sock.close()
 	}
 	return portStackErr
 }
 
-// func (t *TCPSocket) abort(err error) error {
-// 	t.close()
-// 	t.abortErr = err
-// 	return err
-// }
+func (t *TCPSocket) Abort() {
+	t.deleteState()
+}

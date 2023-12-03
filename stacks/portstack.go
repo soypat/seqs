@@ -296,7 +296,6 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 		)
 		// Flag packets as needing processing.
 		ps.pendingTCPv4++
-		port.LastRx = ps.lastRx // set as unhandled here.
 
 		pkt.Rx = ps.lastRx
 		pkt.Eth = ehdr
@@ -310,6 +309,8 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 			// Special case; EOF is flag to close port
 			err = nil
 			port.Close()
+		} else if err == ErrFlagPending {
+			err = nil // TODO(soypat).
 		}
 	}
 	return err
@@ -536,6 +537,10 @@ func (ps *PortStack) logAttrsPrint(level slog.Level, msg string, attrs ...slog.A
 	if ps.logger != nil {
 		ps.logger.LogAttrs(context.Background(), level, msg, attrs...)
 	}
+}
+
+func (ps *PortStack) SetLogger(log *slog.Logger) {
+	ps.logger = log
 }
 
 // logAttrsPrint is a hand-rolled slog.Handler implementation for use in memory contrained systems.

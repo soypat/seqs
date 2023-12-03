@@ -5,8 +5,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"net/netip"
+	"os"
 	"strings"
 	"testing"
 
@@ -244,6 +246,10 @@ func TestTCPClose_noPendingData(t *testing.T) {
 	if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
 		t.Fatalf("not established: client=%s server=%s", client.State(), server.State())
 	}
+	_, b := exchangeStacks(t, 2, cstack, sstack)
+	if b != 0 {
+		t.Fatal("expected no data to be exchanged after establishment")
+	}
 
 	err := client.Close()
 	if err != nil {
@@ -333,68 +339,95 @@ func TestPortStackTCPDecoding(t *testing.T) {
 	}
 }
 
+type Exchanger struct {
+	Stacks   []*stacks.PortStack
+	pipesN   []int
+	pipes    [][2048]byte
+	segments []seqs.Segment
+	ex       int
+}
+
+func NewExchanger(stacks ...*stacks.PortStack) *Exchanger {
+	egr := &Exchanger{
+		Stacks: stacks,
+		pipesN: make([]int, len(stacks)),
+		pipes:  make([][2048]byte, len(stacks)),
+		ex:     -1,
+	}
+	return egr
+}
+
+func (egr *Exchanger) getPayload(istack int) []byte {
+	return egr.pipes[istack][:egr.pipesN[istack]]
+}
+
+func (egr *Exchanger) zeroPayload(istack int) {
+	egr.pipesN[istack] = 0
+	egr.pipes[istack] = [2048]byte{}
+}
+
+func (egr *Exchanger) handleEths(t *testing.T) (pkts, bytesSent int) {
+	egr.ex++
+	t.Helper()
+	var err error
+	for istack := 0; istack < len(egr.Stacks); istack++ {
+		// This first for loop generates packets "in-flight" contained in `pipes` data structure.
+		egr.pipesN[istack], err = egr.Stacks[istack].HandleEth(egr.pipes[istack][:])
+		if (err != nil && !isDroppedPacket(err)) || egr.pipesN[istack] < 0 {
+			t.Errorf("ex[%d] send[%d]: %s", egr.ex, istack, err)
+			return pkts, bytesSent
+		} else if isDroppedPacket(err) {
+			t.Logf("ex[%d] send[%d]: %s", egr.ex, istack, err)
+		}
+		if egr.pipesN[istack] > 0 {
+			pkts++
+			pkt, err := stacks.ParseTCPPacket(egr.getPayload(istack))
+			if err == nil {
+				seg := pkt.TCP.Segment(len(pkt.Payload()))
+				egr.segments = append(egr.segments, seg)
+				t.Logf("ex[%d] send[%d]: %+v", egr.ex, istack, seg)
+			}
+		}
+		bytesSent += egr.pipesN[istack]
+	}
+	return pkts, bytesSent
+}
+
+func (egr *Exchanger) recvEths(t *testing.T) {
+	var err error
+	for isend := 0; isend < len(egr.Stacks); isend++ {
+		// We deliver each in-flight packet to all stacks, except the one that sent it.
+		payload := egr.getPayload(isend)
+		if len(payload) == 0 {
+			continue
+		}
+		for irecv := 0; irecv < len(egr.Stacks); irecv++ {
+			if irecv == isend {
+				continue // Don't deliver to self.
+			}
+			err = egr.Stacks[irecv].RecvEth(payload)
+			if err != nil && !isDroppedPacket(err) {
+				t.Errorf("ex[%d] recv[%d]: %s", egr.ex, irecv, err)
+			} else if isDroppedPacket(err) {
+				t.Logf("ex[%d] recv[%d]: %s", egr.ex, irecv, err)
+			}
+		}
+		egr.zeroPayload(isend)
+	}
+}
+
 // exchangeStacks exchanges packets between stacks until no more data is being sent or maxExchanges is reached.
 // By convention client (initiator) is the first stack and server (listener) is the second when dealing with pairs.
 func exchangeStacks(t *testing.T, maxExchanges int, stcks ...*stacks.PortStack) (ex, bytesSent int) {
 	t.Helper()
-	sprintErr := func(err error) (s string) {
-		return err.Error()
-	}
-	pipeN := make([]int, len(stcks))
-	pipes := make([][2048]byte, len(stcks))
-	zeroPayload := func(i int) {
-		pipeN[i] = 0
-		pipes[i] = [2048]byte{}
-	}
-	getPayload := func(i int) []byte { return pipes[i][:pipeN[i]] }
-	var err error
-	// Short hand for debug conditions. I've found setting ME==n be a good breakpoint condition since
-	// we'll usually have several exchangeStacks calls in a test with varying maxExchanges. Helps skip connection establishments and other events.
-	var ME = maxExchanges
-	for ; ex < ME; ex++ {
-		sentInTx := 0
-		for isend := 0; isend < len(stcks); isend++ {
-			// This first for loop generates packets "in-flight" contained in `pipes` data structure.
-			pipeN[isend], err = stcks[isend].HandleEth(pipes[isend][:])
-			if (err != nil && !isDroppedPacket(err)) || pipeN[isend] < 0 {
-				t.Errorf("ex[%d] send[%d]: %s", ex, isend, sprintErr(err))
-				return ex, bytesSent
-			} else if isDroppedPacket(err) {
-				t.Logf("ex[%d] send[%d]: %s", ex, isend, sprintErr(err))
-			}
-			if pipeN[isend] > 0 {
-				pkt, err := stacks.ParseTCPPacket(getPayload(isend))
-				if err == nil {
-					t.Logf("ex[%d] send[%d]: %+v", ex, isend, pkt.TCP.Segment(len(pkt.Payload())))
-				}
-			}
-			bytesSent += pipeN[isend]
-			sentInTx += pipeN[isend]
-		}
-		if sentInTx == 0 {
+	egr := NewExchanger(stcks...)
+	for ; ex < maxExchanges; ex++ {
+		pkts, bytes := egr.handleEths(t)
+		bytesSent += bytes
+		if pkts == 0 {
 			break // No more data being sent.
 		}
-
-		for isend := 0; isend < len(stcks); isend++ {
-			// We deliver each in-flight packet to all stacks, except the one that sent it.
-			payload := getPayload(isend)
-			if len(payload) == 0 {
-				continue
-			}
-			for irecv := 0; irecv < len(stcks); irecv++ {
-				if irecv == isend {
-					continue // Don't deliver to self.
-				}
-				err = stcks[irecv].RecvEth(payload)
-				if err != nil && !isDroppedPacket(err) {
-					t.Errorf("ex[%d] recv[%d]: %s", ex, irecv, sprintErr(err))
-					return ex, bytesSent
-				} else if isDroppedPacket(err) {
-					t.Logf("ex[%d] recv[%d]: %s", ex, irecv, sprintErr(err))
-				}
-			}
-			zeroPayload(isend)
-		}
+		egr.recvEths(t)
 	}
 	return ex, bytesSent
 }
@@ -510,4 +543,11 @@ func (mh multihandler) recvTCP(rxPkt *stacks.TCPPacket) error {
 func (mh multihandler) isPendingHandling() bool {
 	n, _ := mh(nil, nil)
 	return n > 0
+}
+
+func setLog(ps *stacks.PortStack) {
+	output := os.Stdout
+	ps.SetLogger(slog.New(slog.NewTextHandler(output, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	})))
 }
