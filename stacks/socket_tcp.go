@@ -189,7 +189,7 @@ func (sock *TCPSocket) RecvTCP(pkt *TCPPacket) (err error) {
 		return nil // Segment not admitted, yield to sender.
 	}
 	if prevState != sock.scb.State() {
-		sock.stack.debug("TCP:rx-statechange", slog.Uint64("port", uint64(sock.localPort)), slog.String("old", prevState.String()), slog.String("new", sock.scb.State().String()), slog.String("rxflags", segIncoming.Flags.String()))
+		sock.stack.info("TCP:rx-statechange", slog.Uint64("port", uint64(sock.localPort)), slog.String("old", prevState.String()), slog.String("new", sock.scb.State().String()), slog.String("rxflags", segIncoming.Flags.String()))
 	}
 	if segIncoming.Flags.HasAny(seqs.FlagPSH) {
 		if len(payload) != int(segIncoming.DATALEN) {
@@ -240,7 +240,7 @@ func (sock *TCPSocket) HandleEth(response []byte) (n int, err error) {
 	sock.pkt.CalculateHeaders(seg, payload)
 	sock.pkt.PutHeaders(response)
 	if prevState != sock.scb.State() {
-		sock.stack.debug("TCP:tx-statechange", slog.Uint64("port", uint64(sock.localPort)), slog.String("old", prevState.String()), slog.String("new", sock.scb.State().String()), slog.String("txflags", seg.Flags.String()))
+		sock.stack.info("TCP:tx-statechange", slog.Uint64("port", uint64(sock.localPort)), slog.String("old", prevState.String()), slog.String("new", sock.scb.State().String()), slog.String("txflags", seg.Flags.String()))
 	}
 	err = sock.stateCheck()
 	return sizeTCPNoOptions + n, err
