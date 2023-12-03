@@ -15,13 +15,12 @@ import (
 // bytes written to `response` and an error.
 //
 // See [PortStack] for information on how to use this function and other port handlers.
-type tcphandler func(response []byte, pkt *TCPPacket) (int, error)
-
 type itcphandler interface {
 	HandleEth(dst []byte) (n int, err error)
 	RecvTCP(pkt *TCPPacket) error
 	// needsHandling() bool
 	IsPendingHandling() bool
+	Abort()
 }
 
 type tcpPort struct {
@@ -110,6 +109,9 @@ func (port *tcpPort) pending() (p uint32) {
 }
 
 func (port *tcpPort) Close() {
+	if port.handler != nil {
+		port.handler.Abort()
+	}
 	port.handler = nil
 	port.port = 0 // Port 0 flags the port is inactive.
 }
