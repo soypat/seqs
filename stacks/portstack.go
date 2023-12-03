@@ -243,7 +243,7 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 			return ErrDroppedPacket // Our socket needs handling before admitting more packets.
 		}
 		// The packet is meant for us. We handle it.
-		ps.info("UDP:recv", slog.Int("plen", len(payload)))
+		ps.debug("UDP:recv", slog.Int("plen", len(payload)))
 		// Flag packets as needing processing.
 		ps.pendingUDPv4++
 		port.LastRx = ps.lastRx // set as unhandled here.
@@ -289,7 +289,7 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 			ps.droppedPackets++
 			return ErrDroppedPacket // Our socket needs handling before admitting more packets.
 		}
-		ps.info("TCP:recv",
+		ps.debug("TCP:recv",
 			slog.Int("opt", len(tcpOptions)),
 			slog.Int("ipopt", len(ipOptions)),
 			slog.Int("payload", len(payload)),

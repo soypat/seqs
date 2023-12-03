@@ -242,11 +242,12 @@ func TestTCPClose_noPendingData(t *testing.T) {
 	// Create Client+Server and establish TCP connection between them.
 	client, server := createTCPClientServerPair(t)
 	cstack, sstack := client.PortStack(), server.PortStack()
-	exchangeStacks(t, exchangesToEstablish, cstack, sstack)
+	egr := NewExchanger(cstack, sstack)
+	egr.DoExchanges(t, exchangesToEstablish)
 	if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
 		t.Fatalf("not established: client=%s server=%s", client.State(), server.State())
 	}
-	_, b := exchangeStacks(t, 2, cstack, sstack)
+	_, b := egr.DoExchanges(t, 2)
 	if b != 0 {
 		t.Fatal("expected no data to be exchanged after establishment")
 	}
@@ -256,20 +257,35 @@ func TestTCPClose_noPendingData(t *testing.T) {
 		t.Fatalf("client.Close(): %v", err)
 	}
 	i := 0
-	doExpect := func(t *testing.T, maxExchanges int, wantClient, wantServer seqs.State) {
+	doExpect := func(t *testing.T, wantClient, wantServer seqs.State) {
 		t.Helper()
-		_, transmitted := exchangeStacks(t, maxExchanges, cstack, sstack)
+		isRx := i%2 == 0
+		if isRx {
+			pkts, _ := egr.HandleTx(t)
+			if pkts == 0 {
+				t.Error("no packet")
+			}
+		} else {
+			egr.HandleRx(t)
+		}
+		t.Logf("client=%s server=%s", client.State(), server.State())
 		if client.State() != wantClient || server.State() != wantServer {
-			t.Fatalf("do[%d] sent %d\nwant client=%s server=%s\ngot  client=%s server=%s",
-				i, transmitted, wantClient, wantServer, client.State(), server.State())
+			t.Fatalf("do[%d] RX=%v\nwant client=%s server=%s\ngot  client=%s server=%s",
+				i, isRx, wantClient, wantServer, client.State(), server.State())
 		}
 		i++
 	}
-
+	setLog(cstack, "cl", slog.LevelInfo)
+	setLog(sstack, "sv", slog.LevelInfo)
 	// See RFC 9293 Figure 5: TCP Connection State Diagram.
-	doExpect(t, 1, seqs.StateFinWait1, seqs.StateCloseWait) // do[0] Client sends FIN, server parses FIN.
-	doExpect(t, 1, seqs.StateFinWait2, seqs.StateCloseWait) // do[1] Server sends ACK, client parses ACK and transitions to FinWait2.
-	doExpect(t, 1, seqs.StateTimeWait, seqs.StateClosed)    // do[2] Server sends FIN|ACK, client parses ACK->FinWait2. do[3] Cliend sends ACK after receiving FIN, connection terminated.
+	doExpect(t, seqs.StateFinWait1, seqs.StateEstablished) // do[0] Client sends FIN, server parses FIN.
+	doExpect(t, seqs.StateFinWait1, seqs.StateCloseWait)   // do[1] Server sends ACK, client parses ACK and transitions to FinWait2.
+	doExpect(t, seqs.StateFinWait1, seqs.StateCloseWait)   // do[2] Server sends FIN|ACK, client parses ACK->FinWait2. do[3] Cliend sends ACK after receiving FIN, connection terminated.
+	doExpect(t, seqs.StateFinWait2, seqs.StateCloseWait)
+	doExpect(t, seqs.StateFinWait2, seqs.StateLastAck)
+	doExpect(t, seqs.StateTimeWait, seqs.StateClosed)
+	doExpect(t, seqs.StateClosed, seqs.StateClosed)
+	// t.Fail()
 }
 
 func TestPortStackTCPDecoding(t *testing.T) {
@@ -345,6 +361,7 @@ type Exchanger struct {
 	pipes    [][2048]byte
 	segments []seqs.Segment
 	ex       int
+	loglevel slog.Level
 }
 
 func NewExchanger(stacks ...*stacks.PortStack) *Exchanger {
@@ -357,6 +374,9 @@ func NewExchanger(stacks ...*stacks.PortStack) *Exchanger {
 	return egr
 }
 
+func (egr *Exchanger) isdebug() bool { return egr.loglevel <= slog.LevelDebug }
+func (egr *Exchanger) isinfo() bool  { return egr.loglevel <= slog.LevelInfo }
+
 func (egr *Exchanger) getPayload(istack int) []byte {
 	return egr.pipes[istack][:egr.pipesN[istack]]
 }
@@ -366,7 +386,7 @@ func (egr *Exchanger) zeroPayload(istack int) {
 	egr.pipes[istack] = [2048]byte{}
 }
 
-func (egr *Exchanger) handleEths(t *testing.T) (pkts, bytesSent int) {
+func (egr *Exchanger) HandleTx(t *testing.T) (pkts, bytesSent int) {
 	egr.ex++
 	t.Helper()
 	var err error
@@ -376,7 +396,7 @@ func (egr *Exchanger) handleEths(t *testing.T) (pkts, bytesSent int) {
 		if (err != nil && !isDroppedPacket(err)) || egr.pipesN[istack] < 0 {
 			t.Errorf("ex[%d] send[%d]: %s", egr.ex, istack, err)
 			return pkts, bytesSent
-		} else if isDroppedPacket(err) {
+		} else if isDroppedPacket(err) && egr.isdebug() {
 			t.Logf("ex[%d] send[%d]: %s", egr.ex, istack, err)
 		}
 		if egr.pipesN[istack] > 0 {
@@ -385,7 +405,9 @@ func (egr *Exchanger) handleEths(t *testing.T) (pkts, bytesSent int) {
 			if err == nil {
 				seg := pkt.TCP.Segment(len(pkt.Payload()))
 				egr.segments = append(egr.segments, seg)
-				t.Logf("ex[%d] send[%d]: %+v", egr.ex, istack, seg)
+				if egr.isdebug() {
+					t.Logf("ex[%d] send[%d]: %+v", egr.ex, istack, seg)
+				}
 			}
 		}
 		bytesSent += egr.pipesN[istack]
@@ -393,7 +415,7 @@ func (egr *Exchanger) handleEths(t *testing.T) (pkts, bytesSent int) {
 	return pkts, bytesSent
 }
 
-func (egr *Exchanger) recvEths(t *testing.T) {
+func (egr *Exchanger) HandleRx(t *testing.T) {
 	var err error
 	for isend := 0; isend < len(egr.Stacks); isend++ {
 		// We deliver each in-flight packet to all stacks, except the one that sent it.
@@ -408,7 +430,7 @@ func (egr *Exchanger) recvEths(t *testing.T) {
 			err = egr.Stacks[irecv].RecvEth(payload)
 			if err != nil && !isDroppedPacket(err) {
 				t.Errorf("ex[%d] recv[%d]: %s", egr.ex, irecv, err)
-			} else if isDroppedPacket(err) {
+			} else if isDroppedPacket(err) && egr.isdebug() {
 				t.Logf("ex[%d] recv[%d]: %s", egr.ex, irecv, err)
 			}
 		}
@@ -416,20 +438,27 @@ func (egr *Exchanger) recvEths(t *testing.T) {
 	}
 }
 
-// exchangeStacks exchanges packets between stacks until no more data is being sent or maxExchanges is reached.
-// By convention client (initiator) is the first stack and server (listener) is the second when dealing with pairs.
-func exchangeStacks(t *testing.T, maxExchanges int, stcks ...*stacks.PortStack) (ex, bytesSent int) {
+func (egr *Exchanger) DoExchanges(t *testing.T, maxExchanges int) (exDone, bytesSent int) {
 	t.Helper()
-	egr := NewExchanger(stcks...)
-	for ; ex < maxExchanges; ex++ {
-		pkts, bytes := egr.handleEths(t)
+	for ; exDone < maxExchanges; exDone++ {
+		pkts, bytes := egr.HandleTx(t)
 		bytesSent += bytes
 		if pkts == 0 {
 			break // No more data being sent.
 		}
-		egr.recvEths(t)
+		egr.HandleRx(t)
 	}
-	return ex, bytesSent
+	return exDone, bytesSent
+}
+
+// exchangeStacks exchanges packets between stacks until no more data is being sent or maxExchanges is reached.
+// By convention client (initiator) is the first stack and server (listener) is the second when dealing with pairs.
+//
+// Deprecated: Use Exchanger instead.
+func exchangeStacks(t *testing.T, maxExchanges int, stcks ...*stacks.PortStack) (ex, bytesSent int) {
+	t.Helper()
+	egr := NewExchanger(stcks...)
+	return egr.DoExchanges(t, maxExchanges)
 }
 
 func isDroppedPacket(err error) bool {
@@ -545,9 +574,10 @@ func (mh multihandler) isPendingHandling() bool {
 	return n > 0
 }
 
-func setLog(ps *stacks.PortStack) {
+func setLog(ps *stacks.PortStack, group string, lvl slog.Level) {
 	output := os.Stdout
-	ps.SetLogger(slog.New(slog.NewTextHandler(output, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
-	})))
+	log := slog.New(slog.NewTextHandler(output, &slog.HandlerOptions{
+		Level: lvl,
+	}))
+	ps.SetLogger(log.WithGroup(group))
 }
