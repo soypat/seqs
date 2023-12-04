@@ -257,13 +257,17 @@ func TestTCPClose_noPendingData(t *testing.T) {
 		t.Fatalf("client.Close(): %v", err)
 	}
 	i := 0
-	doExpect := func(t *testing.T, wantClient, wantServer seqs.State) {
+	doExpect := func(t *testing.T, wantClient, wantServer seqs.State, wantFlags seqs.Flags) {
 		t.Helper()
 		isRx := i%2 == 0
 		if isRx {
 			pkts, _ := egr.HandleTx(t)
 			if pkts == 0 {
 				t.Error("no packet")
+			}
+			lastSeg := egr.LastSegment()
+			if wantFlags != 0 && lastSeg.Flags != wantFlags {
+				t.Errorf("do[%d] RX=%v\nwant flags=%v\ngot  flags=%v", i, isRx, wantFlags, lastSeg.Flags)
 			}
 		} else {
 			egr.HandleRx(t)
@@ -278,13 +282,33 @@ func TestTCPClose_noPendingData(t *testing.T) {
 	setLog(cstack, "cl", slog.LevelInfo)
 	setLog(sstack, "sv", slog.LevelInfo)
 	// See RFC 9293 Figure 5: TCP Connection State Diagram.
-	doExpect(t, seqs.StateFinWait1, seqs.StateEstablished) // do[0] Client sends FIN, server parses FIN.
-	doExpect(t, seqs.StateFinWait1, seqs.StateCloseWait)   // do[1] Server sends ACK, client parses ACK and transitions to FinWait2.
-	doExpect(t, seqs.StateFinWait1, seqs.StateCloseWait)   // do[2] Server sends FIN|ACK, client parses ACK->FinWait2. do[3] Cliend sends ACK after receiving FIN, connection terminated.
-	doExpect(t, seqs.StateFinWait2, seqs.StateCloseWait)
-	doExpect(t, seqs.StateFinWait2, seqs.StateLastAck)
-	doExpect(t, seqs.StateTimeWait, seqs.StateClosed)
-	doExpect(t, seqs.StateClosed, seqs.StateClosed)
+	/*
+		Figure 12: Normal Close Sequence
+		TCP Peer A                                           TCP Peer B
+		1.  ESTABLISHED                                          ESTABLISHED
+
+		2.  (Close)
+			FIN-WAIT-1  --> <SEQ=100><ACK=300><CTL=FIN,ACK>  --> CLOSE-WAIT
+
+		3.  FIN-WAIT-2  <-- <SEQ=300><ACK=101><CTL=ACK>      <-- CLOSE-WAIT
+
+		4.                                                       (Close)
+			TIME-WAIT   <-- <SEQ=300><ACK=101><CTL=FIN,ACK>  <-- LAST-ACK
+
+		5.  TIME-WAIT   --> <SEQ=101><ACK=301><CTL=ACK>      --> CLOSED
+
+		6.  (2 MSL)
+			CLOSED
+	*/
+	// Peer A == Client;   Peer B == Server
+	const finack = seqs.FlagFIN | seqs.FlagACK
+	doExpect(t, seqs.StateFinWait1, seqs.StateEstablished, finack)     // do[0] Client sends FIN|ACK
+	doExpect(t, seqs.StateFinWait1, seqs.StateCloseWait, 0)            // do[1] Server receives FINACK, goes into close wait
+	doExpect(t, seqs.StateFinWait1, seqs.StateCloseWait, seqs.FlagACK) // do[2] Server sends ACK of client FIN
+	doExpect(t, seqs.StateFinWait2, seqs.StateCloseWait, 0)            // do[3] client receives ACK of FIN, goes into finwait2
+	doExpect(t, seqs.StateFinWait2, seqs.StateLastAck, finack)         // do[4] Server sends out FIN|ACK and enters LastAck state.
+	doExpect(t, seqs.StateTimeWait, seqs.StateClosed, 0)               // do[5] Client receives FIN, prepares to send ACK and enters TimeWait state.
+	doExpect(t, seqs.StateClosed, seqs.StateClosed, seqs.FlagACK)      // do[6] Client sends ACK and enters Closed state.
 	// t.Fail()
 }
 
@@ -376,6 +400,14 @@ func NewExchanger(stacks ...*stacks.PortStack) *Exchanger {
 
 func (egr *Exchanger) isdebug() bool { return egr.loglevel <= slog.LevelDebug }
 func (egr *Exchanger) isinfo() bool  { return egr.loglevel <= slog.LevelInfo }
+
+// LastSegment returns the last TCP segment sent over the stack.
+func (egr *Exchanger) LastSegment() seqs.Segment {
+	if len(egr.segments) == 0 {
+		return seqs.Segment{}
+	}
+	return egr.segments[len(egr.segments)-1]
+}
 
 func (egr *Exchanger) getPayload(istack int) []byte {
 	return egr.pipes[istack][:egr.pipesN[istack]]

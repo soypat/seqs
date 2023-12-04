@@ -365,6 +365,14 @@ func (tcb *ControlBlock) isOpen() bool {
 	return tcb.state != StateClosed && tcb.state != StateTimeWait
 }
 
+// func (tcb *ControlBlock) queueFlags(flags Flags) {
+// 	if tcb.pending[0]&FlagFIN&FlagSYN == 0 {
+// 		tcb.pending[0] |= flags
+// 	} else {
+// 		tcb.pending[1] |= flags
+// 	}
+// }
+
 // Flags is a TCP flags masked implementation i.e: SYN, FIN, ACK.
 type Flags uint16
 
@@ -470,17 +478,18 @@ const (
 )
 
 // IsPreestablished returns true if the connection is in a state preceding the established state.
+// Returns false for Closed pseudo state.
 func (s State) IsPreestablished() bool {
 	return s == StateSynRcvd || s == StateSynSent || s == StateListen
 }
 
 // IsClosing returns true if the connection is in a closing state but not yet terminated (relieved of remote connection state).
-// Does not return true if connection is StateClosed.
+// Returns false for Closed pseudo state.
 func (s State) IsClosing() bool {
-	return s > StateEstablished
+	return !(s <= StateEstablished)
 }
 
-// IsClosed returns true if the connection closed and relieved of all state related to the remote connection.
+// IsClosed returns true if the connection closed and can possibly relieved of all state related to the remote connection.
 func (s State) IsClosed() bool {
 	return s == StateClosed || s == StateTimeWait
 }
