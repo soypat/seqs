@@ -68,6 +68,7 @@ func (tcb *ControlBlock) Send(seg Segment) error {
 
 	hasFIN := seg.Flags.HasAny(FlagFIN)
 	hasACK := seg.Flags.HasAny(FlagACK)
+	var newPending Flags
 	switch tcb.state {
 	case StateSynRcvd:
 		if hasFIN {
@@ -85,7 +86,7 @@ func (tcb *ControlBlock) Send(seg Segment) error {
 		if hasFIN {
 			tcb.state = StateLastAck
 		} else if hasACK {
-			tcb.pending[1] = finack // Queue finack.
+			newPending = finack // Queue finack.
 		}
 	}
 
@@ -94,6 +95,7 @@ func (tcb *ControlBlock) Send(seg Segment) error {
 	if tcb.pending[0] == 0 {
 		tcb.pending = [2]Flags{tcb.pending[1], 0}
 	}
+	tcb.pending[0] |= newPending
 
 	// The segment is valid, we can update TCB state.
 	seglen := seg.LEN()
