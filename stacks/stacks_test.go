@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	testingLargeNetworkSize = 2 // Minimum=2
+	testingLargeNetworkSize = 4 // Minimum=2
 	exchangesToEstablish    = 3
 )
 
@@ -50,7 +50,8 @@ func TestDHCP(t *testing.T) {
 	}
 	const minDHCPSize = eth.SizeEthernetHeader + eth.SizeIPv4Header + eth.SizeUDPHeader + eth.SizeDHCPHeader
 	// Client performs DISCOVER.
-	ex, n := exchangeStacks(t, 1, Stacks...)
+	egr := NewExchanger(clientStack, serverStack)
+	ex, n := egr.DoExchanges(t, 1)
 	if n < minDHCPSize {
 		t.Errorf("ex[%d] sent=%d want>=%d", ex, n, minDHCPSize)
 	}
@@ -59,13 +60,13 @@ func TestDHCP(t *testing.T) {
 	}
 
 	// Server responds with OFFER.
-	ex, n = exchangeStacks(t, 1, Stacks...)
+	ex, n = egr.DoExchanges(t, 1)
 	if n < minDHCPSize {
 		t.Errorf("ex[%d] sent=%d want>=%d", ex, n, minDHCPSize)
 	}
 
 	// Client performs REQUEST.
-	ex, n = exchangeStacks(t, 1, Stacks...)
+	ex, n = egr.DoExchanges(t, 1)
 	if n < minDHCPSize {
 		t.Errorf("ex[%d] sent=%d want>=%d", ex, n, minDHCPSize)
 	}
@@ -74,7 +75,7 @@ func TestDHCP(t *testing.T) {
 	}
 
 	// Server performs ACK.
-	ex, n = exchangeStacks(t, 1, Stacks...)
+	ex, n = egr.DoExchanges(t, 1)
 	if n < minDHCPSize {
 		t.Errorf("ex[%d] sent=%d want>=%d", ex, n, minDHCPSize)
 	}
@@ -83,7 +84,7 @@ func TestDHCP(t *testing.T) {
 	}
 
 	// Client processes ACK
-	exchangeStacks(t, 1, Stacks...)
+	ex, n = egr.DoExchanges(t, 1)
 	if !client.Done() {
 		t.Fatal("client should be done")
 	}
@@ -98,12 +99,13 @@ func TestARP(t *testing.T) {
 	const expectedARP = eth.SizeEthernetHeader + eth.SizeARPv4Header
 	// Send ARP request from sender to target.
 	sender.BeginResolveARPv4(target.Addr().As4())
-	ex, n := exchangeStacks(t, 1, stacks...)
+	egr := NewExchanger(stacks...)
+	ex, n := egr.DoExchanges(t, 1)
 	if n != expectedARP {
 		t.Errorf("ex[%d] sent=%d want=%d", ex, n, expectedARP)
 	}
 	// Target responds to sender.
-	ex, n = exchangeStacks(t, 1, stacks...)
+	ex, n = egr.DoExchanges(t, 1)
 	if n != expectedARP {
 		t.Errorf("ex[%d] sent=%d want=%d", ex, n, expectedARP)
 	}
@@ -120,7 +122,7 @@ func TestARP(t *testing.T) {
 	}
 
 	// No more data to exchange.
-	ex, n = exchangeStacks(t, 1, stacks...)
+	ex, n = egr.DoExchanges(t, 1)
 	if n != 0 {
 		t.Fatalf("ex[%d] sent=%d want=0", ex, n)
 	}
@@ -131,9 +133,10 @@ func TestTCPEstablish(t *testing.T) {
 
 	// 3 way handshake needs 3 exchanges to complete.
 	const maxTransactions = exchangesToEstablish
-	txDone, numBytesSent := exchangeStacks(t, maxTransactions, client.PortStack(), server.PortStack())
+	egr := NewExchanger(client.PortStack(), server.PortStack())
+	txDone, numBytesSent := egr.DoExchanges(t, maxTransactions)
 
-	_, remnant := exchangeStacks(t, 1, client.PortStack(), server.PortStack())
+	_, remnant := egr.DoExchanges(t, 1)
 	if remnant != 0 {
 		// TODO(soypat): prevent duplicate ACKs from being sent.
 		t.Fatalf("duplicate ACK detected? remnant=%d want=0", remnant)
@@ -159,7 +162,8 @@ func TestTCPEstablish(t *testing.T) {
 func TestTCPSendReceive_simplex(t *testing.T) {
 	// Create Client+Server and establish TCP connection between them.
 	client, server := createTCPClientServerPair(t)
-	exchangeStacks(t, exchangesToEstablish, client.PortStack(), server.PortStack())
+	egr := NewExchanger(client.PortStack(), server.PortStack())
+	egr.DoExchanges(t, exchangesToEstablish)
 	if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
 		t.Fatal("not established")
 	}
@@ -167,7 +171,7 @@ func TestTCPSendReceive_simplex(t *testing.T) {
 	// Send data from client to server.
 	const data = "hello world"
 	socketSendString(client, data)
-	exchangeStacks(t, 2, client.PortStack(), server.PortStack())
+	egr.DoExchanges(t, 2)
 	if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
 		t.Fatalf("not established: client=%s server=%s", client.State(), server.State())
 	}
@@ -181,7 +185,8 @@ func TestTCPSendReceive_duplex_single(t *testing.T) {
 	// Create Client+Server and establish TCP connection between them.
 	client, server := createTCPClientServerPair(t)
 	cstack, sstack := client.PortStack(), server.PortStack()
-	exchangeStacks(t, exchangesToEstablish, cstack, sstack)
+	egr := NewExchanger(cstack, sstack)
+	egr.DoExchanges(t, exchangesToEstablish)
 	if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
 		t.Fatalf("not established: client=%s server=%s", client.State(), server.State())
 	}
@@ -190,7 +195,8 @@ func TestTCPSendReceive_duplex_single(t *testing.T) {
 	const data = "hello world"
 	socketSendString(client, data)
 	socketSendString(server, data)
-	tx, bytes := exchangeStacks(t, 2, cstack, sstack)
+
+	tx, bytes := egr.DoExchanges(t, 2)
 	if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
 		t.Fatalf("not established: client=%s server=%s", client.State(), server.State())
 	}
@@ -208,8 +214,8 @@ func TestTCPSendReceive_duplex_single(t *testing.T) {
 func TestTCPSendReceive_duplex(t *testing.T) {
 	// Create Client+Server and establish TCP connection between them.
 	client, server := createTCPClientServerPair(t)
-	cstack, sstack := client.PortStack(), server.PortStack()
-	exchangeStacks(t, exchangesToEstablish, cstack, sstack)
+	egr := NewExchanger(client.PortStack(), server.PortStack())
+	egr.DoExchanges(t, exchangesToEstablish)
 	if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
 		t.Fatalf("not established: client=%s server=%s", client.State(), server.State())
 	}
@@ -222,7 +228,7 @@ func TestTCPSendReceive_duplex(t *testing.T) {
 
 		socketSendString(client, cdata)
 		socketSendString(server, sdata)
-		tx, bytes := exchangeStacks(t, 2, cstack, sstack)
+		tx, bytes := egr.DoExchanges(t, 2)
 		if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
 			t.Fatalf("not established: client=%s server=%s", client.State(), server.State())
 		}
@@ -241,8 +247,7 @@ func TestTCPSendReceive_duplex(t *testing.T) {
 func TestTCPClose_noPendingData(t *testing.T) {
 	// Create Client+Server and establish TCP connection between them.
 	client, server := createTCPClientServerPair(t)
-	cstack, sstack := client.PortStack(), server.PortStack()
-	egr := NewExchanger(cstack, sstack)
+	egr := NewExchanger(client.PortStack(), server.PortStack())
 	egr.DoExchanges(t, exchangesToEstablish)
 	if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
 		t.Fatalf("not established: client=%s server=%s", client.State(), server.State())
@@ -279,8 +284,6 @@ func TestTCPClose_noPendingData(t *testing.T) {
 		}
 		i++
 	}
-	setLog(cstack, "cl", slog.LevelInfo)
-	setLog(sstack, "sv", slog.LevelInfo)
 	// See RFC 9293 Figure 5: TCP Connection State Diagram.
 	/*
 		Figure 12: Normal Close Sequence
@@ -309,9 +312,18 @@ func TestTCPClose_noPendingData(t *testing.T) {
 	doExpect(t, seqs.StateFinWait2, seqs.StateLastAck, finack)         // do[4] Server sends out FIN|ACK and enters LastAck state.
 	doExpect(t, seqs.StateTimeWait, seqs.StateClosed, 0)               // do[5] Client receives FIN, prepares to send ACK and enters TimeWait state.
 	doExpect(t, seqs.StateClosed, seqs.StateClosed, seqs.FlagACK)      // do[6] Client sends ACK and enters Closed state.
-	// t.Fail()
 }
 
+func TestTCPSocketOpenOfClosedPort(t *testing.T) {
+	// Create Client+Server and establish TCP connection between them.
+	client, server := createTCPClientServerPair(t)
+	cstack, sstack := client.PortStack(), server.PortStack()
+	egr := NewExchanger(cstack, sstack)
+	egr.DoExchanges(t, exchangesToEstablish)
+	if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
+		t.Fatalf("not established: client=%s server=%s", client.State(), server.State())
+	}
+}
 func TestPortStackTCPDecoding(t *testing.T) {
 	return
 	const dataport = 1234
@@ -470,6 +482,8 @@ func (egr *Exchanger) HandleRx(t *testing.T) {
 	}
 }
 
+// DoExchanges exchanges packets between stacks until no more data is being sent or maxExchanges is reached.
+// By convention client (initiator) is the first stack and server (listener) is the second when dealing with pairs.
 func (egr *Exchanger) DoExchanges(t *testing.T, maxExchanges int) (exDone, bytesSent int) {
 	t.Helper()
 	for ; exDone < maxExchanges; exDone++ {
@@ -481,16 +495,6 @@ func (egr *Exchanger) DoExchanges(t *testing.T, maxExchanges int) (exDone, bytes
 		egr.HandleRx(t)
 	}
 	return exDone, bytesSent
-}
-
-// exchangeStacks exchanges packets between stacks until no more data is being sent or maxExchanges is reached.
-// By convention client (initiator) is the first stack and server (listener) is the second when dealing with pairs.
-//
-// Deprecated: Use Exchanger instead.
-func exchangeStacks(t *testing.T, maxExchanges int, stcks ...*stacks.PortStack) (ex, bytesSent int) {
-	t.Helper()
-	egr := NewExchanger(stcks...)
-	return egr.DoExchanges(t, maxExchanges)
 }
 
 func isDroppedPacket(err error) bool {
