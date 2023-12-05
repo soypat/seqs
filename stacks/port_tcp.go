@@ -28,6 +28,7 @@ type tcpPort struct {
 	handler itcphandler
 	port    uint16
 	packets []TCPPacket
+	pkt     TCPPacket
 }
 
 func (port tcpPort) Port() uint16 { return port.port }
@@ -62,6 +63,7 @@ func (port *tcpPort) HandleEth(dst []byte) (n int, err error) {
 
 // nextPacket returns the next packet that is pending handling or the first packet if none are pending.
 func (port *tcpPort) nextPacket() *TCPPacket {
+	return &port.pkt
 	idx := 0
 	minSeq := port.packets[0].TCP.Seq
 	for i := 1; i < len(port.packets); i++ {
@@ -77,6 +79,8 @@ func (port *tcpPort) nextPacket() *TCPPacket {
 
 // freePacket returns the first packet that is not pending handling or nil if all packets are pending.
 func (port *tcpPort) freePacket() *TCPPacket {
+	port.pkt.invalidate()
+	return &port.pkt
 	for i := range port.packets {
 		if !port.packets[i].pendingHandling() {
 			return &port.packets[i]
@@ -94,12 +98,17 @@ func (port *tcpPort) Open(portNum uint16, handler itcphandler) {
 	}
 	port.handler = handler
 	port.port = portNum
+	port.pkt.invalidate()
 	for i := range port.packets {
 		port.packets[i].invalidate()
 	}
 }
 
 func (port *tcpPort) pending() (p uint32) {
+	if port.pkt.pendingHandling() {
+		p = 1
+	}
+	return p
 	for i := range port.packets {
 		if port.packets[i].pendingHandling() {
 			p++
@@ -117,6 +126,11 @@ func (port *tcpPort) Close() {
 }
 
 func (port *tcpPort) forceResponse() (added bool) {
+	added = !port.pkt.pendingHandling()
+	if added {
+		port.pkt.flagPendingNoPacket()
+	}
+	return added
 	for i := range port.packets {
 		if !port.packets[i].pendingHandling() {
 			port.packets[i].flagPendingNoPacket()

@@ -283,7 +283,7 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 			break // No socket listening on this port.
 		}
 
-		pkt := port.freePacket()
+		pkt := &port.pkt
 		if pkt == nil {
 			ps.error("TCP packet dropped")
 			ps.droppedPackets++
