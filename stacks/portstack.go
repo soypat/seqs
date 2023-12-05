@@ -42,9 +42,6 @@ func NewPortStack(cfg PortStackConfig) *PortStack {
 	// s.ip = cfg.IP.As4()
 	s.portsUDP = make([]udpPort, cfg.MaxOpenPortsUDP)
 	s.portsTCP = make([]tcpPort, cfg.MaxOpenPortsTCP)
-	for i := range s.portsTCP {
-		s.portsTCP[i].packets = make([]TCPPacket, 1)
-	}
 	s.logger = cfg.Logger
 	if cfg.MTU > defaultMTU {
 		panic("please use a smaller MTU. max=" + strconv.Itoa(defaultMTU))

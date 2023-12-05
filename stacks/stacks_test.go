@@ -131,7 +131,8 @@ func TestARP(t *testing.T) {
 
 func TestTCPEstablish(t *testing.T) {
 	client, server := createTCPClientServerPair(t)
-
+	setLog(client.PortStack(), "cl", slog.LevelDebug)
+	setLog(server.PortStack(), "sv", slog.LevelDebug)
 	// 3 way handshake needs 3 exchanges to complete.
 	const maxTransactions = exchangesToEstablish
 	egr := NewExchanger(client.PortStack(), server.PortStack())
