@@ -147,6 +147,11 @@ func (sock *TCPSocket) open(state seqs.State, localPortNum uint16, iss seqs.Valu
 		return err
 	}
 	if state == seqs.StateSynSent {
+		err = sock.stack.FlagPendingTCP(localPortNum)
+		if err != nil {
+			sock.stack.CloseTCP(localPortNum)
+			return err
+		}
 		err = sock.scb.Send(sock.synsentSegment())
 	}
 	return err
@@ -300,11 +305,14 @@ func (sock *TCPSocket) stateCheck() (portStackErr error) {
 	if sock.scb.HasPending() {
 		portStackErr = ErrFlagPending // Flag to PortStack that we have pending data to send.
 	} else if state.IsClosed() {
-		portStackErr = io.EOF
+		portStackErr = io.EOF // On EOF portStack will abort the connection.
 	}
 	return portStackErr
 }
 
+// Abort is called by the PortStack when the port is closed. This happens
+// on EOF returned by Handle/RecvEth. See TCPSocket.stateCheck for information on when
+// a connection is aborted.
 func (t *TCPSocket) Abort() {
 	t.deleteState()
 }

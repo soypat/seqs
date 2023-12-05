@@ -489,7 +489,8 @@ func (s State) IsClosing() bool {
 	return !(s <= StateEstablished)
 }
 
-// IsClosed returns true if the connection closed and can possibly relieved of all state related to the remote connection.
+// IsClosed returns true if the connection closed and can possibly relieved of
+// all state related to the remote connection. It returns true if Closed or in TimeWait.
 func (s State) IsClosed() bool {
 	return s == StateClosed || s == StateTimeWait
 }
