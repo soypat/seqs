@@ -9,6 +9,8 @@ import (
 	"github.com/soypat/seqs/eth"
 )
 
+const useBool = false
+
 // tcphandler represents a user provided function for handling incoming TCP packets on a port.
 // Incoming data is sent inside the `pkt` TCPPacket argument when pkt.HasPacket returns true.
 // Outgoing data is stored into the `response` byte slice. The function must return the number of
@@ -27,8 +29,8 @@ type tcpPort struct {
 	LastRx  time.Time
 	handler itcphandler
 	port    uint16
-	packets []TCPPacket
 	pkt     TCPPacket
+	p       bool
 }
 
 func (port tcpPort) Port() uint16 { return port.port }
@@ -36,12 +38,36 @@ func (port tcpPort) Port() uint16 { return port.port }
 // NeedsHandling returns true if the socket needs handling before it can
 // admit more pending packets.
 func (port *tcpPort) NeedsHandling() bool {
+	if useBool {
+		port.freePacket()
+		return false
+	}
 	return port.freePacket() == nil
 }
 
 // IsPendingHandling returns true if there are packet(s) pending handling.
 func (port *tcpPort) IsPendingHandling() bool {
-	return port.port != 0 && port.nextPacket().pendingHandling()
+	if useBool {
+		return port.p
+	}
+	// return port.port != 0 && port.p
+	return port.port != 0 && port.pkt.pendingHandling()
+}
+func (port *tcpPort) forceResponse() (added bool) {
+	if useBool {
+		added = !port.p
+		if added {
+			port.pkt.flagPendingNoPacket()
+		}
+		port.p = true
+		return added
+	}
+
+	added = !port.pkt.pendingHandling()
+	if added {
+		port.pkt.flagPendingNoPacket()
+	}
+	return added
 }
 
 // HandleEth writes the socket's response into dst to be sent over an ethernet interface.
@@ -53,7 +79,9 @@ func (port *tcpPort) HandleEth(dst []byte) (n int, err error) {
 
 	packet := port.nextPacket()
 	n, err = port.handler.HandleEth(dst)
+	port.p = false
 	if err == ErrFlagPending {
+		port.p = true
 		packet.flagPendingNoPacket() // Mark socket as needing handling but packet having no data.
 	} else {
 		packet.invalidate()
@@ -64,29 +92,15 @@ func (port *tcpPort) HandleEth(dst []byte) (n int, err error) {
 // nextPacket returns the next packet that is pending handling or the first packet if none are pending.
 func (port *tcpPort) nextPacket() *TCPPacket {
 	return &port.pkt
-	idx := 0
-	minSeq := port.packets[0].TCP.Seq
-	for i := 1; i < len(port.packets); i++ {
-		pkt := &port.packets[i]
-		if pkt.pendingHandling() && pkt.TCP.Seq < minSeq {
-			// We are interested in the minimum incoming sequence number.
-			minSeq = pkt.TCP.Seq
-			idx = i
-		}
-	}
-	return &port.packets[idx]
 }
 
 // freePacket returns the first packet that is not pending handling or nil if all packets are pending.
 func (port *tcpPort) freePacket() *TCPPacket {
 	port.pkt.invalidate()
+	// if useBool {
+	// 	port.p = false
+	// }
 	return &port.pkt
-	for i := range port.packets {
-		if !port.packets[i].pendingHandling() {
-			return &port.packets[i]
-		}
-	}
-	return nil
 }
 
 // Open sets the UDP handler and opens the port.
@@ -99,20 +113,12 @@ func (port *tcpPort) Open(portNum uint16, handler itcphandler) {
 	port.handler = handler
 	port.port = portNum
 	port.pkt.invalidate()
-	for i := range port.packets {
-		port.packets[i].invalidate()
-	}
+	port.p = false
 }
 
 func (port *tcpPort) pending() (p uint32) {
-	if port.pkt.pendingHandling() {
+	if port.p {
 		p = 1
-	}
-	return p
-	for i := range port.packets {
-		if port.packets[i].pendingHandling() {
-			p++
-		}
 	}
 	return p
 }
@@ -123,21 +129,6 @@ func (port *tcpPort) Close() {
 	}
 	port.handler = nil
 	port.port = 0 // Port 0 flags the port is inactive.
-}
-
-func (port *tcpPort) forceResponse() (added bool) {
-	added = !port.pkt.pendingHandling()
-	if added {
-		port.pkt.flagPendingNoPacket()
-	}
-	return added
-	for i := range port.packets {
-		if !port.packets[i].pendingHandling() {
-			port.packets[i].flagPendingNoPacket()
-			return true
-		}
-	}
-	return false
 }
 
 const tcpMTU = defaultMTU - eth.SizeEthernetHeader - eth.SizeIPv4Header - eth.SizeTCPHeader
