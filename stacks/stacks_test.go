@@ -20,6 +20,7 @@ import (
 const (
 	testingLargeNetworkSize = 4 // Minimum=2
 	exchangesToEstablish    = 3
+	exchangesToClose        = 4
 )
 
 func TestDHCP(t *testing.T) {
@@ -316,12 +317,37 @@ func TestTCPClose_noPendingData(t *testing.T) {
 
 func TestTCPSocketOpenOfClosedPort(t *testing.T) {
 	// Create Client+Server and establish TCP connection between them.
+	const newPortoffset = 1
+	const newISS = 1337
 	client, server := createTCPClientServerPair(t)
 	cstack, sstack := client.PortStack(), server.PortStack()
+	caddr := client.AddrPort()
+	saddr := server.AddrPort()
 	egr := NewExchanger(cstack, sstack)
 	egr.DoExchanges(t, exchangesToEstablish)
 	if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
 		t.Fatalf("not established: client=%s server=%s", client.State(), server.State())
+	}
+	client.Close()
+	egr.DoExchanges(t, exchangesToClose)
+	if client.State() != seqs.StateClosed || server.State() != seqs.StateClosed {
+		t.Fatalf("not established: client=%s server=%s", client.State(), server.State())
+	}
+
+	saddr = netip.AddrPortFrom(saddr.Addr(), saddr.Port()+newPortoffset)
+	caddr = netip.AddrPortFrom(caddr.Addr(), caddr.Port()+newPortoffset+1)
+	err := client.OpenDialTCP(caddr.Port(), sstack.MACAs6(), saddr, newISS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = server.OpenListenTCP(saddr.Port(), newISS+100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const minBytesToEstablish = (eth.SizeEthernetHeader + eth.SizeIPv4Header + eth.SizeTCPHeader) * exchangesToEstablish
+	_, nbytes := egr.DoExchanges(t, exchangesToEstablish)
+	if nbytes < minBytesToEstablish {
+		t.Fatalf("insufficient data to establish: got %d want>=%d", nbytes, minBytesToEstablish)
 	}
 }
 func TestPortStackTCPDecoding(t *testing.T) {
