@@ -2,11 +2,11 @@ package stacks_test
 
 import (
 	"errors"
-	"fmt"
 	"log/slog"
 	"math"
 	"net/netip"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -221,27 +221,7 @@ func TestTCPSendReceive_duplex(t *testing.T) {
 	}
 
 	// Send data from client to server multiple times.
-	const messages = 1024
-	for i := 0; i < messages; i++ {
-		cdata := fmt.Sprintf("hello world %d", i)
-		sdata := fmt.Sprintf("hello yourself %d", i)
-
-		socketSendString(client, cdata)
-		socketSendString(server, sdata)
-		tx, bytes := egr.DoExchanges(t, 2)
-		if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
-			t.Fatalf("not established: client=%s server=%s", client.State(), server.State())
-		}
-		t.Logf("tx=%d bytes=%d", tx, bytes)
-		clientstr := socketReadAllString(client)
-		serverstr := socketReadAllString(server)
-		if clientstr != sdata {
-			t.Errorf("client: got %q want %q", clientstr, sdata)
-		}
-		if serverstr != cdata {
-			t.Errorf("server: got %q want %q", serverstr, cdata)
-		}
-	}
+	testSocketDuplex(t, client, server, egr, 1024)
 }
 
 func TestTCPClose_noPendingData(t *testing.T) {
@@ -347,6 +327,36 @@ func TestTCPSocketOpenOfClosedPort(t *testing.T) {
 	_, nbytes := egr.DoExchanges(t, exchangesToEstablish)
 	if nbytes < minBytesToEstablish {
 		t.Fatalf("insufficient data to establish: got %d want>=%d", nbytes, minBytesToEstablish)
+	}
+	testSocketDuplex(t, client, server, egr, 128)
+}
+
+func testSocketDuplex(t *testing.T, client, server *stacks.TCPSocket, egr *Exchanger, messages int) {
+	if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
+		panic("not established")
+	}
+	// Send data from client to server multiple times.
+	for i := 0; i < messages; i++ {
+		istr := strconv.Itoa(i)
+		cdata := "hello server " + istr
+		sdata := "hello client " + istr
+
+		socketSendString(client, cdata)
+		socketSendString(server, sdata)
+		tx, bytes := egr.DoExchanges(t, 2)
+		if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
+			t.Fatalf("not established: client=%s server=%s", client.State(), server.State())
+		}
+		_, _ = tx, bytes
+		// t.Logf("tx=%d bytes=%d", tx, bytes)
+		clientstr := socketReadAllString(client)
+		serverstr := socketReadAllString(server)
+		if clientstr != sdata {
+			t.Errorf("client: got %q want %q", clientstr, sdata)
+		}
+		if serverstr != cdata {
+			t.Errorf("server: got %q want %q", serverstr, cdata)
+		}
 	}
 }
 
