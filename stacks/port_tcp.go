@@ -16,11 +16,11 @@ import (
 //
 // See [PortStack] for information on how to use this function and other port handlers.
 type itcphandler interface {
-	HandleEth(dst []byte) (n int, err error)
-	RecvTCP(pkt *TCPPacket) error
+	send(dst []byte) (n int, err error)
+	recv(pkt *TCPPacket) error
 	// needsHandling() bool
-	IsPendingHandling() bool
-	Abort()
+	isPendingHandling() bool
+	abort()
 }
 
 type tcpPort struct {
@@ -35,7 +35,7 @@ func (port tcpPort) Port() uint16 { return port.port }
 
 // IsPendingHandling returns true if there are packet(s) pending handling.
 func (port *tcpPort) IsPendingHandling() bool {
-	return port.port != 0 && port.handler.IsPendingHandling()
+	return port.port != 0 && port.handler.isPendingHandling()
 }
 
 // HandleEth writes the socket's response into dst to be sent over an ethernet interface.
@@ -45,7 +45,7 @@ func (port *tcpPort) HandleEth(dst []byte) (n int, err error) {
 		panic("nil tcp handler on port " + strconv.Itoa(int(port.port)))
 	}
 
-	n, err = port.handler.HandleEth(dst)
+	n, err = port.handler.send(dst)
 	port.p = false
 	if err == ErrFlagPending {
 		port.p = true
@@ -67,7 +67,7 @@ func (port *tcpPort) Open(portNum uint16, handler itcphandler) {
 
 func (port *tcpPort) Close() {
 	if port.handler != nil {
-		port.handler.Abort()
+		port.handler.abort()
 	}
 	port.handler = nil
 	port.port = 0 // Port 0 flags the port is inactive.

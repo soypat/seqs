@@ -29,14 +29,14 @@ func TestDHCP(t *testing.T) {
 	clientStack := Stacks[0]
 	serverStack := Stacks[1]
 
-	client := stacks.DHCPv4Client{
+	client := &stacks.DHCPv4Client{
 		MAC:         clientStack.MACAs6(),
 		RequestedIP: requestedIP.As4(),
 	}
 	server := stacks.NewDHCPServer(67, serverStack.MACAs6(), serverStack.Addr())
 	clientStack.SetAddr(netip.AddrFrom4([4]byte{}))
 	serverStack.SetAddr(netip.AddrFrom4([4]byte{}))
-	err := clientStack.OpenUDP(68, client.HandleUDP)
+	err := clientStack.OpenUDP(68, client)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestDHCP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = serverStack.OpenUDP(67, server.HandleUDP)
+	err = serverStack.OpenUDP(67, server)
 	if err != nil {
 		t.Fatal(err)
 	}

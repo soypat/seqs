@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 
 	"github.com/soypat/seqs/eth"
@@ -34,6 +35,33 @@ func (d *DHCPv4Client) Done() bool {
 // Reset resets the DHCP client to its initial state and discards all state.
 // After being reset the client will try to obtain a new IP address if it is attached to a PortStack.
 func (d *DHCPv4Client) Reset() {
+	d.abort()
+}
+
+func (d *DHCPv4Client) isAborted() bool { return d.MAC == [6]byte{} }
+
+func (d *DHCPv4Client) send(dst []byte) (n int, err error) {
+	if d.state == dhcpStateDone || d.isAborted() {
+		return 0, io.EOF // Signal to close socket.
+	}
+	// Send DHCP request.
+	return d.HandleUDP(dst, nil)
+}
+
+func (d *DHCPv4Client) recv(pkt *UDPPacket) error {
+	if d.state == dhcpStateDone || d.isAborted() {
+		return io.EOF // Signal to close socket.
+	}
+	// Receive DHCP response.
+	_, err := d.HandleUDP(nil, pkt)
+	return err
+}
+
+func (d *DHCPv4Client) isPendingHandling() bool {
+	return d.state != dhcpStateDone
+}
+
+func (d *DHCPv4Client) abort() {
 	*d = DHCPv4Client{
 		MAC:         d.MAC,
 		RequestedIP: d.RequestedIP,

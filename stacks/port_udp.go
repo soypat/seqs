@@ -8,12 +8,21 @@ import (
 )
 
 type udphandler func(response []byte, pkt *UDPPacket) (int, error)
+type iudphandler interface {
+	send(dst []byte) (n int, err error)
+	recv(pkt *UDPPacket) error
+	// needsHandling() bool
+	isPendingHandling() bool
+	abort()
+}
 
 type udpPort struct {
-	LastRx  time.Time
-	handler udphandler
-	port    uint16
-	packets [1]UDPPacket
+	LastRx   time.Time
+	handler  udphandler
+	ihandler iudphandler
+	port     uint16
+	pkt      UDPPacket
+	packets  [1]UDPPacket
 }
 
 func (port udpPort) Port() uint16 { return port.port }
@@ -26,18 +35,20 @@ func (port *udpPort) NeedsHandling() bool {
 
 // IsPendingHandling returns true if there are packet(s) pending handling.
 func (port *udpPort) IsPendingHandling() bool {
+	// return port.port != 0 && port.ihandler.isPendingHandling()
 	return port.port != 0 && port.nextPacket().pendingHandling()
 }
 
 // HandleEth writes the socket's response into dst to be sent over an ethernet interface.
 // HandleEth can return 0 bytes written and a nil error to indicate no action must be taken.
 func (port *udpPort) HandleEth(dst []byte) (int, error) {
-	if port.handler == nil {
+	if port.ihandler == nil {
 		panic("nil udp handler on port " + strconv.Itoa(int(port.port)))
 	}
 	packet := port.nextPacket()
-
-	n, err := port.handler(dst, packet)
+	// n,err := port.ihandler.send(d)
+	// n, err := port.handler(dst, packet)
+	n, err := port.ihandler.send(dst)
 	if err == ErrFlagPending {
 		packet.flagPendingNoPacket() // Mark socket as needing handling but packet having no data.
 	} else {
@@ -47,13 +58,13 @@ func (port *udpPort) HandleEth(dst []byte) (int, error) {
 }
 
 // Open sets the UDP handler and opens the port.
-func (port *udpPort) Open(portNum uint16, h udphandler) {
+func (port *udpPort) Open(portNum uint16, h iudphandler) {
 	if portNum == 0 || h == nil {
 		panic("invalid port or nil handler" + strconv.Itoa(int(port.port)))
 	} else if port.port != 0 {
 		panic("port already open")
 	}
-	port.handler = h
+	port.ihandler = h
 	port.port = portNum
 }
 
@@ -115,7 +126,7 @@ type UDPPacket struct {
 	payload [defaultMTU - eth.SizeEthernetHeader - eth.SizeIPv4Header - eth.SizeUDPHeader]byte
 }
 
-func (pkt *UDPPacket) HasPacket() bool       { return pkt.Rx != forcedTime && !pkt.Rx.IsZero() }
+func (pkt *UDPPacket) HasPacket() bool       { return pkt != nil && pkt.Rx != forcedTime && !pkt.Rx.IsZero() }
 func (pkt *UDPPacket) pendingHandling() bool { return !pkt.Rx.IsZero() }
 func (pkt *UDPPacket) invalidate()           { pkt.Rx = time.Time{} }
 func (pkt *UDPPacket) flagPendingNoPacket()  { pkt.Rx = forcedTime }
