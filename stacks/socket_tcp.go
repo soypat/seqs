@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"runtime"
 	"time"
 
 	"github.com/soypat/seqs"
@@ -87,35 +88,51 @@ func (sock *TCPSocket) FlushOutputBuffer() error {
 	return nil
 }
 
-func (sock *TCPSocket) Send(b []byte) error {
+// Write writes argument data to the socket's output buffer which is queued to be sent.
+func (sock *TCPSocket) Write(b []byte) (int, error) {
 	if sock.abortErr != nil {
-		return sock.abortErr
+		return 0, sock.abortErr
 	}
 	state := sock.State()
 	if state.IsClosing() || state.IsClosed() {
-		return net.ErrClosed
+		return 0, net.ErrClosed
 	}
 	if len(b) == 0 {
-		return nil
+		return 0, nil
 	}
 	err := sock.stack.FlagPendingTCP(sock.localPort)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	_, err = sock.tx.Write(b)
+	n, err := sock.tx.Write(b)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	return nil
+	return n, nil
 }
 
-func (sock *TCPSocket) Recv(b []byte) (int, error) {
+// Read reads data from the socket's input buffer. If the buffer is empty,
+// Read will block until data is available.
+func (sock *TCPSocket) Read(b []byte) (int, error) {
+	return sock.ReadDeadline(b, time.Time{})
+}
+
+// BufferedInput returns the number of bytes in the socket's input buffer.
+func (sock *TCPSocket) BufferedInput() int { return sock.rx.Buffered() }
+
+// Read reads data from the socket's input buffer. If the buffer is empty
+// it will wait until the deadline is met or data is available.
+func (sock *TCPSocket) ReadDeadline(b []byte, deadline time.Time) (int, error) {
 	if sock.abortErr != nil {
 		return 0, sock.abortErr
 	}
 	state := sock.State()
 	if state.IsClosed() || state.IsClosing() {
 		return 0, net.ErrClosed
+	}
+	noDeadline := deadline.IsZero()
+	for sock.rx.Buffered() == 0 && sock.State() == seqs.StateEstablished && (noDeadline || time.Until(deadline) > 0) {
+		runtime.Gosched()
 	}
 	n, err := sock.rx.Read(b)
 	return n, err

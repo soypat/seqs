@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/soypat/seqs"
 	"github.com/soypat/seqs/eth"
@@ -613,8 +614,8 @@ func createPortStacks(t *testing.T, n int) (Stacks []*stacks.PortStack) {
 func socketReadAllString(s *stacks.TCPSocket) string {
 	var str strings.Builder
 	var buf [1024]byte
-	for {
-		n, err := s.Recv(buf[:])
+	for s.BufferedInput() > 0 {
+		n, err := s.ReadDeadline(buf[:], time.Time{})
 		str.Write(buf[:n])
 		if n == 0 || err != nil {
 			break
@@ -624,7 +625,7 @@ func socketReadAllString(s *stacks.TCPSocket) string {
 }
 
 func socketSendString(s *stacks.TCPSocket, str string) {
-	err := s.Send([]byte(str))
+	_, err := s.Write([]byte(str))
 	if err != nil {
 		panic(err)
 	}
