@@ -1,8 +1,6 @@
 package stacks_test
 
 import (
-	"bytes"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -351,72 +349,73 @@ func TestTCPSocketOpenOfClosedPort(t *testing.T) {
 		t.Fatalf("insufficient data to establish: got %d want>=%d", nbytes, minBytesToEstablish)
 	}
 }
-func TestPortStackTCPDecoding(t *testing.T) {
-	return
-	const dataport = 1234
-	packets := []string{
-		"28cdc1054d3ed85ed34303eb08004500003c76eb400040063f76c0a80192c0a80178ee1604d2a0ceb98a00000000a002faf06e800000020405b40402080a14ccf8250000000001030307",
-	}
-	var handleBuf [2048]byte
-	for _, data := range packets {
-		data, _ := hex.DecodeString(data)
-		ehdr := eth.DecodeEthernetHeader(data)
-		ps := stacks.NewPortStack(stacks.PortStackConfig{
-			MaxOpenPortsTCP: 1,
-			MTU:             2048,
-			MAC:             ehdr.Destination,
-		})
-		var got stacks.TCPPacket
 
-		err := ps.OpenTCP(dataport, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		// We recv eth and handle eth so that our callback runs.
-		err = ps.RecvEth(data)
-		if err != nil {
-			t.Fatal(err)
-		}
+// func TestPortStackTCPDecoding(t *testing.T) {
+// 	return
+// 	const dataport = 1234
+// 	packets := []string{
+// 		"28cdc1054d3ed85ed34303eb08004500003c76eb400040063f76c0a80192c0a80178ee1604d2a0ceb98a00000000a002faf06e800000020405b40402080a14ccf8250000000001030307",
+// 	}
+// 	var handleBuf [2048]byte
+// 	for _, data := range packets {
+// 		data, _ := hex.DecodeString(data)
+// 		ehdr := eth.DecodeEthernetHeader(data)
+// 		ps := stacks.NewPortStack(stacks.PortStackConfig{
+// 			MaxOpenPortsTCP: 1,
+// 			MTU:             2048,
+// 			MAC:             ehdr.Destination,
+// 		})
+// 		var got stacks.TCPPacket
 
-		n, err := ps.HandleEth(handleBuf[:])
-		if err != nil {
-			t.Fatal(err)
-		} else if n != 0 {
-			t.Errorf("n=%d want=0", n)
-		}
-		if !got.HasPacket() {
-			t.Fatal("no packet")
-		}
-		gotTCPOptions := got.TCPOptions()
-		gotIPOptions := got.IPOptions()
-		gotPayload := got.Payload()
-		gotsum := got.TCP.CalculateChecksumIPv4(&got.IP, gotTCPOptions, gotPayload)
+// 		err := ps.OpenTCP(dataport, nil)
+// 		if err != nil {
+// 			t.Fatal(err)
+// 		}
+// 		// We recv eth and handle eth so that our callback runs.
+// 		err = ps.RecvEth(data)
+// 		if err != nil {
+// 			t.Fatal(err)
+// 		}
 
-		pkt, err := stacks.ParseTCPPacket([]byte(data))
-		if err != nil {
-			t.Fatal(err)
-		}
-		wantTCPOptions := pkt.TCPOptions()
-		wantIPOptions := pkt.IPOptions()
-		wantPayload := pkt.Payload()
-		wantsum := pkt.TCP.CalculateChecksumIPv4(&pkt.IP, wantTCPOptions, wantPayload)
-		if !bytes.Equal(gotTCPOptions, wantTCPOptions) {
-			t.Errorf("gotTCPOptions=%x want=%x", gotTCPOptions, wantTCPOptions)
-		}
-		if !bytes.Equal(gotIPOptions, wantIPOptions) {
-			t.Errorf("gotIPOptions=%x want=%x", gotIPOptions, wantIPOptions)
-		}
-		if !bytes.Equal(gotPayload, wantPayload) {
-			t.Errorf("gotPayload=%x want=%x", gotPayload, wantPayload)
-		}
-		if gotsum != wantsum {
-			t.Errorf("gotsum=%x want=%x", gotsum, wantsum)
-		}
-		if gotsum != got.TCP.Checksum {
-			t.Errorf("gotsum=%x want=%x", gotsum, got.TCP.Checksum)
-		}
-	}
-}
+// 		n, err := ps.HandleEth(handleBuf[:])
+// 		if err != nil {
+// 			t.Fatal(err)
+// 		} else if n != 0 {
+// 			t.Errorf("n=%d want=0", n)
+// 		}
+// 		if !got.HasPacket() {
+// 			t.Fatal("no packet")
+// 		}
+// 		gotTCPOptions := got.TCPOptions()
+// 		gotIPOptions := got.IPOptions()
+// 		gotPayload := got.Payload()
+// 		gotsum := got.TCP.CalculateChecksumIPv4(&got.IP, gotTCPOptions, gotPayload)
+
+// 		pkt, err := stacks.ParseTCPPacket([]byte(data))
+// 		if err != nil {
+// 			t.Fatal(err)
+// 		}
+// 		wantTCPOptions := pkt.TCPOptions()
+// 		wantIPOptions := pkt.IPOptions()
+// 		wantPayload := pkt.Payload()
+// 		wantsum := pkt.TCP.CalculateChecksumIPv4(&pkt.IP, wantTCPOptions, wantPayload)
+// 		if !bytes.Equal(gotTCPOptions, wantTCPOptions) {
+// 			t.Errorf("gotTCPOptions=%x want=%x", gotTCPOptions, wantTCPOptions)
+// 		}
+// 		if !bytes.Equal(gotIPOptions, wantIPOptions) {
+// 			t.Errorf("gotIPOptions=%x want=%x", gotIPOptions, wantIPOptions)
+// 		}
+// 		if !bytes.Equal(gotPayload, wantPayload) {
+// 			t.Errorf("gotPayload=%x want=%x", gotPayload, wantPayload)
+// 		}
+// 		if gotsum != wantsum {
+// 			t.Errorf("gotsum=%x want=%x", gotsum, wantsum)
+// 		}
+// 		if gotsum != got.TCP.Checksum {
+// 			t.Errorf("gotsum=%x want=%x", gotsum, got.TCP.Checksum)
+// 		}
+// 	}
+// }
 
 type Exchanger struct {
 	Stacks   []*stacks.PortStack

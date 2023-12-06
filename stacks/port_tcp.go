@@ -9,7 +9,7 @@ import (
 	"github.com/soypat/seqs/eth"
 )
 
-const useBool = false
+const useBool = true
 
 // tcphandler represents a user provided function for handling incoming TCP packets on a port.
 // Incoming data is sent inside the `pkt` TCPPacket argument when pkt.HasPacket returns true.
@@ -35,39 +35,9 @@ type tcpPort struct {
 
 func (port tcpPort) Port() uint16 { return port.port }
 
-// NeedsHandling returns true if the socket needs handling before it can
-// admit more pending packets.
-func (port *tcpPort) NeedsHandling() bool {
-	if useBool {
-		port.freePacket()
-		return false
-	}
-	return port.freePacket() == nil
-}
-
 // IsPendingHandling returns true if there are packet(s) pending handling.
 func (port *tcpPort) IsPendingHandling() bool {
-	if useBool {
-		return port.p
-	}
-	// return port.port != 0 && port.p
-	return port.port != 0 && port.pkt.pendingHandling()
-}
-func (port *tcpPort) forceResponse() (added bool) {
-	if useBool {
-		added = !port.p
-		if added {
-			port.pkt.flagPendingNoPacket()
-		}
-		port.p = true
-		return added
-	}
-
-	added = !port.pkt.pendingHandling()
-	if added {
-		port.pkt.flagPendingNoPacket()
-	}
-	return added
+	return port.port != 0 && port.handler.IsPendingHandling()
 }
 
 // HandleEth writes the socket's response into dst to be sent over an ethernet interface.
@@ -77,30 +47,12 @@ func (port *tcpPort) HandleEth(dst []byte) (n int, err error) {
 		panic("nil tcp handler on port " + strconv.Itoa(int(port.port)))
 	}
 
-	packet := port.nextPacket()
 	n, err = port.handler.HandleEth(dst)
 	port.p = false
 	if err == ErrFlagPending {
 		port.p = true
-		packet.flagPendingNoPacket() // Mark socket as needing handling but packet having no data.
-	} else {
-		packet.invalidate()
 	}
 	return n, err
-}
-
-// nextPacket returns the next packet that is pending handling or the first packet if none are pending.
-func (port *tcpPort) nextPacket() *TCPPacket {
-	return &port.pkt
-}
-
-// freePacket returns the first packet that is not pending handling or nil if all packets are pending.
-func (port *tcpPort) freePacket() *TCPPacket {
-	port.pkt.invalidate()
-	// if useBool {
-	// 	port.p = false
-	// }
-	return &port.pkt
 }
 
 // Open sets the UDP handler and opens the port.
@@ -112,15 +64,7 @@ func (port *tcpPort) Open(portNum uint16, handler itcphandler) {
 	}
 	port.handler = handler
 	port.port = portNum
-	port.pkt.invalidate()
 	port.p = false
-}
-
-func (port *tcpPort) pending() (p uint32) {
-	if port.p {
-		p = 1
-	}
-	return p
 }
 
 func (port *tcpPort) Close() {
@@ -145,11 +89,6 @@ type TCPPacket struct {
 func (pkt *TCPPacket) String() string {
 	return "TCP Packet: " + pkt.Eth.String() + " " + pkt.IP.String() + " " + pkt.TCP.String() + " payload:" + strconv.Quote(string(pkt.Payload()))
 }
-
-func (pkt *TCPPacket) HasPacket() bool       { return pkt.Rx != forcedTime && !pkt.Rx.IsZero() }
-func (pkt *TCPPacket) pendingHandling() bool { return !pkt.Rx.IsZero() }
-func (pkt *TCPPacket) invalidate()           { pkt.Rx = time.Time{} }
-func (pkt *TCPPacket) flagPendingNoPacket()  { pkt.Rx = forcedTime }
 
 // PutHeaders puts 54 bytes including the Ethernet, IPv4 and TCP headers into b.
 // b must be at least 54 bytes in length or else PutHeaders panics. No options are marshalled.
@@ -177,9 +116,6 @@ func (pkt *TCPPacket) PutHeadersWithOptions(b []byte) error {
 // Payload returns the TCP payload. If TCP or IPv4 header data is incorrect/bad it returns nil.
 // If the response is "forced" then payload will be nil.
 func (pkt *TCPPacket) Payload() []byte {
-	if !pkt.HasPacket() {
-		return nil
-	}
 	payloadStart, payloadEnd, _ := pkt.dataPtrs()
 	if payloadStart < 0 {
 		return nil // Bad header value
@@ -189,9 +125,6 @@ func (pkt *TCPPacket) Payload() []byte {
 
 // Options returns the TCP options in the packet.
 func (pkt *TCPPacket) TCPOptions() []byte {
-	if !pkt.HasPacket() {
-		return nil
-	}
 	payloadStart, _, tcpOptStart := pkt.dataPtrs()
 	if payloadStart < 0 {
 		return nil // Bad header value
@@ -201,9 +134,6 @@ func (pkt *TCPPacket) TCPOptions() []byte {
 
 // Options returns the TCP options in the packet.
 func (pkt *TCPPacket) IPOptions() []byte {
-	if !pkt.HasPacket() {
-		return nil
-	}
 	_, _, tcpOpts := pkt.dataPtrs()
 	if tcpOpts < 0 {
 		return nil // Bad header value

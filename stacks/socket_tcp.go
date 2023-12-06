@@ -171,7 +171,7 @@ func (sock *TCPSocket) Close() error {
 }
 
 func (sock *TCPSocket) IsPendingHandling() bool {
-	return sock.scb.HasPending() || sock.tx.Buffered() > 0 || sock.closing
+	return sock.mustSendSyn() || sock.scb.HasPending() || sock.tx.Buffered() > 0 || sock.closing
 }
 
 func (sock *TCPSocket) RecvTCP(pkt *TCPPacket) (err error) {
