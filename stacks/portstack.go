@@ -490,9 +490,7 @@ func (ps *PortStack) FlagPendingTCP(portNum uint16) error {
 	if port == nil {
 		return errPortNonexistent
 	}
-	if port.forceResponse() {
-		ps.pendingTCPv4++
-	}
+	ps.pendingTCPv4++
 	return nil
 }
 
@@ -505,7 +503,6 @@ func (ps *PortStack) CloseTCP(portNum uint16) error {
 	if port == nil {
 		return errPortNonexistent
 	}
-	ps.pendingTCPv4 -= port.pending()
 	port.Close()
 	return nil
 }
