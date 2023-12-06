@@ -9,8 +9,6 @@ import (
 	"github.com/soypat/seqs/eth"
 )
 
-const useBool = true
-
 // tcphandler represents a user provided function for handling incoming TCP packets on a port.
 // Incoming data is sent inside the `pkt` TCPPacket argument when pkt.HasPacket returns true.
 // Outgoing data is stored into the `response` byte slice. The function must return the number of
