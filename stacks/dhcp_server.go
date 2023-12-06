@@ -3,6 +3,7 @@ package stacks
 import (
 	"encoding/binary"
 	"errors"
+	"io"
 	"net/netip"
 
 	"github.com/soypat/seqs/eth"
@@ -34,6 +35,38 @@ func NewDHCPServer(port uint16, mac [6]byte, siaddr netip.Addr) *DHCPServer {
 		mac:    mac,
 		siaddr: siaddr,
 		hosts:  make(map[[6]byte]dhcpclient),
+	}
+}
+
+func (d *DHCPServer) recv(pkt *UDPPacket) error {
+	if d.isAborted() {
+		return io.EOF // Signal to close socket.
+	}
+	// Receive DHCP response.
+	_, err := d.HandleUDP(nil, pkt)
+	return err
+}
+
+func (d *DHCPServer) isPendingHandling() bool {
+	return d.port != 0
+}
+
+func (d *DHCPServer) isAborted() bool { return d.mac == [6]byte{} }
+
+func (d *DHCPServer) send(dst []byte) (n int, err error) {
+	if d.isAborted() {
+		return 0, io.EOF // Signal to close socket.
+	}
+	// Send DHCP request.
+	return d.HandleUDP(dst, nil)
+}
+
+func (d *DHCPServer) abort() {
+	*d = DHCPServer{
+		mac:    d.mac,
+		siaddr: d.siaddr,
+		port:   d.port,
+		hosts:  nil, // TODO: is this wise?
 	}
 }
 
