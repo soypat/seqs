@@ -5,20 +5,23 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
+	"log/slog"
+	"strconv"
 
 	"github.com/soypat/seqs/eth"
+	"github.com/soypat/seqs/eth/dhcp"
 )
 
-type DHCPv4Client struct {
-	ourHeader eth.DHCPHeader
-	state     uint8
-	MAC       [6]byte
+type DHCPClient struct {
+	stack *PortStack
+	state uint8
 	// The result IP of the DHCP transaction (our new IP).
-	YourIP [4]byte
+	offer [4]byte
 	// DHCP server IP
-	ServerIP    [4]byte
-	RequestedIP [4]byte
+	svip        [4]byte
+	requestedIP [4]byte
+	currentXid  uint32
+	port        uint16
 }
 
 const (
@@ -28,46 +31,186 @@ const (
 	dhcpStateDone
 )
 
-func (d *DHCPv4Client) Done() bool {
+func NewDHCPClient(stack *PortStack, lport uint16) *DHCPClient {
+	if stack == nil || lport == 0 {
+		panic("nil stack or port")
+	}
+	return &DHCPClient{
+		stack: stack,
+		state: dhcpStateNone,
+		port:  lport,
+	}
+}
+
+func (d *DHCPClient) BeginIPv4(xid uint32, requestedIP [4]byte) error {
+	if xid == 0 {
+		return errors.New("xid must be non-zero")
+	}
+	d.currentXid = xid
+	d.requestedIP = requestedIP
+	d.state = dhcpStateNone
+	err := d.stack.OpenUDP(d.port, d)
+	if err != nil {
+		return err
+	}
+	return d.stack.FlagPendingUDP(d.port)
+}
+
+func (d *DHCPClient) Done() bool {
 	return d.state == dhcpStateDone
 }
 
-// Reset resets the DHCP client to its initial state and discards all state.
-// After being reset the client will try to obtain a new IP address if it is attached to a PortStack.
-func (d *DHCPv4Client) Reset() {
-	d.abort()
+func (d *DHCPClient) ourHeader() dhcp.HeaderV4 {
+	hdr := dhcp.HeaderV4{
+		OP:     dhcp.OpRequest,
+		Xid:    d.currentXid,
+		HType:  1,
+		HLen:   6,
+		HOps:   0,
+		CIAddr: d.stack.Addr().As4(),
+		SIAddr: d.svip,
+		YIAddr: d.offer,
+	}
+	mac := d.stack.MACAs6()
+	copy(hdr.CHAddr[:], mac[:])
+	return hdr
 }
 
-func (d *DHCPv4Client) isAborted() bool { return d.MAC == [6]byte{} }
+func (d *DHCPClient) isAborted() bool { return d.currentXid == 0 }
 
-func (d *DHCPv4Client) send(dst []byte) (n int, err error) {
-	if d.state == dhcpStateDone || d.isAborted() {
+func (d *DHCPClient) send(dst []byte) (n int, err error) {
+	if !d.isPendingHandling() {
 		return 0, io.EOF // Signal to close socket.
 	}
-	// Send DHCP request.
-	return d.HandleUDP(dst, nil)
+	const (
+		sizeSName     = 64  // Server name, part of BOOTP too.
+		sizeFILE      = 128 // Boot file name, Legacy.
+		sizeOptions   = 312
+		dhcpOffset    = eth.SizeEthernetHeader + eth.SizeIPv4Header + eth.SizeUDPHeader
+		optionsStart  = dhcpOffset + eth.SizeDHCPHeader + sizeSName + sizeFILE
+		sizeDHCPTotal = eth.SizeDHCPHeader + sizeSName + sizeFILE + sizeOptions
+	)
+	switch {
+	case len(dst) < sizeDHCPTotal:
+		return 0, errors.New("short payload to marshall DHCP")
+	}
+
+	// Switch statement prepares DHCP response depending on whether we're waiting
+	// for offer, ack or if we still need to send a discover (StateNone).
+	var Options []dhcp.Option
+	var nextstate uint8
+	switch d.state {
+	case dhcpStateNone:
+		// DHCP options.
+		Options = []dhcp.Option{
+			{dhcp.OptMessageType, []byte{byte(dhcp.MsgDiscover)}},
+			{dhcp.OptParameterRequestList, []byte{1, 3, 15, 6}},
+		}
+		if d.requestedIP != [4]byte{} {
+			Options = append(Options, dhcp.Option{dhcp.OptRequestedIPaddress, d.requestedIP[:]})
+		}
+		nextstate = dhcpStateWaitOffer
+
+	case dhcpStateWaitAck:
+		// Accept this server's offer.
+		Options = []dhcp.Option{
+			{dhcp.OptMessageType, []byte{byte(dhcp.MsgRequest)}},
+			{dhcp.OptRequestedIPaddress, d.offer[:]},
+			{dhcp.OptServerIdentification, d.svip[:]},
+		}
+
+	default:
+		err = fmt.Errorf("UNHANDLED CASE %v", d)
+	}
+	if err != nil {
+		return 0, nil
+	}
+	for i := dhcpOffset + 14; i < len(dst); i++ {
+		dst[i] = 0 // Zero out BOOTP and options fields.
+	}
+
+	// Encode DHCP header + options.
+	const magicCookie = 0x63825363
+	outgoingHdr := d.ourHeader()
+	outgoingHdr.Put(dst[dhcpOffset:])
+	ptr := optionsStart
+	binary.BigEndian.PutUint32(dst[ptr:], magicCookie)
+	ptr += 4
+	for _, opt := range Options {
+		n, err = opt.Encode(dst[ptr:])
+		if err != nil {
+			return 0, err
+		}
+		ptr += n
+	}
+	dst[ptr] = 0xff // endmark
+	// Set Ethernet+IP+UDP headers.
+	payload := dst[dhcpOffset : dhcpOffset+sizeDHCPTotal]
+	var pkt UDPPacket
+	d.setResponseUDP(&pkt, payload)
+	pkt.PutHeaders(dst)
+	d.state = nextstate
+	return dhcpOffset + sizeDHCPTotal, nil
 }
 
-func (d *DHCPv4Client) recv(pkt *UDPPacket) error {
+func (d *DHCPClient) recv(pkt *UDPPacket) (err error) {
 	if d.state == dhcpStateDone || d.isAborted() {
 		return io.EOF // Signal to close socket.
 	}
-	// Receive DHCP response.
-	_, err := d.HandleUDP(nil, pkt)
-	return err
+
+	incpayload := pkt.Payload()
+	if len(incpayload) < dhcp.SizeHeader {
+		return errors.New("short payload to parse DHCP")
+	}
+
+	rcvHdr := dhcp.DecodeHeaderV4(incpayload)
+	if rcvHdr.Xid != d.currentXid {
+		return errors.New("dhcp-rx: unexpected xid")
+	}
+
+	// Parse DHCP options looking for message type field.
+	var msgType dhcp.MessageType
+	err = dhcp.ForEachOption(incpayload, func(opt dhcp.Option) error {
+		switch opt.Option {
+		case dhcp.OptMessageType:
+			if len(opt.Data) == 1 {
+				msgType = dhcp.MessageType(opt.Data[0])
+			}
+		}
+		return nil
+	})
+
+	d.stack.debug("dhcp-rx", slog.Uint64("msgtype", uint64(msgType)))
+	switch d.state {
+	case dhcpStateWaitOffer:
+		// Accept this server's offer.
+		d.svip = rcvHdr.SIAddr
+		d.offer = rcvHdr.YIAddr
+		d.state = dhcpStateWaitAck
+
+	case dhcpStateDone:
+		err = io.EOF // We got a valid response, close socket.
+	default:
+		err = errors.New("unhandled dhcp-rx case: " + strconv.Itoa(int(d.state)))
+	}
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
-func (d *DHCPv4Client) isPendingHandling() bool {
-	return d.state != dhcpStateDone
+func (d *DHCPClient) isPendingHandling() bool {
+	return !d.isAborted() && d.state != dhcpStateDone
 }
 
-func (d *DHCPv4Client) abort() {
-	*d = DHCPv4Client{
-		MAC:         d.MAC,
-		RequestedIP: d.RequestedIP,
+func (d *DHCPClient) abort() {
+	*d = DHCPClient{
+		stack: d.stack,
+		port:  d.port,
 	}
 }
 
+/*
 func (d *DHCPv4Client) HandleUDP(resp []byte, packet *UDPPacket) (_ int, err error) {
 	const (
 		xid = 0x12345678
@@ -135,7 +278,7 @@ func (d *DHCPv4Client) HandleUDP(resp []byte, packet *UDPPacket) (_ int, err err
 		}
 		// Accept this server's offer.
 		copy(d.ourHeader.SIAddr[:], rcvHdr.SIAddr[:])
-		copy(d.YourIP[:], offer) // Store our new IP.
+		copy(d.offer[:], offer) // Store our new IP.
 		d.state = dhcpStateWaitAck
 	default:
 		err = fmt.Errorf("UNHANDLED CASE %v %+v", hasPacket, d)
@@ -162,30 +305,14 @@ func (d *DHCPv4Client) HandleUDP(resp []byte, packet *UDPPacket) (_ int, err err
 	packet.PutHeaders(resp)
 	return dhcpOffset + sizeDHCPTotal, nil
 }
+*/
 
-// initOurHeader zero's out most of header and sets the xid and MAC address along with OP=1.
-func (d *DHCPv4Client) initOurHeader(xid uint32) {
-	dhdr := &d.ourHeader
-	dhdr.OP = 1
-	dhdr.HType = 1
-	dhdr.HLen = 6
-	dhdr.HOps = 0
-	dhdr.Secs = 0
-	dhdr.Flags = 0
-	dhdr.Xid = xid
-	dhdr.CIAddr = [4]byte{}
-	dhdr.YIAddr = [4]byte{}
-	dhdr.SIAddr = [4]byte{}
-	dhdr.GIAddr = [4]byte{}
-	copy(dhdr.CHAddr[:], d.MAC[:])
-}
-
-func (d *DHCPv4Client) setResponseUDP(packet *UDPPacket, payload []byte) {
+func (d *DHCPClient) setResponseUDP(packet *UDPPacket, payload []byte) {
 	const ipLenInWords = 5
 	// Ethernet frame.
 	broadcast := eth.BroadcastHW6()
 	packet.Eth.Destination = broadcast
-	copy(packet.Eth.Source[:], d.MAC[:])
+	packet.Eth.Source = d.stack.MACAs6()
 	packet.Eth.SizeOrEtherType = uint16(eth.EtherTypeIPv4)
 
 	// IPv4 frame.
@@ -216,14 +343,4 @@ func (d *DHCPv4Client) setResponseUDP(packet *UDPPacket, payload []byte) {
 	packet.UDP.SourcePort = 68
 	packet.UDP.Length = packet.IP.TotalLength - 4*ipLenInWords
 	packet.UDP.Checksum = packet.UDP.CalculateChecksumIPv4(&packet.IP, payload)
-}
-
-func encodeDHCPOption(dst []byte, opt dhcpOption) int {
-	if len(opt.Data)+2 > len(dst) {
-		panic("small dst size for DHCP encoding")
-	}
-	dst[0] = byte(opt.Opt)
-	dst[1] = byte(len(opt.Data))
-	copy(dst[2:], opt.Data)
-	return 2 + len(opt.Data)
 }

@@ -206,7 +206,8 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 	ipOptions := payload[eth.SizeEthernetHeader+eth.SizeIPv4Header : offset] // TODO add IPv4 options.
 	payload = payload[offset:end]
 	switch ihdr.Protocol {
-
+	default:
+		err = errors.New("unknown IP protocol")
 	case 17:
 		// UDP (User Datagram Protocol).
 		if len(ps.portsUDP) == 0 {
@@ -300,9 +301,7 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 			slog.Int("ipopt", len(ipOptions)),
 			slog.Int("payload", len(payload)),
 		)
-		// Flag packets as needing processing.
 		ps.pendingTCPv4++
-
 		pkt.Rx = ps.lastRx
 		pkt.Eth = ehdr
 		pkt.IP = ihdr
@@ -320,6 +319,9 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 			err = nil // TODO(soypat).
 		}
 	}
+	if err != nil {
+		ps.error("Stack.RecvEth", slog.String("err", err.Error()))
+	}
 	return err
 }
 
@@ -334,6 +336,8 @@ func (ps *PortStack) HandleEth(dst []byte) (n int, err error) {
 		if n > 0 && err == nil {
 			ps.lastTx = ps.now()
 			ps.processedPackets++
+		} else if err != nil {
+			ps.error("HandleEth", slog.String("err", err.Error()))
 		}
 	}()
 	ps.trace("HandleEth", slog.Int("dstlen", len(dst)))
@@ -376,7 +380,7 @@ func (ps *PortStack) HandleEth(dst []byte) (n int, err error) {
 				n = 0 // Clear n on unknown error and return error up the call stack.
 			}
 		}
-		return n, false, err
+		return n, sock.IsPendingHandling(), err
 	}
 
 	if ps.pendingUDPv4 > 0 {
@@ -388,6 +392,7 @@ func (ps *PortStack) HandleEth(dst []byte) (n int, err error) {
 			if err != nil {
 				return 0, err
 			} else if n > 0 {
+				ps.debug("UDP:send", slog.Int("plen", n))
 				return n, nil
 			}
 		}
@@ -402,6 +407,7 @@ func (ps *PortStack) HandleEth(dst []byte) (n int, err error) {
 			if err != nil {
 				return 0, err
 			} else if n > 0 {
+				ps.debug("TCP:send", slog.Int("plen", n))
 				return n, nil
 			}
 		}

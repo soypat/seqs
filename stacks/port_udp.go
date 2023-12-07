@@ -36,7 +36,7 @@ func (port *udpPort) NeedsHandling() bool {
 // IsPendingHandling returns true if there are packet(s) pending handling.
 func (port *udpPort) IsPendingHandling() bool {
 	// return port.port != 0 && port.ihandler.isPendingHandling()
-	return port.port != 0 && port.nextPacket().pendingHandling()
+	return port.port != 0 && port.ihandler.isPendingHandling()
 }
 
 // HandleEth writes the socket's response into dst to be sent over an ethernet interface.

@@ -7,6 +7,7 @@ import (
 	"net/netip"
 
 	"github.com/soypat/seqs/eth"
+	"github.com/soypat/seqs/eth/dhcp"
 )
 
 type dhcpclient struct {
@@ -16,95 +17,70 @@ type dhcpclient struct {
 	requestlist [10]byte
 }
 
-type dhcpOption struct {
-	Opt  eth.DHCPOption
-	Data []byte
-}
-
 type DHCPServer struct {
-	mac      [6]byte
-	nextAddr netip.Addr
-	siaddr   netip.Addr
-	port     uint16
-	hosts    map[[6]byte]dhcpclient
+	stack      *PortStack
+	nextAddr   netip.Addr
+	siaddr     netip.Addr
+	port       uint16
+	hosts      map[[6]byte]dhcpclient
+	aborted    bool
+	lastPacket *UDPPacket
 }
 
-func NewDHCPServer(port uint16, mac [6]byte, siaddr netip.Addr) *DHCPServer {
+func NewDHCPServer(ps *PortStack, siaddr netip.Addr, lport uint16) *DHCPServer {
+	if ps == nil || lport == 0 {
+		panic("nil portstack or local port")
+	}
 	return &DHCPServer{
-		port:   port,
-		mac:    mac,
-		siaddr: siaddr,
-		hosts:  make(map[[6]byte]dhcpclient),
+		stack:      ps,
+		port:       lport,
+		siaddr:     siaddr,
+		lastPacket: &UDPPacket{},
 	}
 }
 
-func (d *DHCPServer) recv(pkt *UDPPacket) error {
+func (d *DHCPServer) Start() error {
+	d.hosts = make(map[[6]byte]dhcpclient)
+	d.aborted = false
+	return d.stack.OpenUDP(d.port, d)
+}
+
+func (d *DHCPServer) recv(pkt *UDPPacket) (err error) {
 	if d.isAborted() {
 		return io.EOF // Signal to close socket.
 	}
-	// Receive DHCP response.
-	_, err := d.HandleUDP(nil, pkt)
-	return err
+	if d.lastPacket.HasPacket() {
+		return ErrDroppedPacket
+	}
+	*d.lastPacket = *pkt
+	return nil
 }
 
-func (d *DHCPServer) isPendingHandling() bool {
-	return d.port != 0
-}
-
-func (d *DHCPServer) isAborted() bool { return d.mac == [6]byte{} }
-
-func (d *DHCPServer) send(dst []byte) (n int, err error) {
+func (d *DHCPServer) send(dst []byte) (int, error) {
 	if d.isAborted() {
 		return 0, io.EOF // Signal to close socket.
 	}
-	// Send DHCP request.
-	return d.HandleUDP(dst, nil)
+	if !d.lastPacket.HasPacket() {
+		return 0, nil
+	}
+	defer d.lastPacket.invalidate()
+	return d.HandleUDP(dst, d.lastPacket)
 }
+
+func (d *DHCPServer) isPendingHandling() bool {
+	return d.port != 0 && d.lastPacket.HasPacket()
+}
+
+func (d *DHCPServer) isAborted() bool { return d.aborted }
 
 func (d *DHCPServer) abort() {
 	*d = DHCPServer{
-		mac:    d.mac,
-		siaddr: d.siaddr,
-		port:   d.port,
-		hosts:  nil, // TODO: is this wise?
+		stack:   d.stack,
+		siaddr:  d.siaddr,
+		port:    d.port,
+		hosts:   nil, // TODO: is this wise?
+		aborted: true,
 	}
-}
-
-func parseDHCP(incpayload []byte, fn func(opt dhcpOption) error) (eth.DHCPHeader, error) {
-	const (
-		sizeSName     = 64  // Server name, part of BOOTP too.
-		sizeFILE      = 128 // Boot file name, Legacy.
-		sizeOptions   = 312
-		dhcpOffset    = eth.SizeEthernetHeader + eth.SizeIPv4Header + eth.SizeUDPHeader
-		optionsStart  = dhcpOffset + eth.SizeDHCPHeader + sizeSName + sizeFILE
-		sizeDHCPTotal = eth.SizeDHCPHeader + sizeSName + sizeFILE + sizeOptions
-	)
-	var hdr eth.DHCPHeader
-	if len(incpayload) < eth.SizeDHCPHeader {
-		return hdr, errors.New("short payload to parse DHCP")
-	} else if fn == nil {
-		return hdr, errors.New("nil function to parse DHCP")
-	}
-
-	hdr = eth.DecodeDHCPHeader(incpayload)
-	// Parse DHCP options.
-	ptr := eth.SizeDHCPHeader + sizeSName + sizeFILE + 4
-	if ptr >= len(incpayload) {
-		return hdr, errors.New("short payload to parse DHCP options")
-	}
-	for ptr+1 < len(incpayload) && int(incpayload[ptr+1]) < len(incpayload) {
-		if incpayload[ptr] == 0xff {
-			break
-		}
-		option := eth.DHCPOption(incpayload[ptr])
-		optlen := incpayload[ptr+1]
-		optionData := incpayload[ptr+2 : ptr+2+int(optlen)]
-		if err := fn(dhcpOption{option, optionData}); err != nil {
-			return hdr, err
-		}
-		ptr += int(optlen) + 2
-	}
-	return hdr, nil
 }
 
 func (d *DHCPServer) HandleUDP(resp []byte, packet *UDPPacket) (_ int, err error) {
@@ -127,24 +103,26 @@ func (d *DHCPServer) HandleUDP(resp []byte, packet *UDPPacket) (_ int, err error
 		return 0, errors.New("short payload to parse DHCP")
 	}
 
-	var rcvHdr eth.DHCPHeader
 	if !hasPacket {
 		return 0, nil
 	}
-
+	if len(incpayload) < dhcp.SizeHeader {
+		return 0, errors.New("short payload to parse DHCP")
+	}
+	rcvHdr := dhcp.DecodeHeaderV4(incpayload)
 	mac := packet.Eth.Source
 	client := d.hosts[mac]
-	var msgType uint8
-	rcvHdr, err = parseDHCP(incpayload, func(opt dhcpOption) error {
-		switch opt.Opt {
-		case eth.DHCP_MessageType:
+	var msgType dhcp.MessageType
+	err = dhcp.ForEachOption(incpayload, func(opt dhcp.Option) error {
+		switch opt.Option {
+		case dhcp.OptMessageType:
 			if len(opt.Data) == 1 {
-				msgType = opt.Data[0]
+				msgType = dhcp.MessageType(opt.Data[0])
 			}
-		case eth.DHCP_ParameterRequestList:
+		case dhcp.OptParameterRequestList:
 			client.requestlist = [10]byte{}
 			copy(client.requestlist[:], opt.Data)
-		case eth.DHCP_RequestedIPaddress:
+		case dhcp.OptRequestedIPaddress:
 			if len(opt.Data) == 4 && client.state == dhcpStateNone {
 				client.addr = netip.AddrFrom4([4]byte(opt.Data))
 			}
@@ -155,28 +133,28 @@ func (d *DHCPServer) HandleUDP(resp []byte, packet *UDPPacket) (_ int, err error
 		return 0, err
 	}
 
-	var Options []dhcpOption
+	var Options []dhcp.Option
 	switch msgType {
-	case 1: // DHCP Discover.
+	case dhcp.MsgDiscover:
 		if client.state != dhcpStateNone {
 			err = errors.New("DHCP Discover on initialized client")
 			break
 		}
 		rcvHdr.YIAddr = d.next(client.addr.As4())
-		Options = []dhcpOption{
-			{eth.DHCP_MessageType, []byte{2}}, // DHCP Message Type: Offer
+		Options = []dhcp.Option{
+			{dhcp.OptMessageType, []byte{byte(dhcp.MsgOffer)}},
 		}
 		rcvHdr.SIAddr = d.siaddr.As4()
 		client.port = packet.UDP.SourcePort
 		client.state = dhcpStateWaitOffer
 
-	case 3: // DHCP Request.
+	case dhcp.MsgRequest:
 		if client.state != dhcpStateWaitOffer {
 			err = errors.New("unexpected DHCP Request")
 			break
 		}
-		Options = []dhcpOption{
-			{eth.DHCP_MessageType, []byte{5}}, // DHCP Message Type: ACK
+		Options = []dhcp.Option{
+			{dhcp.OptMessageType, []byte{byte(dhcp.MsgAck)}}, // DHCP Message Type: ACK
 		}
 	}
 	if err != nil {
@@ -193,7 +171,11 @@ func (d *DHCPServer) HandleUDP(resp []byte, packet *UDPPacket) (_ int, err error
 	binary.BigEndian.PutUint32(resp[ptr:], magicCookie)
 	ptr += 4
 	for _, opt := range Options {
-		ptr += encodeDHCPOption(resp[ptr:], opt)
+		n, err := opt.Encode(resp[ptr:])
+		if err != nil {
+			return n, err
+		}
+		ptr += n
 	}
 	resp[ptr] = 0xff // endmark
 	// Set Ethernet+IP+UDP headers.
@@ -214,7 +196,8 @@ func (d *DHCPServer) setResponseUDP(clientport uint16, packet *UDPPacket, payloa
 	const ipLenInWords = 5
 	// Ethernet frame.
 	packet.Eth.Destination = eth.BroadcastHW6()
-	copy(packet.Eth.Source[:], d.mac[:])
+	packet.Eth.Source = d.stack.MACAs6()
+
 	packet.Eth.SizeOrEtherType = uint16(eth.EtherTypeIPv4)
 
 	// IPv4 frame.
