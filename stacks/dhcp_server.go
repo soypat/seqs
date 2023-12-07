@@ -3,6 +3,7 @@ package stacks
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"net/netip"
 
@@ -84,37 +85,25 @@ func (d *DHCPServer) abort() {
 }
 
 func (d *DHCPServer) HandleUDP(resp []byte, packet *UDPPacket) (_ int, err error) {
-	const (
-		sizeSName     = 64  // Server name, part of BOOTP too.
-		sizeFILE      = 128 // Boot file name, Legacy.
-		sizeOptions   = 312
-		dhcpOffset    = eth.SizeEthernetHeader + eth.SizeIPv4Header + eth.SizeUDPHeader
-		optionsStart  = dhcpOffset + eth.SizeDHCPHeader + sizeSName + sizeFILE
-		sizeDHCPTotal = eth.SizeDHCPHeader + sizeSName + sizeFILE + sizeOptions
-	)
 	// First action is used to send data without having received a packet
 	// so hasPacket will be false.
 	hasPacket := packet.HasPacket()
 	incpayload := packet.Payload()
 	switch {
-	case len(resp) < sizeDHCPTotal:
+	case len(resp) < dhcp.SizeHeader:
 		return 0, errors.New("short payload to marshall DHCP")
 	case hasPacket && len(incpayload) < eth.SizeDHCPHeader:
 		return 0, errors.New("short payload to parse DHCP")
-	}
-
-	if !hasPacket {
+	case !hasPacket:
 		return 0, nil
 	}
-	if len(incpayload) < dhcp.SizeHeader {
-		return 0, errors.New("short payload to parse DHCP")
-	}
+	fmt.Println("Server", dhcp.StringifyPacket(incpayload))
 	rcvHdr := dhcp.DecodeHeaderV4(incpayload)
 	mac := packet.Eth.Source
 	client := d.hosts[mac]
 	var msgType dhcp.MessageType
 	err = dhcp.ForEachOption(incpayload, func(opt dhcp.Option) error {
-		switch opt.Option {
+		switch opt.Num {
 		case dhcp.OptMessageType:
 			if len(opt.Data) == 1 {
 				msgType = dhcp.MessageType(opt.Data[0])
@@ -142,7 +131,7 @@ func (d *DHCPServer) HandleUDP(resp []byte, packet *UDPPacket) (_ int, err error
 		}
 		rcvHdr.YIAddr = d.next(client.addr.As4())
 		Options = []dhcp.Option{
-			{dhcp.OptMessageType, []byte{byte(dhcp.MsgOffer)}},
+			{Num: dhcp.OptMessageType, Data: []byte{byte(dhcp.MsgOffer)}},
 		}
 		rcvHdr.SIAddr = d.siaddr.As4()
 		client.port = packet.UDP.SourcePort
@@ -154,22 +143,23 @@ func (d *DHCPServer) HandleUDP(resp []byte, packet *UDPPacket) (_ int, err error
 			break
 		}
 		Options = []dhcp.Option{
-			{dhcp.OptMessageType, []byte{byte(dhcp.MsgAck)}}, // DHCP Message Type: ACK
+			{Num: dhcp.OptMessageType, Data: []byte{byte(dhcp.MsgAck)}}, // DHCP Message Type: ACK
 		}
 	}
 	if err != nil {
 		return 0, nil
 	}
 	d.hosts[mac] = client
+	const dhcpOffset = eth.SizeEthernetHeader + eth.SizeIPv4Header + eth.SizeUDPHeader
 	for i := dhcpOffset + 14; i < len(resp); i++ {
 		resp[i] = 0 // Zero out BOOTP and options fields.
 	}
 	rcvHdr.Put(resp[dhcpOffset:])
 	// Encode DHCP header + options.
 	const magicCookie = 0x63825363
-	ptr := optionsStart
+	ptr := dhcpOffset + dhcp.MagicCookieOffset
 	binary.BigEndian.PutUint32(resp[ptr:], magicCookie)
-	ptr += 4
+	ptr = dhcpOffset + dhcp.OptionsOffset
 	for _, opt := range Options {
 		n, err := opt.Encode(resp[ptr:])
 		if err != nil {
@@ -179,10 +169,10 @@ func (d *DHCPServer) HandleUDP(resp []byte, packet *UDPPacket) (_ int, err error
 	}
 	resp[ptr] = 0xff // endmark
 	// Set Ethernet+IP+UDP headers.
-	payload := resp[dhcpOffset : dhcpOffset+sizeDHCPTotal]
+	payload := resp[dhcpOffset : dhcpOffset+dhcp.SizeDatagram]
 	d.setResponseUDP(client.port, packet, payload)
 	packet.PutHeaders(resp)
-	return dhcpOffset + sizeDHCPTotal, nil
+	return dhcpOffset + dhcp.SizeDatagram, nil
 }
 
 func (d *DHCPServer) next(requested [4]byte) [4]byte {
