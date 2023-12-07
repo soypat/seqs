@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	testingLargeNetworkSize = 4 // Minimum=2
+	testingLargeNetworkSize = 2 // Minimum=2
 	exchangesToEstablish    = 3
 	exchangesToClose        = 4
 )
@@ -25,29 +25,29 @@ const (
 func TestDHCP(t *testing.T) {
 	const networkSize = testingLargeNetworkSize // How many distinct IP/MAC addresses on network.
 	requestedIP := netip.AddrFrom4([4]byte{192, 168, 1, 69})
+	siaddr := netip.AddrFrom4([4]byte{192, 168, 1, 1})
 	Stacks := createPortStacks(t, networkSize)
+
 	clientStack := Stacks[0]
 	serverStack := Stacks[1]
 
-	client := &stacks.DHCPv4Client{
-		MAC:         clientStack.MACAs6(),
-		RequestedIP: requestedIP.As4(),
-	}
-	server := stacks.NewDHCPServer(67, serverStack.MACAs6(), serverStack.Addr())
+	setLog(clientStack, "cl", slog.LevelDebug)
+	setLog(serverStack, "sv", slog.LevelDebug)
+
 	clientStack.SetAddr(netip.AddrFrom4([4]byte{}))
 	serverStack.SetAddr(netip.AddrFrom4([4]byte{}))
-	err := clientStack.OpenUDP(68, client)
+
+	client := stacks.NewDHCPClient(clientStack, 68)
+	server := stacks.NewDHCPServer(serverStack, siaddr, 67)
+	err := client.BeginIPv4(0x12345678, requestedIP.As4())
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = clientStack.FlagPendingUDP(68) // Force a DHCP discovery.
+	err = server.Start()
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = serverStack.OpenUDP(67, server)
-	if err != nil {
-		t.Fatal(err)
-	}
+
 	const minDHCPSize = eth.SizeEthernetHeader + eth.SizeIPv4Header + eth.SizeUDPHeader + eth.SizeDHCPHeader
 	// Client performs DISCOVER.
 	egr := NewExchanger(clientStack, serverStack)
@@ -64,7 +64,7 @@ func TestDHCP(t *testing.T) {
 	if n < minDHCPSize {
 		t.Errorf("ex[%d] sent=%d want>=%d", ex, n, minDHCPSize)
 	}
-
+	t.Logf("\nclient=%+v\nserver=%+v\n", client, server)
 	// Client performs REQUEST.
 	ex, n = egr.DoExchanges(t, 1)
 	if n < minDHCPSize {
@@ -130,8 +130,6 @@ func TestARP(t *testing.T) {
 
 func TestTCPEstablish(t *testing.T) {
 	client, server := createTCPClientServerPair(t)
-	setLog(client.PortStack(), "cl", slog.LevelDebug)
-	setLog(server.PortStack(), "sv", slog.LevelDebug)
 	// 3 way handshake needs 3 exchanges to complete.
 	const maxTransactions = exchangesToEstablish
 	egr := NewExchanger(client.PortStack(), server.PortStack())
