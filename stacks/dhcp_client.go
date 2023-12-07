@@ -27,6 +27,7 @@ type DHCPClient struct {
 const (
 	dhcpStateNone = iota
 	dhcpStateWaitOffer
+	dhcpStateGotOffer
 	dhcpStateWaitAck
 	dhcpStateDone
 )
@@ -111,9 +112,10 @@ func (d *DHCPClient) send(dst []byte) (n int, err error) {
 			{Num: dhcp.OptRequestedIPaddress, Data: d.offer[:]},
 			{Num: dhcp.OptServerIdentification, Data: d.svip[:]},
 		}
+		nextstate = dhcpStateWaitAck
 
 	default:
-		err = fmt.Errorf("UNHANDLED CASE %v", d)
+		err = fmt.Errorf("UNHANDLED CASE %v", d.state)
 	}
 	if err != nil {
 		return 0, nil
@@ -169,8 +171,10 @@ func (d *DHCPClient) recv(pkt *UDPPacket) (err error) {
 	err = dhcp.ForEachOption(incpayload, func(opt dhcp.Option) error {
 		switch opt.Num {
 		case dhcp.OptMessageType:
+
 			if len(opt.Data) == 1 {
 				msgType = dhcp.MessageType(opt.Data[0])
+
 			}
 		}
 		return nil
@@ -183,7 +187,10 @@ func (d *DHCPClient) recv(pkt *UDPPacket) (err error) {
 		d.svip = rcvHdr.SIAddr
 		d.offer = rcvHdr.YIAddr
 		d.state = dhcpStateWaitAck
-
+	case dhcpStateWaitAck:
+		if msgType == dhcp.MsgAck {
+			d.state = dhcpStateDone
+		}
 	case dhcpStateDone:
 		err = io.EOF // We got a valid response, close socket.
 	default:
