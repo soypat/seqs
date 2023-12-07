@@ -3,6 +3,7 @@ package dhcp
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"net"
 	"strconv"
 
@@ -15,15 +16,21 @@ const (
 	sizeOptions  = 312
 	dhcpOffset   = eth.SizeEthernetHeader + eth.SizeIPv4Header + eth.SizeUDPHeader
 	SizeHeader   = 44
+	// Magic Cookie offset measured from the start of the UDP payload.
+	MagicCookieOffset = SizeHeader + sizeSName + sizeBootFile
 	// DHCP Options offset measured from the start of the UDP payload.
-	OptionsOffset = SizeHeader + sizeSName + sizeBootFile + 4
+	OptionsOffset = MagicCookieOffset + 4
 	// SizeDHCPDatagram is the size of a DHCP datagram payload in bytes (not including the UDP header).
 	SizeDatagram = SizeHeader + sizeSName + sizeBootFile + sizeOptions
 )
 
 type Option struct {
-	Option OptNum
-	Data   []byte
+	Num  OptNum
+	Data []byte
+}
+
+func (opt *Option) String() string {
+	return opt.Num.String() + ":" + fmt.Sprint(opt.Data)
 }
 
 func (opt *Option) Encode(dst []byte) (int, error) {
@@ -33,7 +40,7 @@ func (opt *Option) Encode(dst []byte) (int, error) {
 		return 0, errors.New("DHCP option buffer too short")
 	}
 	_ = dst[2+len(opt.Data)]
-	dst[0] = byte(opt.Option)
+	dst[0] = byte(opt.Num)
 	dst[1] = byte(len(opt.Data))
 	copy(dst[2:], opt.Data)
 	return 2 + len(opt.Data), nil
@@ -43,7 +50,7 @@ type OptNum uint8
 
 // DHCP options. Taken from https://help.sonicwall.com/help/sw/eng/6800/26/2/3/content/Network_DHCP_Server.042.12.htm.
 //
-//go:generate stringer -type=DHCPOption -trimprefix=Opt
+//go:generate stringer -type=OptNum -trimprefix=Opt
 const (
 	OptWordAligned                 OptNum = 0
 	OptSubnetMask                  OptNum = 1
@@ -208,14 +215,20 @@ func ForEachOption(udpPayload []byte, fn func(opt Option) error) error {
 	if ptr >= len(udpPayload) {
 		return errors.New("short payload to parse DHCP options")
 	}
-	for ptr+1 < len(udpPayload) && int(udpPayload[ptr+1]) < len(udpPayload) {
-		if udpPayload[ptr] == 0xff {
-			break
+	for ptr+1 < len(udpPayload) {
+		if int(udpPayload[ptr+1]) >= len(udpPayload) {
+			return errors.New("DHCP option length exceeds payload")
 		}
-		option := OptNum(udpPayload[ptr])
+		optnum := OptNum(udpPayload[ptr])
+		if optnum == 0xff {
+			break
+		} else if optnum == OptWordAligned {
+			ptr++
+			continue
+		}
 		optlen := udpPayload[ptr+1]
 		optionData := udpPayload[ptr+2 : ptr+2+int(optlen)]
-		if err := fn(Option{option, optionData}); err != nil {
+		if err := fn(Option{optnum, optionData}); err != nil {
 			return err
 		}
 		ptr += int(optlen) + 2
@@ -245,3 +258,15 @@ const (
 	MsgDecline
 	MsgAck
 )
+
+func StringifyPacket(udpPayload []byte) string {
+	var (
+		dhdr = DecodeHeaderV4(udpPayload)
+		s    = dhdr.String()
+	)
+	ForEachOption(udpPayload, func(opt Option) error {
+		s += " " + opt.String()
+		return nil
+	})
+	return s
+}
