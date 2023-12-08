@@ -39,7 +39,7 @@ func TestDHCP(t *testing.T) {
 
 	client := stacks.NewDHCPClient(clientStack, 68)
 	server := stacks.NewDHCPServer(serverStack, siaddr, 67)
-	err := client.BeginIPv4Request(stacks.DHCPRequestConfig{
+	err := client.BeginRequest(stacks.DHCPRequestConfig{
 		RequestedAddr: requestedIP,
 		Xid:           0x12345678,
 	})
