@@ -106,6 +106,8 @@ type PortStack struct {
 	mac    [6]byte
 	ip     [4]byte
 	mtu    uint16
+	auxUDP UDPPacket
+	auxTCP TCPPacket
 }
 
 // Common errors.
@@ -206,7 +208,8 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 	ipOptions := payload[eth.SizeEthernetHeader+eth.SizeIPv4Header : offset] // TODO add IPv4 options.
 	payload = payload[offset:end]
 	switch ihdr.Protocol {
-
+	default:
+		err = errors.New("unknown IP protocol")
 	case 17:
 		// UDP (User Datagram Protocol).
 		if len(ps.portsUDP) == 0 {
@@ -233,7 +236,7 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 			break // No socket listening on this port.
 		}
 
-		pkt := port.freePacket()
+		pkt := &ps.auxUDP
 		if pkt == nil {
 			ps.error("UDP packet dropped")
 			ps.droppedPackets++
@@ -243,13 +246,21 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 		ps.debug("UDP:recv", slog.Int("plen", len(payload)))
 		// Flag packets as needing processing.
 		ps.pendingUDPv4++
-		port.LastRx = ps.lastRx // set as unhandled here.
 
 		pkt.Rx = ps.lastRx
 		pkt.Eth = ehdr
 		pkt.IP = ihdr // TODO(soypat): Don't ignore IP options.
 		pkt.UDP = uhdr
 		copy(pkt.payload[:], payload)
+		port.ihandler.recv(pkt)
+		if err == io.EOF {
+			// Special case; EOF is flag to close port
+			err = nil
+			port.Close()
+			ps.debug("UDP:closed", slog.Int("port", int(port.Port())))
+		} else if err == ErrFlagPending {
+			err = nil // TODO(soypat).
+		}
 
 	case 6:
 		// TCP (Transport Control Protocol).
@@ -280,7 +291,7 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 			break // No socket listening on this port.
 		}
 
-		pkt := &port.pkt
+		pkt := &ps.auxTCP
 		if pkt == nil {
 			ps.error("TCP packet dropped")
 			ps.droppedPackets++
@@ -291,9 +302,7 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 			slog.Int("ipopt", len(ipOptions)),
 			slog.Int("payload", len(payload)),
 		)
-		// Flag packets as needing processing.
 		ps.pendingTCPv4++
-
 		pkt.Rx = ps.lastRx
 		pkt.Eth = ehdr
 		pkt.IP = ihdr
@@ -301,14 +310,18 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 		n := copy(pkt.data[:], ipOptions)
 		n += copy(pkt.data[n:], tcpOptions)
 		copy(pkt.data[n:], payload)
-		err = port.handler.RecvTCP(pkt)
+		err = port.handler.recv(pkt)
 		if err == io.EOF {
 			// Special case; EOF is flag to close port
 			err = nil
 			port.Close()
+			ps.debug("TCP:closed", slog.Int("port", int(port.Port())))
 		} else if err == ErrFlagPending {
 			err = nil // TODO(soypat).
 		}
+	}
+	if err != nil {
+		ps.error("Stack.RecvEth", slog.String("err", err.Error()))
 	}
 	return err
 }
@@ -324,6 +337,8 @@ func (ps *PortStack) HandleEth(dst []byte) (n int, err error) {
 		if n > 0 && err == nil {
 			ps.lastTx = ps.now()
 			ps.processedPackets++
+		} else if err != nil {
+			ps.error("HandleEth", slog.String("err", err.Error()))
 		}
 	}()
 	ps.trace("HandleEth", slog.Int("dstlen", len(dst)))
@@ -366,34 +381,44 @@ func (ps *PortStack) HandleEth(dst []byte) (n int, err error) {
 				n = 0 // Clear n on unknown error and return error up the call stack.
 			}
 		}
-		return n, false, err
+		return n, sock.IsPendingHandling(), err
 	}
 
+	socketPending := false
 	if ps.pendingUDPv4 > 0 {
 		for i := range ps.portsUDP {
 			n, pending, err := handleSocket(dst, &ps.portsUDP[i])
-			if !pending {
-				ps.pendingUDPv4--
+			if pending {
+				socketPending = true
 			}
 			if err != nil {
 				return 0, err
 			} else if n > 0 {
+				ps.debug("UDP:send", slog.Int("plen", n))
 				return n, nil
 			}
 		}
+		if !socketPending {
+			ps.pendingUDPv4 = 0 // No more pending UDP sockets.
+		}
 	}
 
+	socketPending = false
 	if ps.pendingTCPv4 > 0 {
 		for i := range ps.portsTCP {
 			n, pending, err := handleSocket(dst, &ps.portsTCP[i])
-			if !pending {
-				ps.pendingTCPv4--
+			if pending {
+				pending = true
 			}
 			if err != nil {
 				return 0, err
 			} else if n > 0 {
+				ps.debug("TCP:send", slog.Int("plen", n))
 				return n, nil
 			}
+		}
+		if !socketPending {
+			ps.pendingTCPv4 = 0 // No more pending TCP sockets.
 		}
 	}
 
@@ -410,7 +435,7 @@ func (ps *PortStack) IsPendingHandling() bool {
 // or if there is no socket available it returns an error.
 //
 // See [PortStack] for information on handler argument.
-func (ps *PortStack) OpenUDP(portNum uint16, handler func([]byte, *UDPPacket) (int, error)) error {
+func (ps *PortStack) OpenUDP(portNum uint16, handler iudphandler) error {
 	switch {
 	case portNum == 0:
 		return errZeroPort
@@ -438,9 +463,7 @@ func (ps *PortStack) FlagPendingUDP(portNum uint16) error {
 	if port == nil {
 		return errPortNonexistent
 	}
-	if port.forceResponse() {
-		ps.pendingUDPv4++
-	}
+	ps.pendingUDPv4++
 	return nil
 }
 
@@ -453,7 +476,6 @@ func (ps *PortStack) CloseUDP(portNum uint16) error {
 	if port == nil {
 		return errPortNonexistent
 	}
-	ps.pendingUDPv4 -= uint32(port.pending())
 	port.Close()
 	return nil
 }

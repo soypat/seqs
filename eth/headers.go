@@ -167,33 +167,6 @@ type UDPHeader struct {
 	Checksum uint16 // 6:8
 }
 
-// DHCPHeader specifies the first 44 bytes of a DHCP packet payload. It does
-// not include BOOTP, magic cookie and options.
-// Reference: https://lists.gnu.org/archive/html/lwip-users/2012-12/msg00016.html
-type DHCPHeader struct {
-	OP    byte   // 0:1
-	HType byte   // 1:2
-	HLen  byte   // 2:3
-	HOps  byte   // 3:4
-	Xid   uint32 // 4:8
-	Secs  uint16 // 8:10
-	Flags uint16 // 10:12
-	// CIAddr is the client IP address. If the client has not obtained an IP
-	// address yet, this field is set to 0.
-	CIAddr [4]byte // 12:16
-	// YIAddr is the IP address offered by the server to the client.
-	YIAddr [4]byte // 16:20
-	SIAddr [4]byte // 20:24
-	GIAddr [4]byte // 24:28
-	// CHAddr is the client hardware address. Can be up to 16 bytes in length but
-	// is usually 6 bytes for Ethernet.
-	CHAddr [16]byte // 28:44
-	// BOOTP, Magic Cookie, and DHCP Options not included.
-	// LegacyBOOTP [192]byte
-	// Magic       [4]byte // 0x63,0x82,0x53,0x63
-	// Options     [275...]byte // as of RFC2131 it is variable length
-}
-
 // There are 9 flags, bits 100 thru 103 are reserved
 const (
 	// TCP words are 4 octals, or uint32s
@@ -589,59 +562,6 @@ func strcat(strs ...string) (s string) {
 func hexascii(b byte) [2]byte {
 	const hexstr = "0123456789abcdef"
 	return [2]byte{hexstr[b>>4], hexstr[b&0b1111]}
-}
-
-func (dhdr *DHCPHeader) Put(dst []byte) {
-	_ = dst[43]
-	dst[0] = dhdr.OP
-	dst[1] = dhdr.HType
-	dst[2] = dhdr.HLen
-	dst[3] = dhdr.HOps
-	binary.BigEndian.PutUint32(dst[4:8], dhdr.Xid)
-	binary.BigEndian.PutUint16(dst[8:10], dhdr.Secs)
-	binary.BigEndian.PutUint16(dst[10:12], dhdr.Flags)
-	copy(dst[12:16], dhdr.CIAddr[:])
-	copy(dst[16:20], dhdr.YIAddr[:])
-	copy(dst[20:24], dhdr.SIAddr[:])
-	copy(dst[24:28], dhdr.GIAddr[:])
-	copy(dst[28:44], dhdr.CHAddr[:])
-}
-
-func DecodeDHCPHeader(src []byte) (d DHCPHeader) {
-	_ = src[43]
-	d.OP = src[0]
-	d.HType = src[1]
-	d.HLen = src[2]
-	d.HOps = src[3]
-	d.Xid = binary.BigEndian.Uint32(src[4:8])
-	d.Secs = binary.BigEndian.Uint16(src[8:10])
-	d.Flags = binary.BigEndian.Uint16(src[10:12])
-	copy(d.CIAddr[:], src[12:16])
-	copy(d.YIAddr[:], src[16:20])
-	copy(d.SIAddr[:], src[20:24])
-	copy(d.GIAddr[:], src[24:28])
-	copy(d.CHAddr[:], src[28:44])
-	return d
-}
-
-func (dhdr *DHCPHeader) String() (s string) {
-	s = "DHCP op=" + strconv.Itoa(int(dhdr.OP)) + " "
-	if dhdr.CIAddr != [4]byte{} {
-		s += "ciaddr=" + net.IP(dhdr.CIAddr[:]).String() + " "
-	}
-	if dhdr.YIAddr != [4]byte{} {
-		s += "yiaddr=" + net.IP(dhdr.YIAddr[:]).String() + " "
-	}
-	if dhdr.SIAddr != [4]byte{} {
-		s += "siaddr=" + net.IP(dhdr.SIAddr[:]).String() + " "
-	}
-	if dhdr.GIAddr != [4]byte{} {
-		s += "giaddr=" + net.IP(dhdr.GIAddr[:]).String() + " "
-	}
-	if dhdr.CHAddr != [16]byte{} && dhdr.HLen < 16 && dhdr.HLen > 0 {
-		s += "chaddr=" + net.HardwareAddr(dhdr.CHAddr[:dhdr.HLen]).String() + " "
-	}
-	return s
 }
 
 func max(a, b int) int {

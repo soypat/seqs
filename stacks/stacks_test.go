@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	testingLargeNetworkSize = 4 // Minimum=2
+	testingLargeNetworkSize = 2 // Minimum=2
 	exchangesToEstablish    = 3
 	exchangesToClose        = 4
 )
@@ -25,29 +25,32 @@ const (
 func TestDHCP(t *testing.T) {
 	const networkSize = testingLargeNetworkSize // How many distinct IP/MAC addresses on network.
 	requestedIP := netip.AddrFrom4([4]byte{192, 168, 1, 69})
+	siaddr := netip.AddrFrom4([4]byte{192, 168, 1, 1})
 	Stacks := createPortStacks(t, networkSize)
+
 	clientStack := Stacks[0]
 	serverStack := Stacks[1]
 
-	client := stacks.DHCPv4Client{
-		MAC:         clientStack.MACAs6(),
-		RequestedIP: requestedIP.As4(),
-	}
-	server := stacks.NewDHCPServer(67, serverStack.MACAs6(), serverStack.Addr())
+	setLog(clientStack, "cl", slog.LevelDebug)
+	setLog(serverStack, "sv", slog.LevelDebug)
+
 	clientStack.SetAddr(netip.AddrFrom4([4]byte{}))
 	serverStack.SetAddr(netip.AddrFrom4([4]byte{}))
-	err := clientStack.OpenUDP(68, client.HandleUDP)
+
+	client := stacks.NewDHCPClient(clientStack, 68)
+	server := stacks.NewDHCPServer(serverStack, siaddr, 67)
+	err := client.BeginIPv4Request(stacks.DHCPRequestConfig{
+		RequestedAddr: requestedIP,
+		Xid:           0x12345678,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = clientStack.FlagPendingUDP(68) // Force a DHCP discovery.
+	err = server.Start()
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = serverStack.OpenUDP(67, server.HandleUDP)
-	if err != nil {
-		t.Fatal(err)
-	}
+
 	const minDHCPSize = eth.SizeEthernetHeader + eth.SizeIPv4Header + eth.SizeUDPHeader + eth.SizeDHCPHeader
 	// Client performs DISCOVER.
 	egr := NewExchanger(clientStack, serverStack)
@@ -64,7 +67,7 @@ func TestDHCP(t *testing.T) {
 	if n < minDHCPSize {
 		t.Errorf("ex[%d] sent=%d want>=%d", ex, n, minDHCPSize)
 	}
-
+	t.Logf("\nclient=%+v\nserver=%+v\n", client, server)
 	// Client performs REQUEST.
 	ex, n = egr.DoExchanges(t, 1)
 	if n < minDHCPSize {
@@ -74,20 +77,15 @@ func TestDHCP(t *testing.T) {
 		t.Fatal("client done on request?!")
 	}
 
-	// Server performs ACK.
+	// Server performs ACK; client processes ACK
 	ex, n = egr.DoExchanges(t, 1)
 	if n < minDHCPSize {
 		t.Errorf("ex[%d] sent=%d want>=%d", ex, n, minDHCPSize)
 	}
-	if client.Done() {
+	if !client.Done() {
 		t.Fatal("client not processed ACK yet")
 	}
 
-	// Client processes ACK
-	ex, n = egr.DoExchanges(t, 1)
-	if !client.Done() {
-		t.Fatal("client should be done")
-	}
 }
 
 func TestARP(t *testing.T) {
@@ -130,8 +128,6 @@ func TestARP(t *testing.T) {
 
 func TestTCPEstablish(t *testing.T) {
 	client, server := createTCPClientServerPair(t)
-	setLog(client.PortStack(), "cl", slog.LevelDebug)
-	setLog(server.PortStack(), "sv", slog.LevelDebug)
 	// 3 way handshake needs 3 exchanges to complete.
 	const maxTransactions = exchangesToEstablish
 	egr := NewExchanger(client.PortStack(), server.PortStack())

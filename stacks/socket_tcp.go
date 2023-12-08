@@ -187,11 +187,11 @@ func (sock *TCPSocket) Close() error {
 	return nil
 }
 
-func (sock *TCPSocket) IsPendingHandling() bool {
+func (sock *TCPSocket) isPendingHandling() bool {
 	return sock.mustSendSyn() || sock.scb.HasPending() || sock.tx.Buffered() > 0 || sock.closing
 }
 
-func (sock *TCPSocket) RecvTCP(pkt *TCPPacket) (err error) {
+func (sock *TCPSocket) recv(pkt *TCPPacket) (err error) {
 	prevState := sock.scb.State()
 	if prevState.IsClosed() {
 		return io.EOF
@@ -231,7 +231,7 @@ func (sock *TCPSocket) RecvTCP(pkt *TCPPacket) (err error) {
 	return err
 }
 
-func (sock *TCPSocket) HandleEth(response []byte) (n int, err error) {
+func (sock *TCPSocket) send(response []byte) (n int, err error) {
 	if sock.mustSendSyn() {
 		// Connection is still closed, we need to establish
 		return sock.handleInitSyn(response)
@@ -327,9 +327,9 @@ func (sock *TCPSocket) stateCheck() (portStackErr error) {
 	return portStackErr
 }
 
-// Abort is called by the PortStack when the port is closed. This happens
+// abort is called by the PortStack when the port is closed. This happens
 // on EOF returned by Handle/RecvEth. See TCPSocket.stateCheck for information on when
 // a connection is aborted.
-func (t *TCPSocket) Abort() {
+func (t *TCPSocket) abort() {
 	t.deleteState()
 }
