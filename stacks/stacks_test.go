@@ -39,7 +39,10 @@ func TestDHCP(t *testing.T) {
 
 	client := stacks.NewDHCPClient(clientStack, 68)
 	server := stacks.NewDHCPServer(serverStack, siaddr, 67)
-	err := client.BeginIPv4(0x12345678, requestedIP.As4())
+	err := client.BeginIPv4Request(stacks.DHCPRequestConfig{
+		RequestedAddr: requestedIP,
+		Xid:           0x12345678,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,20 +77,15 @@ func TestDHCP(t *testing.T) {
 		t.Fatal("client done on request?!")
 	}
 
-	// Server performs ACK.
+	// Server performs ACK; client processes ACK
 	ex, n = egr.DoExchanges(t, 1)
 	if n < minDHCPSize {
 		t.Errorf("ex[%d] sent=%d want>=%d", ex, n, minDHCPSize)
 	}
-	if client.Done() {
+	if !client.Done() {
 		t.Fatal("client not processed ACK yet")
 	}
 
-	// Client processes ACK
-	ex, n = egr.DoExchanges(t, 1)
-	if !client.Done() {
-		t.Fatal("client should be done")
-	}
 }
 
 func TestARP(t *testing.T) {

@@ -3,7 +3,6 @@ package stacks
 import (
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"io"
 	"net/netip"
 
@@ -25,7 +24,8 @@ type DHCPServer struct {
 	port       uint16
 	hosts      map[[6]byte]dhcpclient
 	aborted    bool
-	lastPacket *UDPPacket
+	lastPacket UDPPacket
+	hasPacket  bool
 }
 
 func NewDHCPServer(ps *PortStack, siaddr netip.Addr, lport uint16) *DHCPServer {
@@ -33,10 +33,9 @@ func NewDHCPServer(ps *PortStack, siaddr netip.Addr, lport uint16) *DHCPServer {
 		panic("nil portstack or local port")
 	}
 	return &DHCPServer{
-		stack:      ps,
-		port:       lport,
-		siaddr:     siaddr,
-		lastPacket: &UDPPacket{},
+		stack:  ps,
+		port:   lport,
+		siaddr: siaddr,
 	}
 }
 
@@ -50,10 +49,11 @@ func (d *DHCPServer) recv(pkt *UDPPacket) (err error) {
 	if d.isAborted() {
 		return io.EOF // Signal to close socket.
 	}
-	if d.lastPacket.HasPacket() {
+	if d.hasPacket {
 		return ErrDroppedPacket
 	}
-	*d.lastPacket = *pkt
+	d.hasPacket = true
+	d.lastPacket = *pkt
 	return nil
 }
 
@@ -61,15 +61,16 @@ func (d *DHCPServer) send(dst []byte) (int, error) {
 	if d.isAborted() {
 		return 0, io.EOF // Signal to close socket.
 	}
-	if !d.lastPacket.HasPacket() {
+	if !d.hasPacket {
 		return 0, nil
 	}
-	defer d.lastPacket.invalidate()
-	return d.HandleUDP(dst, d.lastPacket)
+	n, err := d.HandleUDP(dst, &d.lastPacket)
+	d.hasPacket = false
+	return n, err
 }
 
 func (d *DHCPServer) isPendingHandling() bool {
-	return d.port != 0 && d.lastPacket.HasPacket()
+	return d.port != 0 && d.hasPacket
 }
 
 func (d *DHCPServer) isAborted() bool { return d.aborted }
@@ -87,7 +88,7 @@ func (d *DHCPServer) abort() {
 func (d *DHCPServer) HandleUDP(resp []byte, packet *UDPPacket) (_ int, err error) {
 	// First action is used to send data without having received a packet
 	// so hasPacket will be false.
-	hasPacket := packet.HasPacket()
+	hasPacket := d.hasPacket
 	incpayload := packet.Payload()
 	switch {
 	case len(resp) < dhcp.SizeHeader:
@@ -97,7 +98,7 @@ func (d *DHCPServer) HandleUDP(resp []byte, packet *UDPPacket) (_ int, err error
 	case !hasPacket:
 		return 0, nil
 	}
-	fmt.Println("Server", dhcp.StringifyPacket(incpayload))
+
 	rcvHdr := dhcp.DecodeHeaderV4(incpayload)
 	mac := packet.Eth.Source
 	client := d.hosts[mac]

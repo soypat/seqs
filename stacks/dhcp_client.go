@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/netip"
 	"strconv"
 
 	"github.com/soypat/seqs/eth"
@@ -22,8 +23,15 @@ type DHCPClient struct {
 	requestedIP [4]byte
 	currentXid  uint32
 	port        uint16
+	aborted     bool
 }
 
+// State transition table:
+//
+//	StateNone      -> | Send out Discover | -> StateWaitOffer
+//	StateWaitOffer -> |   Receive Offer   | -> StateGotOffer
+//	StateGotOffer  -> | Send out Request  | -> StateWaitAck
+//	StateWaitAck   -> |    Receive Ack    | -> StateDone
 const (
 	dhcpStateNone = iota
 	dhcpStateWaitOffer
@@ -43,12 +51,19 @@ func NewDHCPClient(stack *PortStack, lport uint16) *DHCPClient {
 	}
 }
 
-func (d *DHCPClient) BeginIPv4(xid uint32, requestedIP [4]byte) error {
-	if xid == 0 {
+type DHCPRequestConfig struct {
+	RequestedAddr netip.Addr
+	Xid           uint32
+}
+
+func (d *DHCPClient) BeginIPv4Request(cfg DHCPRequestConfig) error {
+	if cfg.Xid == 0 {
 		return errors.New("xid must be non-zero")
+	} else if !cfg.RequestedAddr.Is4() {
+		return errors.New("requested addr must be IPv4")
 	}
-	d.currentXid = xid
-	d.requestedIP = requestedIP
+	d.currentXid = cfg.Xid
+	d.requestedIP = cfg.RequestedAddr.As4()
 	d.state = dhcpStateNone
 	err := d.stack.OpenUDP(d.port, d)
 	if err != nil {
@@ -59,6 +74,10 @@ func (d *DHCPClient) BeginIPv4(xid uint32, requestedIP [4]byte) error {
 
 func (d *DHCPClient) Done() bool {
 	return d.state == dhcpStateDone
+}
+
+func (d *DHCPClient) Offer() netip.Addr {
+	return netip.AddrFrom4(d.offer)
 }
 
 func (d *DHCPClient) ourHeader() dhcp.HeaderV4 {
@@ -77,7 +96,7 @@ func (d *DHCPClient) ourHeader() dhcp.HeaderV4 {
 	return hdr
 }
 
-func (d *DHCPClient) isAborted() bool { return d.currentXid == 0 }
+func (d *DHCPClient) isAborted() bool { return d.currentXid == 0 || d.aborted }
 
 func (d *DHCPClient) send(dst []byte) (n int, err error) {
 	if !d.isPendingHandling() {
@@ -93,7 +112,7 @@ func (d *DHCPClient) send(dst []byte) (n int, err error) {
 	// for offer, ack or if we still need to send a discover (StateNone).
 	var Options []dhcp.Option
 	var nextstate uint8
-	switch d.state {
+	switch d.state { // Send.
 	case dhcpStateNone:
 		// DHCP options.
 		Options = []dhcp.Option{
@@ -105,7 +124,7 @@ func (d *DHCPClient) send(dst []byte) (n int, err error) {
 		}
 		nextstate = dhcpStateWaitOffer
 
-	case dhcpStateWaitAck:
+	case dhcpStateGotOffer:
 		// Accept this server's offer.
 		Options = []dhcp.Option{
 			{Num: dhcp.OptMessageType, Data: []byte{byte(dhcp.MsgRequest)}},
@@ -151,12 +170,11 @@ func (d *DHCPClient) send(dst []byte) (n int, err error) {
 }
 
 func (d *DHCPClient) recv(pkt *UDPPacket) (err error) {
-	if d.state == dhcpStateDone || d.isAborted() {
+	if !d.isPendingHandling() {
 		return io.EOF // Signal to close socket.
 	}
 
 	incpayload := pkt.Payload()
-	fmt.Println("Client", dhcp.StringifyPacket(incpayload))
 	if len(incpayload) < dhcp.SizeHeader {
 		return errors.New("short payload to parse DHCP")
 	}
@@ -171,22 +189,20 @@ func (d *DHCPClient) recv(pkt *UDPPacket) (err error) {
 	err = dhcp.ForEachOption(incpayload, func(opt dhcp.Option) error {
 		switch opt.Num {
 		case dhcp.OptMessageType:
-
 			if len(opt.Data) == 1 {
 				msgType = dhcp.MessageType(opt.Data[0])
-
 			}
 		}
 		return nil
 	})
 
 	d.stack.debug("dhcp-rx", slog.Uint64("msgtype", uint64(msgType)))
-	switch d.state {
+	switch d.state { // Receive.
 	case dhcpStateWaitOffer:
 		// Accept this server's offer.
 		d.svip = rcvHdr.SIAddr
 		d.offer = rcvHdr.YIAddr
-		d.state = dhcpStateWaitAck
+		d.state = dhcpStateGotOffer
 	case dhcpStateWaitAck:
 		if msgType == dhcp.MsgAck {
 			d.state = dhcpStateDone
@@ -204,6 +220,10 @@ func (d *DHCPClient) recv(pkt *UDPPacket) (err error) {
 
 func (d *DHCPClient) isPendingHandling() bool {
 	return !d.isAborted() && d.state != dhcpStateDone
+}
+
+func (d *DHCPClient) Abort() {
+	d.aborted = true
 }
 
 func (d *DHCPClient) abort() {
@@ -328,7 +348,6 @@ func (d *DHCPClient) setResponseUDP(packet *UDPPacket, payload []byte) {
 	packet.IP.ID = prand16(packet.IP.ID)
 	packet.IP.VersionAndIHL = ipLenInWords // Sets IHL: No IP options. Version set automatically.
 	packet.IP.TotalLength = 4*ipLenInWords + eth.SizeUDPHeader + uint16(len(payload))
-	packet.IP.Checksum = packet.IP.CalculateChecksum()
 	// TODO(soypat): Document why disabling ToS used by DHCP server may cause Request to fail.
 	// Apparently server sets ToS=192. Uncommenting this line causes DHCP to fail on my setup.
 	// If left fixed at 192, DHCP does not work.
@@ -340,7 +359,7 @@ func (d *DHCPClient) setResponseUDP(packet *UDPPacket, payload []byte) {
 		packet.IP.ToS = 192
 	}
 	packet.IP.Flags = 0
-
+	packet.IP.Checksum = packet.IP.CalculateChecksum()
 	// UDP frame.
 	packet.UDP.DestinationPort = 67
 	packet.UDP.SourcePort = 68
