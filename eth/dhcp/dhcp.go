@@ -22,6 +22,9 @@ const (
 	OptionsOffset = MagicCookieOffset + 4
 	// SizeDHCPDatagram is the size of a DHCP datagram payload in bytes (not including the UDP header).
 	SizeDatagram = SizeHeader + sizeSName + sizeBootFile + sizeOptions
+
+	DefaultClientPort = 68
+	DefaultServerPort = 67
 )
 
 type Option struct {

@@ -24,10 +24,8 @@ type itcphandler interface {
 }
 
 type tcpPort struct {
-	LastRx  time.Time
 	handler itcphandler
 	port    uint16
-	pkt     TCPPacket
 	p       bool
 }
 

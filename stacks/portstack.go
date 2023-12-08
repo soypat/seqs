@@ -106,6 +106,8 @@ type PortStack struct {
 	mac    [6]byte
 	ip     [4]byte
 	mtu    uint16
+	auxUDP UDPPacket
+	auxTCP TCPPacket
 }
 
 // Common errors.
@@ -234,7 +236,7 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 			break // No socket listening on this port.
 		}
 
-		pkt := port.freePacket()
+		pkt := &ps.auxUDP
 		if pkt == nil {
 			ps.error("UDP packet dropped")
 			ps.droppedPackets++
@@ -244,7 +246,6 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 		ps.debug("UDP:recv", slog.Int("plen", len(payload)))
 		// Flag packets as needing processing.
 		ps.pendingUDPv4++
-		port.LastRx = ps.lastRx // set as unhandled here.
 
 		pkt.Rx = ps.lastRx
 		pkt.Eth = ehdr
@@ -290,7 +291,7 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 			break // No socket listening on this port.
 		}
 
-		pkt := &port.pkt
+		pkt := &ps.auxTCP
 		if pkt == nil {
 			ps.error("TCP packet dropped")
 			ps.droppedPackets++
@@ -383,11 +384,12 @@ func (ps *PortStack) HandleEth(dst []byte) (n int, err error) {
 		return n, sock.IsPendingHandling(), err
 	}
 
+	socketPending := false
 	if ps.pendingUDPv4 > 0 {
 		for i := range ps.portsUDP {
 			n, pending, err := handleSocket(dst, &ps.portsUDP[i])
-			if !pending {
-				ps.pendingUDPv4--
+			if pending {
+				socketPending = true
 			}
 			if err != nil {
 				return 0, err
@@ -396,13 +398,17 @@ func (ps *PortStack) HandleEth(dst []byte) (n int, err error) {
 				return n, nil
 			}
 		}
+		if !socketPending {
+			ps.pendingUDPv4 = 0 // No more pending UDP sockets.
+		}
 	}
 
+	socketPending = false
 	if ps.pendingTCPv4 > 0 {
 		for i := range ps.portsTCP {
 			n, pending, err := handleSocket(dst, &ps.portsTCP[i])
-			if !pending {
-				ps.pendingTCPv4--
+			if pending {
+				pending = true
 			}
 			if err != nil {
 				return 0, err
@@ -410,6 +416,9 @@ func (ps *PortStack) HandleEth(dst []byte) (n int, err error) {
 				ps.debug("TCP:send", slog.Int("plen", n))
 				return n, nil
 			}
+		}
+		if !socketPending {
+			ps.pendingTCPv4 = 0 // No more pending TCP sockets.
 		}
 	}
 
@@ -454,9 +463,7 @@ func (ps *PortStack) FlagPendingUDP(portNum uint16) error {
 	if port == nil {
 		return errPortNonexistent
 	}
-	if port.forceResponse() {
-		ps.pendingUDPv4++
-	}
+	ps.pendingUDPv4++
 	return nil
 }
 
@@ -469,7 +476,6 @@ func (ps *PortStack) CloseUDP(portNum uint16) error {
 	if port == nil {
 		return errPortNonexistent
 	}
-	ps.pendingUDPv4 -= uint32(port.pending())
 	port.Close()
 	return nil
 }
