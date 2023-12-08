@@ -56,7 +56,7 @@ type DHCPRequestConfig struct {
 	Xid           uint32
 }
 
-func (d *DHCPClient) BeginIPv4Request(cfg DHCPRequestConfig) error {
+func (d *DHCPClient) BeginRequest(cfg DHCPRequestConfig) error {
 	if cfg.Xid == 0 {
 		return errors.New("xid must be non-zero")
 	} else if !cfg.RequestedAddr.Is4() {
