@@ -239,19 +239,7 @@ func ForEachOption(udpPayload []byte, fn func(opt Option) error) error {
 	return nil
 }
 
-// type State uint8
-
-// const (
-// 	StateClosed State = iota
-// 	StateInit
-// 	StateSelecting
-// 	StateRequesting
-// 	StateBound
-// 	StateRenewing
-// 	StateRebinding
-// 	StateDeclined
-// )
-
+//go:generate stringer -type=MessageType -trimprefix=Msg
 type MessageType uint8
 
 const (
@@ -260,16 +248,7 @@ const (
 	MsgRequest
 	MsgDecline
 	MsgAck
+	MsgNak
+	MsgRelease
+	MsgInform
 )
-
-func StringifyPacket(udpPayload []byte) string {
-	var (
-		dhdr = DecodeHeaderV4(udpPayload)
-		s    = dhdr.String()
-	)
-	ForEachOption(udpPayload, func(opt Option) error {
-		s += " " + opt.String()
-		return nil
-	})
-	return s
-}

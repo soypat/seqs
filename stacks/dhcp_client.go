@@ -167,6 +167,7 @@ func (d *DHCPClient) send(dst []byte) (n int, err error) {
 	d.setResponseUDP(pkt, payload)
 	pkt.PutHeaders(dst)
 	d.state = nextstate
+	d.stack.info("DHCP:tx", slog.String("msg", dhcp.MessageType(Options[0].Data[0]).String()))
 	return dhcpOffset + dhcp.SizeDatagram, nil
 }
 
@@ -187,6 +188,7 @@ func (d *DHCPClient) recv(pkt *UDPPacket) (err error) {
 
 	// Parse DHCP options looking for message type field.
 	var msgType dhcp.MessageType
+	debugm1Enabled := d.stack.isLogEnabled(slog.LevelDebug)
 	err = dhcp.ForEachOption(incpayload, func(opt dhcp.Option) error {
 		switch opt.Num {
 		case dhcp.OptMessageType:
@@ -194,10 +196,13 @@ func (d *DHCPClient) recv(pkt *UDPPacket) (err error) {
 				msgType = dhcp.MessageType(opt.Data[0])
 			}
 		}
+		if debugm1Enabled {
+			d.stack.debug("DHCP:rx", slog.String("opt", opt.Num.String()), slog.String("data", stringNumList(opt.Data)))
+		}
 		return nil
 	})
 
-	d.stack.debug("dhcp-rx", slog.Uint64("msgtype", uint64(msgType)))
+	d.stack.info("DHCP:rx", slog.String("msg", msgType.String()))
 	switch d.state { // Receive.
 	case dhcpStateWaitOffer:
 		// Accept this server's offer.
@@ -234,103 +239,6 @@ func (d *DHCPClient) abort() {
 	}
 }
 
-/*
-func (d *DHCPv4Client) HandleUDP(resp []byte, packet *UDPPacket) (_ int, err error) {
-	const (
-		xid = 0x12345678
-
-		sizeSName     = 64  // Server name, part of BOOTP too.
-		sizeFILE      = 128 // Boot file name, Legacy.
-		sizeOptions   = 312
-		dhcpOffset    = eth.SizeEthernetHeader + eth.SizeIPv4Header + eth.SizeUDPHeader
-		optionsStart  = dhcpOffset + eth.SizeDHCPHeader + sizeSName + sizeFILE
-		sizeDHCPTotal = eth.SizeDHCPHeader + sizeSName + sizeFILE + sizeOptions
-	)
-	// First action is used to send data without having received a packet
-	// so hasPacket will be false.
-	hasPacket := packet.HasPacket()
-	incpayload := packet.Payload()
-	switch {
-	case len(resp) < sizeDHCPTotal:
-		return 0, errors.New("short payload to marshall DHCP")
-	case hasPacket && len(incpayload) < eth.SizeDHCPHeader:
-		return 0, errors.New("short payload to parse DHCP")
-	}
-
-	var rcvHdr eth.DHCPHeader
-	if hasPacket {
-		rcvHdr = eth.DecodeDHCPHeader(incpayload)
-		// Parse DHCP options.
-		ptr := eth.SizeDHCPHeader + sizeSName + sizeFILE + 4
-		for ptr+1 < len(incpayload) && int(incpayload[ptr+1]) < len(incpayload) {
-			if incpayload[ptr] == 0xff {
-				break
-			}
-			option := eth.DHCPOption(incpayload[ptr])
-			optlen := incpayload[ptr+1]
-			optionData := incpayload[ptr+2 : ptr+2+int(optlen)]
-			if d.state == dhcpStateWaitAck && option == eth.DHCP_MessageType && len(optionData) > 0 && optionData[0] == 5 {
-				d.state = dhcpStateDone
-				return 0, nil
-			}
-			ptr += int(optlen) + 2
-		}
-	}
-
-	// Switch statement prepares DHCP response depending on whether we're waiting
-	// for offer, ack or if we still need to send a discover (StateNone).
-	var Options []dhcpOption
-	switch {
-	case !hasPacket && d.state == dhcpStateNone:
-		d.initOurHeader(xid)
-		// DHCP options.
-		Options = []dhcpOption{
-			{53, []byte{1}},           // DHCP Message Type: Discover
-			{55, []byte{1, 3, 15, 6}}, // Parameter request list
-		}
-		if d.RequestedIP != [4]byte{} {
-			Options = append(Options, dhcpOption{50, d.RequestedIP[:]})
-		}
-		d.state = dhcpStateWaitOffer
-
-	case hasPacket && d.state == dhcpStateWaitOffer:
-		offer := net.IP(rcvHdr.YIAddr[:])
-		Options = []dhcpOption{
-			{53, []byte{3}},        // DHCP Message Type: Request
-			{50, offer},            // Requested IP
-			{54, rcvHdr.SIAddr[:]}, // DHCP server IP
-		}
-		// Accept this server's offer.
-		copy(d.ourHeader.SIAddr[:], rcvHdr.SIAddr[:])
-		copy(d.offer[:], offer) // Store our new IP.
-		d.state = dhcpStateWaitAck
-	default:
-		err = fmt.Errorf("UNHANDLED CASE %v %+v", hasPacket, d)
-	}
-	if err != nil {
-		return 0, nil
-	}
-	for i := dhcpOffset + 14; i < len(resp); i++ {
-		resp[i] = 0 // Zero out BOOTP and options fields.
-	}
-	// Encode DHCP header + options.
-	const magicCookie = 0x63825363
-	d.ourHeader.Put(resp[dhcpOffset:])
-	ptr := optionsStart
-	binary.BigEndian.PutUint32(resp[ptr:], magicCookie)
-	ptr += 4
-	for _, opt := range Options {
-		ptr += encodeDHCPOption(resp[ptr:], opt)
-	}
-	resp[ptr] = 0xff // endmark
-	// Set Ethernet+IP+UDP headers.
-	payload := resp[dhcpOffset : dhcpOffset+sizeDHCPTotal]
-	d.setResponseUDP(packet, payload)
-	packet.PutHeaders(resp)
-	return dhcpOffset + sizeDHCPTotal, nil
-}
-*/
-
 func (d *DHCPClient) setResponseUDP(packet *UDPPacket, payload []byte) {
 	const ipLenInWords = 5
 	// Ethernet frame.
@@ -366,4 +274,27 @@ func (d *DHCPClient) setResponseUDP(packet *UDPPacket, payload []byte) {
 	packet.UDP.SourcePort = 68
 	packet.UDP.Length = packet.IP.TotalLength - 4*ipLenInWords
 	packet.UDP.Checksum = packet.UDP.CalculateChecksumIPv4(&packet.IP, payload)
+}
+
+func dhcpStringify(udpPayload []byte) string {
+	var (
+		dhdr = dhcp.DecodeHeaderV4(udpPayload)
+		s    = dhdr.String()
+	)
+	dhcp.ForEachOption(udpPayload, func(opt dhcp.Option) error {
+		s += " " + opt.String()
+		return nil
+	})
+	return s
+}
+
+func stringNumList(data []byte) string {
+	var s string
+	for i, b := range data {
+		if i > 0 {
+			s += ","
+		}
+		s += strconv.Itoa(int(b))
+	}
+	return s
 }
