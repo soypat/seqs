@@ -24,6 +24,7 @@ type DHCPClient struct {
 	currentXid  uint32
 	port        uint16
 	aborted     bool
+	aux         UDPPacket // Avoid heap allocation.
 }
 
 // State transition table:
@@ -162,8 +163,8 @@ func (d *DHCPClient) send(dst []byte) (n int, err error) {
 	dst[ptr] = 0xff // endmark
 	// Set Ethernet+IP+UDP headers.
 	payload := dst[dhcpOffset : dhcpOffset+dhcp.SizeDatagram]
-	var pkt UDPPacket
-	d.setResponseUDP(&pkt, payload)
+	pkt := &d.aux
+	d.setResponseUDP(pkt, payload)
 	pkt.PutHeaders(dst)
 	d.state = nextstate
 	return dhcpOffset + dhcp.SizeDatagram, nil

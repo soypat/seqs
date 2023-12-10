@@ -149,14 +149,6 @@ func (ps *PortStack) MACAs6() [6]byte       { return ps.mac }
 // filling up on a socket RecvEth will start to return [ErrDroppedPacket].
 func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 	var ihdr eth.IPv4Header
-	var ehdr eth.EthernetHeader
-	defer func() {
-		if err != nil {
-			ps.error("Stack.RecvEth", slog.String("err", err.Error()))
-		} else {
-			ps.lastRxSuccess = ps.lastRx
-		}
-	}()
 	payload := ethernetFrame
 	if len(payload) < eth.SizeEthernetHeader+eth.SizeIPv4Header {
 		return errPacketSmol
@@ -166,11 +158,10 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 	}
 	ps.trace("Stack.RecvEth:start", slog.Int("plen", len(payload)))
 	ps.lastRx = ps.now()
-
 	// Ethernet parsing block
-	ehdr = eth.DecodeEthernetHeader(payload)
+	ps.auxEth = eth.DecodeEthernetHeader(payload)
+	ehdr := &ps.auxEth
 	if ps.glob != nil {
-		ps.auxEth = ehdr // Need auxiliary struct since glob is an arbitrary function, the escape analysis can't determine if argument escapes.
 		err = ps.glob(&ps.auxEth, payload[eth.SizeEthernetHeader:])
 		if err != nil {
 			return err
@@ -213,22 +204,25 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 	case 17:
 		// UDP (User Datagram Protocol).
 		if len(ps.portsUDP) == 0 {
-			return nil // No sockets.
+			break // No sockets.
 		} else if len(payload) < eth.SizeUDPHeader {
-			return errTooShortTCPOrUDP
+			err = errTooShortTCPOrUDP
+			break
 		}
 		uhdr := eth.DecodeUDPHeader(payload)
-		switch {
-		case uhdr.DestinationPort == 0 || uhdr.SourcePort == 0:
-			return errZeroPort
-		case uhdr.Length < 8:
-			return errBadUDPLength
+		if uhdr.DestinationPort == 0 || uhdr.SourcePort == 0 {
+			err = errZeroPort
+			break
+		} else if uhdr.Length < 8 {
+			err = errBadUDPLength
+			break
 		}
 
 		payload = payload[eth.SizeUDPHeader:]
 		gotsum := uhdr.CalculateChecksumIPv4(&ihdr, payload)
 		if gotsum != uhdr.Checksum {
-			return errChecksumTCPorUDP
+			err = errChecksumTCPorUDP
+			break
 		}
 
 		port := findPort(ps.portsUDP, uhdr.DestinationPort)
@@ -240,7 +234,8 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 		if pkt == nil {
 			ps.error("UDP packet dropped")
 			ps.droppedPackets++
-			return ErrDroppedPacket // Our socket needs handling before admitting more packets.
+			err = ErrDroppedPacket // Our socket needs handling before admitting more packets.
+			break
 		}
 		// The packet is meant for us. We handle it.
 		ps.debug("UDP:recv", slog.Int("plen", len(payload)))
@@ -248,7 +243,7 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 		ps.pendingUDPv4++
 
 		pkt.Rx = ps.lastRx
-		pkt.Eth = ehdr
+		pkt.Eth = *ehdr
 		pkt.IP = ihdr // TODO(soypat): Don't ignore IP options.
 		pkt.UDP = uhdr
 		copy(pkt.payload[:], payload)
@@ -264,26 +259,29 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 
 	case 6:
 		// TCP (Transport Control Protocol).
-		switch {
-		case len(ps.portsTCP) == 0:
-			return nil
-		case len(payload) < eth.SizeTCPHeader:
-			return errTooShortTCPOrUDP
+		if len(ps.portsTCP) == 0 {
+			break // No sockets.
+		} else if len(payload) < eth.SizeTCPHeader {
+			err = errTooShortTCPOrUDP
+			break
 		}
 
 		thdr, offset := eth.DecodeTCPHeader(payload)
-		switch {
-		case thdr.DestinationPort == 0 || thdr.SourcePort == 0:
-			return errZeroPort
-		case offset < eth.SizeTCPHeader || int(offset) > len(payload):
-			return errBadTCPOffset
+		if thdr.DestinationPort == 0 || thdr.SourcePort == 0 {
+			err = errZeroPort
+			break
+		} else if offset < eth.SizeTCPHeader || int(offset) > len(payload) {
+			err = errBadTCPOffset
+			break
 		}
+
 		tcpOptions := payload[eth.SizeTCPHeader:offset]
 		payload = payload[offset:]
 		gotsum := thdr.CalculateChecksumIPv4(&ihdr, tcpOptions, payload)
 
 		if gotsum != thdr.Checksum {
-			return errChecksumTCPorUDP
+			err = errChecksumTCPorUDP
+			break
 		}
 		port := findPort(ps.portsTCP, thdr.DestinationPort)
 		if port == nil {
@@ -295,7 +293,8 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 		if pkt == nil {
 			ps.error("TCP packet dropped")
 			ps.droppedPackets++
-			return ErrDroppedPacket // Our socket needs handling before admitting more packets.
+			err = ErrDroppedPacket // Our socket needs handling before admitting more packets.
+			break
 		}
 		ps.debug("TCP:recv",
 			slog.Int("opt", len(tcpOptions)),
@@ -304,7 +303,7 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 		)
 		ps.pendingTCPv4++
 		pkt.Rx = ps.lastRx
-		pkt.Eth = ehdr
+		pkt.Eth = *ehdr
 		pkt.IP = ihdr
 		pkt.TCP = thdr
 		n := copy(pkt.data[:], ipOptions)
@@ -326,25 +325,27 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 	return err
 }
 
+func (ps *PortStack) HandleEth(dst []byte) (n int, err error) {
+	ps.trace("HandleEth", slog.Int("dstlen", len(dst)))
+	n, err = ps.handleEth(dst)
+	if n > 0 && err == nil {
+		ps.lastTx = ps.now()
+		ps.processedPackets++
+	} else if err != nil {
+		ps.error("HandleEth", slog.String("err", err.Error()))
+	}
+	return n, err
+}
+
 // HandleEth searches for a socket with a pending packet and writes the response
 // into the dst argument. The length written to dst is returned.
 // [ErrFlagPending] can be returned by value by a handler to indicate the packet was
 // not processed and that a future call to HandleEth is required to complete.
 //
 // If a handler returns any other error the port is closed.
-func (ps *PortStack) HandleEth(dst []byte) (n int, err error) {
-	defer func() {
-		if n > 0 && err == nil {
-			ps.lastTx = ps.now()
-			ps.processedPackets++
-		} else if err != nil {
-			ps.error("HandleEth", slog.String("err", err.Error()))
-		}
-	}()
-	ps.trace("HandleEth", slog.Int("dstlen", len(dst)))
+func (ps *PortStack) handleEth(dst []byte) (n int, err error) {
 	switch {
 	case len(dst) < int(ps.mtu):
-		println("handle", dst, ps.mtu)
 		return 0, io.ErrShortBuffer
 
 	case !ps.IsPendingHandling():
