@@ -551,6 +551,10 @@ func (ps *PortStack) trace(msg string, attrs ...slog.Attr) {
 	ps.logAttrsPrint(slog.LevelDebug-2, msg, attrs...)
 }
 
+func (ps *PortStack) isLogEnabled(lvl slog.Level) bool {
+	return ps.logger != nil && ps.logger.Handler().Enabled(context.Background(), lvl)
+}
+
 func (ps *PortStack) logAttrsPrint(level slog.Level, msg string, attrs ...slog.Attr) {
 	if ps.logger != nil {
 		ps.logger.LogAttrs(context.Background(), level, msg, attrs...)
