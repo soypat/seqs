@@ -222,7 +222,7 @@ func (sock *TCPSocket) recv(pkt *TCPPacket) (err error) {
 			return err
 		}
 	}
-	if segIncoming.Flags.HasAny(seqs.FlagSYN) && sock.remote == (netip.AddrPort{}) {
+	if segIncoming.Flags.HasAny(seqs.FlagSYN) && !sock.remote.IsValid() {
 		// We have a client that wants to connect to us.
 		sock.remoteMAC = pkt.Eth.Source
 		sock.remote = netip.AddrPortFrom(netip.AddrFrom4(pkt.IP.Source), pkt.TCP.SourcePort)
@@ -232,6 +232,9 @@ func (sock *TCPSocket) recv(pkt *TCPPacket) (err error) {
 }
 
 func (sock *TCPSocket) send(response []byte) (n int, err error) {
+	if !sock.remote.IsValid() {
+		return 0, nil // No remote address yet, yield.
+	}
 	if sock.mustSendSyn() {
 		// Connection is still closed, we need to establish
 		return sock.handleInitSyn(response)
