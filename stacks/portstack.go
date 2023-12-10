@@ -326,9 +326,10 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 }
 
 func (ps *PortStack) HandleEth(dst []byte) (n int, err error) {
-	ps.trace("HandleEth", slog.Int("dstlen", len(dst)))
+	ps.trace("HandleEth:start", slog.Int("dstlen", len(dst)))
 	n, err = ps.handleEth(dst)
 	if n > 0 && err == nil {
+		ps.trace("HandleEth:send", slog.Int("plen", n))
 		ps.lastTx = ps.now()
 		ps.processedPackets++
 	} else if err != nil {
