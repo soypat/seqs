@@ -146,12 +146,11 @@ func (d *DHCPClient) send(dst []byte) (n int, err error) {
 	}
 
 	// Encode DHCP header + options.
-	const magicCookie = 0x63825363
 	outgoingHdr := d.ourHeader()
 	outgoingHdr.Put(dst[dhcpOffset:])
 
 	ptr := dhcpOffset + dhcp.MagicCookieOffset
-	binary.BigEndian.PutUint32(dst[ptr:], magicCookie)
+	binary.BigEndian.PutUint32(dst[ptr:], dhcp.MagicCookie)
 	ptr = dhcpOffset + dhcp.OptionsOffset
 	for _, opt := range Options {
 		n, err = opt.Encode(dst[ptr:])
@@ -184,6 +183,11 @@ func (d *DHCPClient) recv(pkt *UDPPacket) (err error) {
 	rcvHdr := dhcp.DecodeHeaderV4(incpayload)
 	if rcvHdr.Xid != d.currentXid {
 		return errors.New("dhcp-rx: unexpected xid")
+	}
+
+	cookie := binary.BigEndian.Uint32(incpayload[dhcp.MagicCookieOffset:])
+	if cookie != dhcp.MagicCookie {
+		return errors.New("dhcp-rx: bad magic cookie")
 	}
 
 	// Parse DHCP options looking for message type field.

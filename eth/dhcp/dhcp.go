@@ -6,18 +6,17 @@ import (
 	"fmt"
 	"net"
 	"strconv"
-
-	"github.com/soypat/seqs/eth"
 )
 
 const (
 	sizeSName    = 64  // Server name, part of BOOTP too.
 	sizeBootFile = 128 // Boot file name, Legacy.
 	sizeOptions  = 312
-	dhcpOffset   = eth.SizeEthernetHeader + eth.SizeIPv4Header + eth.SizeUDPHeader
 	SizeHeader   = 44
 	// Magic Cookie offset measured from the start of the UDP payload.
 	MagicCookieOffset = SizeHeader + sizeSName + sizeBootFile
+	// Expected Magic Cookie value.
+	MagicCookie uint32 = 0x63825363
 	// DHCP Options offset measured from the start of the UDP payload.
 	OptionsOffset = MagicCookieOffset + 4
 	// SizeDHCPDatagram is the size of a DHCP datagram payload in bytes (not including the UDP header).
