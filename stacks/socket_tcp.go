@@ -55,18 +55,16 @@ func NewTCPSocket(stack *PortStack, cfg TCPSocketConfig) (*TCPSocket, error) {
 	}
 	return sock, nil
 }
+
+// PortStack returns the PortStack that this socket is attached to.
 func (sock *TCPSocket) PortStack() *PortStack {
 	return sock.stack
 }
 
-func (sock *TCPSocket) AddrPort() netip.AddrPort {
-	return netip.AddrPortFrom(sock.stack.Addr(), sock.localPort)
-}
+// Port returns the local port on which the socket is listening or connected to.
+func (sock *TCPSocket) Port() uint16 { return sock.localPort }
 
-func (sock *TCPSocket) MAC() net.HardwareAddr {
-	return sock.stack.MAC()
-}
-
+// State returns the TCP state of the socket.
 func (sock *TCPSocket) State() seqs.State {
 	state := sock.scb.State()
 	if sock.closing && !state.IsClosing() {
@@ -76,9 +74,10 @@ func (sock *TCPSocket) State() seqs.State {
 	return state
 }
 
+// FlushOutputBuffer waits until the output buffer is empty or the socket is closed.
 func (sock *TCPSocket) FlushOutputBuffer() error {
 	i := 0
-	for sock.tx.Buffered() > 0 {
+	for sock.tx.Buffered() > 0 && !sock.State().IsClosed() {
 		sleep := time.Nanosecond << i
 		time.Sleep(sleep)
 		if sleep < time.Second {
@@ -246,6 +245,8 @@ func (sock *TCPSocket) send(response []byte) (n int, err error) {
 		return 0, nil
 	}
 
+	// Advertise our receive window as the amount of space available in our receive buffer.
+	sock.scb.SetRecvWindow(seqs.Size(sock.rx.Free()))
 	prevState := sock.scb.State()
 	err = sock.scb.Send(seg)
 	if err != nil {

@@ -67,7 +67,7 @@ type sendSpace struct {
 	ISS Value // initial send sequence number, defined locally on connection start
 	UNA Value // send unacknowledged. Seqs equal to UNA and above have NOT been acked by remote. Corresponds to local data.
 	NXT Value // send next. This seq and up to UNA+WND-1 are allowed to be sent. Corresponds to local data.
-	WND Size  // send window defined by remote. Permitted number unacked octets in flight.
+	WND Size  // send window defined by remote. Permitted number of local unacked octets in flight.
 	// WL1 Value // segment sequence number used for last window update
 	// WL2 Value // segment acknowledgment number used for last window update
 }
@@ -76,7 +76,7 @@ type sendSpace struct {
 type recvSpace struct {
 	IRS Value // initial receive sequence number, defined by remote in SYN segment received.
 	NXT Value // receive next. seqs before this have been acked. this seq and up to NXT+WND-1 are allowed to be sent. Corresponds to remote data.
-	WND Size  // receive window defined by local. Permitted number unacked octets in flight.
+	WND Size  // receive window defined by local. Permitted number of remote unacked octets in flight.
 }
 
 // Segment represents an incoming/outgoing TCP segment in the sequence space.
