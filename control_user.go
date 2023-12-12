@@ -161,7 +161,7 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 // RecvNext returns 0 before StateSynRcvd.
 func (tcb *ControlBlock) RecvNext() Value { return tcb.rcv.NXT }
 
-// RecvWindow returns the receive window size as defined in the last call to Open. If connection is closed will return 0.
+// RecvWindow returns the receive window size. If connection is closed will return 0.
 func (tcb *ControlBlock) RecvWindow() Size { return tcb.rcv.WND }
 
 // ISS returns the initial sequence number of the connection that was defined on a call to Open by user.
@@ -175,4 +175,9 @@ func (tcb *ControlBlock) MaxInFlightData() Size {
 	}
 	unacked := Sizeof(tcb.snd.UNA, tcb.snd.NXT)
 	return tcb.snd.WND - unacked - 1 // TODO: is this -1 supposed to be here?
+}
+
+// SetWindow sets the receive window size.
+func (tcb *ControlBlock) SetRecvWindow(wnd Size) {
+	tcb.rcv.WND = wnd
 }

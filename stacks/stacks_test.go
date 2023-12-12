@@ -297,8 +297,7 @@ func TestTCPSocketOpenOfClosedPort(t *testing.T) {
 	const newISS = 1337
 	client, server := createTCPClientServerPair(t)
 	cstack, sstack := client.PortStack(), server.PortStack()
-	caddr := client.AddrPort()
-	saddr := server.AddrPort()
+
 	egr := NewExchanger(cstack, sstack)
 	egr.DoExchanges(t, exchangesToEstablish)
 	if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
@@ -310,13 +309,12 @@ func TestTCPSocketOpenOfClosedPort(t *testing.T) {
 		t.Fatalf("not established: client=%s server=%s", client.State(), server.State())
 	}
 
-	saddr = netip.AddrPortFrom(saddr.Addr(), saddr.Port()+newPortoffset)
-	caddr = netip.AddrPortFrom(caddr.Addr(), caddr.Port()+newPortoffset+1)
-	err := client.OpenDialTCP(caddr.Port(), sstack.MACAs6(), saddr, newISS)
+	saddrport := netip.AddrPortFrom(sstack.Addr(), server.Port()+newPortoffset)
+	err := client.OpenDialTCP(client.Port()+newPortoffset+1, sstack.MACAs6(), saddrport, newISS)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = server.OpenListenTCP(saddr.Port(), newISS+100)
+	err = server.OpenListenTCP(saddrport.Port(), newISS+100)
 	if err != nil {
 		t.Fatal(err)
 	}
