@@ -96,7 +96,7 @@ func TestARP(t *testing.T) {
 	target := stacks[1]
 	const expectedARP = eth.SizeEthernetHeader + eth.SizeARPv4Header
 	// Send ARP request from sender to target.
-	sender.BeginResolveARPv4(target.Addr().As4())
+	sender.ARP().BeginResolve(target.Addr())
 	egr := NewExchanger(stacks...)
 	ex, n := egr.DoExchanges(t, 1)
 	if n != expectedARP {
@@ -108,15 +108,18 @@ func TestARP(t *testing.T) {
 		t.Errorf("ex[%d] sent=%d want=%d", ex, n, expectedARP)
 	}
 
-	result, ok := sender.ARPv4Result()
-	if !ok {
-		t.Fatal("no ARP result", result.HardwareSender)
+	ip, mac, err := sender.ARP().ResultAs6()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if result.HardwareSender != target.MACAs6() {
-		t.Errorf("result.HardwareSender=%s want=%s", result.HardwareSender, target.MACAs6())
+	if !ip.IsValid() {
+		t.Fatal("invalid IP")
 	}
-	if result.ProtoSender != target.Addr().As4() {
-		t.Errorf("result.ProtoSender=%s want=%s", result.ProtoSender, target.Addr().As4())
+	if mac != target.MACAs6() {
+		t.Errorf("result.HardwareSender=%s want=%s", mac, target.MACAs6())
+	}
+	if ip.As4() != target.Addr().As4() {
+		t.Errorf("result.ProtoSender=%s want=%s", ip, target.Addr().As4())
 	}
 
 	// No more data to exchange.
