@@ -18,11 +18,6 @@ type Exchange struct {
 }
 
 func (tcb *ControlBlock) HelperExchange(t *testing.T, exchange []Exchange) {
-	defer func() {
-		if t.Failed() {
-			t.Logf("debuglog:\n%s", tcb.DebugLog())
-		}
-	}()
 	t.Helper()
 	const pfx = "exchange"
 	for i, ex := range exchange {
@@ -152,10 +147,6 @@ func (seg Segment) RelativeGoString(iseq, iack Value) string {
 	return fmt.Sprintf("{SEQ:%d ACK:%d DATALEN:%d Flags:%s} ", seg.SEQ-iseq, seg.ACK-iack, seg.DATALEN, seg.Flags)
 }
 
-func (tcb *ControlBlock) DebugLog() string {
-	return tcb.debuglog
-}
-
 // https://datatracker.ietf.org/doc/html/rfc9293#section-3.8.6.2.1
 func (tcb *ControlBlock) UsableWindow() Size {
 	return Sizeof(tcb.snd.NXT, tcb.snd.UNA) + tcb.snd.WND
@@ -167,10 +158,4 @@ const (
 
 func IsDroppedErr(err error) bool {
 	return err != nil && errors.Is(err, errDropSegment)
-}
-
-func (tcb *ControlBlock) HelperPrintDebugInfoOnFail(t *testing.T) {
-	if log := tcb.DebugLog(); t.Failed() && log != "" {
-		t.Logf("debuglog:\n%s", log)
-	}
 }

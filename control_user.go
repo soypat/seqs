@@ -2,7 +2,7 @@ package seqs
 
 import (
 	"errors"
-	"fmt"
+	"log/slog"
 	"math"
 )
 
@@ -142,8 +142,10 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 	}
 
 	tcb.pending[0] = pending
-	if prevNxt != 0 && tcb.snd.NXT != prevNxt {
-		tcb.debuglog += fmt.Sprintf("rcv %s: snd.nxt changed from %x to %x on segment %+v\n", tcb.state, prevNxt, tcb.snd.NXT, seg)
+	if prevNxt != 0 && tcb.snd.NXT != prevNxt && tcb.logenabled(slog.LevelDebug) {
+		tcb.debug("rcv:snd.nxt-change", slog.String("state", tcb.state.String()),
+			slog.Uint64("seg.ack", uint64(seg.ACK)), slog.Uint64("snd.nxt", uint64(tcb.snd.NXT)),
+			slog.Uint64("prevnxt", uint64(prevNxt)), slog.Uint64("seg.seq", uint64(seg.SEQ)))
 	}
 
 	// We accept the segment and update TCB state.

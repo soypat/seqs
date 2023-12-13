@@ -297,7 +297,6 @@ func TestExchange_rfc9293_figure13(t *testing.T) {
 func TestExchange_helloworld(t *testing.T) {
 	// Client Transmission Control Block.
 	var tcbA seqs.ControlBlock
-	defer tcbA.HelperPrintDebugInfoOnFail(t)
 	const windowA, windowB = 502, 4096
 	const issA, issB = 0x5e722b7d, 0xbe6e4c0f
 	const datalen = 12
@@ -367,8 +366,6 @@ func TestExchange_helloworld(t *testing.T) {
 
 	exchangeB[7].WantPending = nil // Is an unpredicable action.
 	var tcbB seqs.ControlBlock
-	defer tcbB.HelperPrintDebugInfoOnFail(t)
-
 	tcbB.HelperInitState(seqs.StateListen, issB, issB, windowB)
 	tcbB.HelperInitRcv(issA, issA, windowA)
 	tcbB.HelperExchange(t, exchangeB)
@@ -377,7 +374,6 @@ func TestExchange_helloworld(t *testing.T) {
 func TestExchange_helloworld_client(t *testing.T) {
 	// Client Transmission Control Block.
 	var tcb seqs.ControlBlock
-	defer tcb.HelperPrintDebugInfoOnFail(t)
 	// The client starts in the SYN_SENT state with a random sequence number.
 	gotClientSeg, _ := parseSegment(t, exchangeHelloWorld[0])
 
