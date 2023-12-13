@@ -183,3 +183,8 @@ func (tcb *ControlBlock) MaxInFlightData() Size {
 func (tcb *ControlBlock) SetRecvWindow(wnd Size) {
 	tcb.rcv.WND = wnd
 }
+
+// SetLogger sets the logger to be used by the ControlBlock.
+func (tcb *ControlBlock) SetLogger(log *slog.Logger) {
+	tcb.log = log
+}

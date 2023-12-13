@@ -153,6 +153,7 @@ func (sock *TCPSocket) open(state seqs.State, localPortNum uint16, iss seqs.Valu
 	if err != nil {
 		return err
 	}
+	sock.scb.SetLogger(sock.stack.logger)
 	sock.remoteMAC = remoteMAC
 	sock.remote = remoteAddr
 	sock.localPort = localPortNum
