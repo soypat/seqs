@@ -1,9 +1,10 @@
 package seqs
 
 import (
+	"context"
 	"errors"
-	"fmt"
 	"io"
+	"log/slog"
 	"math"
 )
 
@@ -57,9 +58,9 @@ type ControlBlock struct {
 	// pending is the queue of pending flags to be sent in the next 2 segments.
 	// On a call to Send the queue is advanced and flags set in the segment are unset.
 	// The second position of the queue is used for FIN segments.
-	pending  [2]Flags
-	state    State
-	debuglog string
+	pending [2]Flags
+	state   State
+	log     *slog.Logger
 }
 
 // sendSpace contains Send Sequence Space data. Its sequence numbers correspond to local data.
@@ -299,19 +300,22 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	case established && acksOld && !ctlOrDataSegment:
 		err = errDropSegment
 		tcb.pending[0] &= FlagFIN // Completely ignore duplicate ACKs but do not erase fin bit.
-		tcb.debuglog += fmt.Sprintf("rcv %s: duplicate ACK %d\n", tcb.state, seg.ACK)
+		tcb.debug("rcv:ACK-dup")
+		tcb.debug("rcv:ACK-dup", slog.String("state", tcb.state.String()),
+			slog.Uint64("seg.ack", uint64(seg.ACK)), slog.Uint64("snd.una", uint64(tcb.snd.UNA)))
 
 	case established && acksUnsentData:
 		err = errDropSegment
 		tcb.pending[0] = FlagACK // Send ACK for unsent data.
-		tcb.debuglog += fmt.Sprintf("rcv %s: ACK %d of unsent data\n", tcb.state, seg.ACK)
+		tcb.debug("rcv:ACK-unsent", slog.String("state", tcb.state.String()),
+			slog.Uint64("seg.ack", uint64(seg.ACK)), slog.Uint64("snd.nxt", uint64(tcb.snd.NXT)))
 
 	case preestablished && (acksOld || acksUnsentData):
 		err = errDropSegment
 		tcb.pending[0] = FlagRST
 		tcb.rstPtr = seg.ACK
 		tcb.resetSnd(tcb.snd.ISS, seg.WND)
-		tcb.debuglog += fmt.Sprintf("rcv %s: RST %d of old data\n", tcb.state, seg.ACK)
+		tcb.debug("rcv:RST-old", slog.String("state", tcb.state.String()), slog.Uint64("ack", uint64(seg.ACK)))
 
 	case preestablished && flags.HasAny(FlagRST):
 		err = errDropSegment
@@ -319,7 +323,7 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 		tcb.state = StateListen
 		tcb.resetSnd(tcb.snd.ISS+rstJump, tcb.snd.WND)
 		tcb.resetRcv(tcb.rcv.WND, 3_14159_2653^tcb.rcv.IRS)
-		tcb.debuglog += fmt.Sprintf("rcv %s: remote RST\n", tcb.state)
+		tcb.debug("rcv:RST-remote", slog.String("state", tcb.state.String()))
 	}
 	return err
 }
@@ -352,7 +356,7 @@ func (tcb *ControlBlock) close() {
 	tcb.pending = [2]Flags{}
 	tcb.resetRcv(0, 0)
 	tcb.resetSnd(0, 0)
-	tcb.debuglog += "close tcb\n"
+	tcb.debug("close tcb")
 }
 
 // hasIRS checks if the ControlBlock has received a valid initial sequence number (IRS).
@@ -363,6 +367,16 @@ func (tcb *ControlBlock) hasIRS() bool {
 // isOpen checks if the ControlBlock is in a state that allows sending and/or receiving data.
 func (tcb *ControlBlock) isOpen() bool {
 	return tcb.state != StateClosed && tcb.state != StateTimeWait
+}
+
+func (tcb *ControlBlock) logenabled(lvl slog.Level) bool {
+	return tcb.log != nil && tcb.log.Handler().Enabled(context.Background(), lvl)
+}
+
+func (tcb *ControlBlock) debug(msg string, attrs ...slog.Attr) {
+	if tcb.log != nil {
+		tcb.log.LogAttrs(context.Background(), slog.LevelDebug, msg, attrs...)
+	}
 }
 
 // func (tcb *ControlBlock) queueFlags(flags Flags) {
