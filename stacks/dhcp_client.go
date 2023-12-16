@@ -82,13 +82,14 @@ func (d *DHCPClient) Offer() netip.Addr {
 }
 
 func (d *DHCPClient) ourHeader() dhcp.HeaderV4 {
+	ciAddr, _ := d.stack.Addr()
 	hdr := dhcp.HeaderV4{
 		OP:     dhcp.OpRequest,
 		Xid:    d.currentXid,
 		HType:  1,
 		HLen:   6,
 		HOps:   0,
-		CIAddr: d.stack.Addr().As4(),
+		CIAddr: ciAddr.As4(),
 		SIAddr: d.svip,
 		YIAddr: d.offer,
 	}
