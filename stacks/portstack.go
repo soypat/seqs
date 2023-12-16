@@ -7,9 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/netip"
-	"slices"
 	"strconv"
 	"time"
 
@@ -28,9 +26,9 @@ type PortStackConfig struct {
 	MaxOpenPortsTCP int
 	// GlobalHandler processes all incoming ethernet frames before they reach the port handlers.
 	// If GlobalHandler returns an error the frame is discarded and PortStack.HandleEth returns the error.
-	GlobalHandler ethernethandler
-	Logger        *slog.Logger
-	MAC           [6]byte
+	// GlobalHandler ethernethandler
+	Logger *slog.Logger
+	MAC    [6]byte
 	// MTU is the maximum transmission unit of the ethernet interface.
 	MTU uint16
 }
@@ -125,10 +123,12 @@ var (
 	errBadUDPLength     = errors.New("invalid UDP length")
 	errInvalidIHL       = errors.New("invalid IP IHL")
 	errIPVersion        = errors.New("IP version not supported")
+	errUnknownIPProto   = errors.New("unknown IP protocol")
 
-	errPortNoSpace     = errors.New("port limit reached")
-	errPortNoneAvail   = errors.New("port unavailable")
-	errPortNonexistent = errors.New("port nonexistent")
+	errPortNoSpace        = errors.New("port limit reached")
+	errPortNoneAvail      = errors.New("port unavailable")
+	errPortNonexistent    = errors.New("port nonexistent")
+	errBadIPTotalLenOrIHL = errors.New("bad IP TotalLength/IHL")
 )
 
 func (ps *PortStack) Addr() netip.Addr { return netip.AddrFrom4(ps.ip) }
@@ -139,9 +139,9 @@ func (ps *PortStack) SetAddr(addr netip.Addr) {
 	ps.ip = addr.As4()
 }
 
-func (ps *PortStack) MTU() uint16           { return ps.mtu }
-func (ps *PortStack) MAC() net.HardwareAddr { return slices.Clone(ps.mac[:]) }
-func (ps *PortStack) MACAs6() [6]byte       { return ps.mac }
+func (ps *PortStack) MTU() uint16 { return ps.mtu }
+
+func (ps *PortStack) MACAs6() [6]byte { return ps.mac }
 
 // RecvEth validates an ethernet+ipv4 frame in payload. If it is OK then it
 // defers response handling of the packets during a call to [Stack.HandleEth].
@@ -197,15 +197,16 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 	case ps.ip != ihdr.Destination && ps.ip != [4]byte{}:
 		return nil // Not for us.
 	case uint16(offset) > end || int(offset) > len(payload) || int(end) > len(payload):
-		return errors.New("bad IP TotalLength/IHL")
+		return errBadIPTotalLenOrIHL
 	case end > ps.mtu:
 		return errPacketExceedsMTU
 	}
 	ipOptions := payload[eth.SizeEthernetHeader+eth.SizeIPv4Header : offset] // TODO add IPv4 options.
 	payload = payload[offset:end]
+	isDebug := ps.isLogEnabled(slog.LevelDebug)
 	switch ihdr.Protocol {
 	default:
-		err = errors.New("unknown IP protocol")
+		err = errUnknownIPProto
 	case 17:
 		// UDP (User Datagram Protocol).
 		if len(ps.portsUDP) == 0 {
@@ -243,7 +244,10 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 			break
 		}
 		// The packet is meant for us. We handle it.
-		ps.debug("UDP:recv", slog.Int("plen", len(payload)))
+		if isDebug {
+			ps.debug("UDP:recv", slog.Int("plen", len(payload)))
+		}
+
 		// Flag packets as needing processing.
 		ps.pendingUDPv4++
 
@@ -252,12 +256,14 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 		pkt.IP = ihdr // TODO(soypat): Don't ignore IP options.
 		pkt.UDP = uhdr
 		copy(pkt.payload[:], payload)
-		port.ihandler.recv(pkt)
+		err = port.ihandler.recv(pkt)
 		if err == io.EOF {
 			// Special case; EOF is flag to close port
 			err = nil
 			port.Close()
-			ps.debug("UDP:closed", slog.Int("port", int(port.Port())))
+			if isDebug {
+				ps.debug("UDP:closed", slog.Int("port", int(port.Port())))
+			}
 		} else if err == ErrFlagPending {
 			err = nil // TODO(soypat).
 		}
@@ -290,7 +296,9 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 		}
 		port := findPort(ps.portsTCP, thdr.DestinationPort)
 		if port == nil {
-			ps.debug("tcp:noSocket", slog.Int("port", int(thdr.DestinationPort)), slog.Int("avail", len(ps.portsTCP)))
+			if isDebug {
+				ps.debug("tcp:noSocket", slog.Int("port", int(thdr.DestinationPort)), slog.Int("avail", len(ps.portsTCP)))
+			}
 			break // No socket listening on this port.
 		}
 
@@ -301,11 +309,13 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 			err = ErrDroppedPacket // Our socket needs handling before admitting more packets.
 			break
 		}
-		ps.debug("TCP:recv",
-			slog.Int("opt", len(tcpOptions)),
-			slog.Int("ipopt", len(ipOptions)),
-			slog.Int("payload", len(payload)),
-		)
+		if isDebug {
+			ps.debug("TCP:recv",
+				slog.Int("opt", len(tcpOptions)),
+				slog.Int("ipopt", len(ipOptions)),
+				slog.Int("payload", len(payload)),
+			)
+		}
 		ps.pendingTCPv4++
 		pkt.Rx = ps.lastRx
 		pkt.Eth = *ehdr
@@ -319,7 +329,9 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 			// Special case; EOF is flag to close port
 			err = nil
 			port.Close()
-			ps.debug("TCP:closed", slog.Int("port", int(port.Port())))
+			if isDebug {
+				ps.debug("TCP:closed", slog.Int("port", int(port.Port())))
+			}
 		} else if err == ErrFlagPending {
 			err = nil // TODO(soypat).
 		}
@@ -331,13 +343,18 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 }
 
 func (ps *PortStack) HandleEth(dst []byte) (n int, err error) {
-	ps.trace("HandleEth:start", slog.Int("dstlen", len(dst)))
+	isTrace := ps.isLogEnabled(levelTrace)
+	if isTrace {
+		ps.trace("HandleEth:start", slog.Int("dstlen", len(dst)))
+	}
 	n, err = ps.handleEth(dst)
 	if n > 0 && err == nil {
-		ps.trace("HandleEth:send", slog.Int("plen", n))
+		if isTrace {
+			ps.trace("HandleEth:send", slog.Int("plen", n))
+		}
 		ps.lastTx = ps.now()
 		ps.processedPackets++
-	} else if err != nil {
+	} else if err != nil && ps.isLogEnabled(slog.LevelError) {
 		ps.error("HandleEth", slog.String("err", err.Error()))
 	}
 	return n, err
@@ -390,6 +407,7 @@ func (ps *PortStack) handleEth(dst []byte) (n int, err error) {
 		return n, sock.IsPendingHandling(), err
 	}
 
+	isDebug := ps.isLogEnabled(slog.LevelDebug)
 	socketPending := false
 	if ps.pendingUDPv4 > 0 {
 		for i := range ps.portsUDP {
@@ -400,7 +418,9 @@ func (ps *PortStack) handleEth(dst []byte) (n int, err error) {
 			if err != nil {
 				return 0, err
 			} else if n > 0 {
-				ps.debug("UDP:send", slog.Int("plen", n))
+				if isDebug {
+					ps.debug("UDP:send", slog.Int("plen", n))
+				}
 				return n, nil
 			}
 		}
@@ -419,7 +439,9 @@ func (ps *PortStack) handleEth(dst []byte) (n int, err error) {
 			if err != nil {
 				return 0, err
 			} else if n > 0 {
-				ps.debug("TCP:send", slog.Int("plen", n))
+				if isDebug {
+					ps.debug("TCP:send", slog.Int("plen", n))
+				}
 				return n, nil
 			}
 		}
@@ -551,8 +573,10 @@ func (ps *PortStack) debug(msg string, attrs ...slog.Attr) {
 	ps.logAttrsPrint(slog.LevelDebug, msg, attrs...)
 }
 
+const levelTrace = slog.LevelDebug - 2
+
 func (ps *PortStack) trace(msg string, attrs ...slog.Attr) {
-	ps.logAttrsPrint(slog.LevelDebug-2, msg, attrs...)
+	ps.logAttrsPrint(levelTrace, msg, attrs...)
 }
 
 func (ps *PortStack) isLogEnabled(lvl slog.Level) bool {

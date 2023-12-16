@@ -11,6 +11,31 @@ import (
 // The main difference is that this API is built around the ControlBlock
 // which is a small part of the whole TCP state machine.
 
+var (
+	errTCBNotClosed          = errors.New("TCB not closed")
+	errInvalidState          = errors.New("invalid state")
+	errConnNotexist          = errors.New("connection does not exist")
+	errConnectionClosing     = errors.New("connection closing")
+	errExpectedSYN           = errors.New("seqs:expected SYN")
+	errBadSegack             = errors.New("seqs:bad segack")
+	errFinwaitExpectedACK    = errors.New("seqs:finwait1 expected ACK")
+	errFinwaitExpectedFinack = errors.New("seqs:finwait2 expected FINACK")
+
+	errWindowOverflow    = newRejectErr("wnd > 2**16")
+	errSeqNotInWindow    = newRejectErr("seq not in snd/rcv.wnd")
+	errLastNotInWindow   = newRejectErr("last not in snd/rcv.wnd")
+	errRequireSequential = newRejectErr("seq != rcv.nxt (require sequential segments)")
+	errAckNotNext        = newRejectErr("ack != snd.nxt")
+)
+
+func newRejectErr(err string) *rejectErr { return &rejectErr{err: err} }
+
+type rejectErr struct {
+	err string
+}
+
+func (e *rejectErr) Error() string { return "reject in/out seg: " + e.err }
+
 // State returns the current state of the connection.
 func (tcb *ControlBlock) State() State { return tcb.state }
 
@@ -19,9 +44,9 @@ func (tcb *ControlBlock) State() State { return tcb.state }
 func (tcb *ControlBlock) Open(iss Value, wnd Size, state State) (err error) {
 	switch {
 	case tcb.state != StateClosed && tcb.state != StateListen:
-		err = errors.New("close ControlBlock before opening")
+		err = errTCBNotClosed
 	case state != StateListen && state != StateSynSent:
-		err = errors.New("invalid state argument")
+		err = errInvalidState
 	case wnd > math.MaxUint16:
 		err = errWindowTooLarge
 	}
@@ -42,7 +67,7 @@ func (tcb *ControlBlock) Close() (err error) {
 	// See RFC 9293: 3.10.4 CLOSE call.
 	switch tcb.state {
 	case StateClosed:
-		err = errors.New("connection does not exist")
+		err = errConnNotexist
 	case StateCloseWait:
 		tcb.state = StateLastAck
 		tcb.pending = [2]Flags{FlagFIN, FlagACK}
@@ -53,7 +78,7 @@ func (tcb *ControlBlock) Close() (err error) {
 		// Users of this API should call Close only when they have no more data to send.
 		tcb.pending[0] = (tcb.pending[0] & FlagACK) | FlagFIN
 	case StateFinWait2, StateTimeWait:
-		err = errors.New("connection closing")
+		err = errConnectionClosing
 	}
 	return err
 }
@@ -135,7 +160,7 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 			tcb.close()
 		}
 	default:
-		err = errors.New("rcv: unexpected state " + tcb.state.String())
+		panic("unexpected state" + tcb.state.String())
 	}
 	if err != nil {
 		return err
