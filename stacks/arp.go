@@ -14,6 +14,12 @@ func (ps *PortStack) ARP() *arpClient {
 	return &ps.arpClient
 }
 
+var (
+	errARPUnsupported     = errors.New("unsupported ARP request")
+	errNoARPInProgress    = errors.New("no ARP in progress")
+	errARPResponsePending = errors.New("ARP response pending")
+)
+
 /*
 ARP PortStack state machine:
 
@@ -41,16 +47,16 @@ type arpClient struct {
 func (c *arpClient) ResultAs6() (netip.Addr, [6]byte, error) {
 	switch c.result.Operation {
 	case 0:
-		return netip.Addr{}, [6]byte{}, errors.New("no ARP in progress")
+		return netip.Addr{}, [6]byte{}, errNoARPInProgress
 	case 1:
-		return netip.Addr{}, [6]byte{}, errors.New("ARP response pending")
+		return netip.Addr{}, [6]byte{}, errARPResponsePending
 	}
 	return netip.AddrFrom4(c.result.ProtoSender), c.result.HardwareSender, nil
 }
 
 func (c *arpClient) BeginResolve(addr netip.Addr) error {
 	if !addr.Is4() {
-		return errors.New("ARP only supports IPv4")
+		return errIPVersion
 	}
 	c.result = eth.ARPv4Header{
 		Operation:      1, // Request.
@@ -108,7 +114,7 @@ func (c *arpClient) handle(dst []byte) (n int) {
 	default:
 		// return 0 // Nothing to do, n=0.
 	}
-	if n > 0 {
+	if n > 0 && c.stack.isLogEnabled(slog.LevelDebug) {
 		c.stack.debug("ARP:send", slog.Bool("isReply", !pendingResolve))
 	}
 	return n
@@ -116,7 +122,7 @@ func (c *arpClient) handle(dst []byte) (n int) {
 
 func (c *arpClient) recv(ahdr *eth.ARPv4Header) error {
 	if ahdr.HardwareLength != 6 || ahdr.ProtoLength != 4 || ahdr.HardwareType != 1 || ahdr.AssertEtherType() != eth.EtherTypeIPv4 {
-		return errors.New("unsupported ARP") // Ignore ARP unsupported requests.
+		return errARPUnsupported // Ignore ARP unsupported requests.
 	}
 	switch ahdr.Operation {
 	case 1: // We received ARP request.
@@ -140,8 +146,10 @@ func (c *arpClient) recv(ahdr *eth.ARPv4Header) error {
 		}
 		c.result = *ahdr
 	default:
-		return errors.New("unsupported ARP operation")
+		return errARPUnsupported
 	}
-	c.stack.debug("ARP:recv", slog.Int("op", int(ahdr.Operation)))
+	if c.stack.isLogEnabled(slog.LevelDebug) {
+		c.stack.debug("ARP:recv", slog.Int("op", int(ahdr.Operation)))
+	}
 	return nil
 }

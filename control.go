@@ -152,8 +152,8 @@ func (tcb *ControlBlock) HasPending() bool { return tcb.pending[0] != 0 }
 
 func (tcb *ControlBlock) rcvListen(seg Segment) (pending Flags, err error) {
 	switch {
-	case !seg.Flags.HasAll(FlagSYN): //|| flags.HasAny(eth.FlagTCP_ACK):
-		err = errors.New("rcvListen: no SYN or unexpected flag set")
+	case !seg.Flags.HasAll(FlagSYN):
+		err = errExpectedSYN
 	}
 	if err != nil {
 		return 0, err
@@ -173,10 +173,10 @@ func (tcb *ControlBlock) rcvSynSent(seg Segment) (pending Flags, err error) {
 	hasAck := seg.Flags.HasAny(FlagACK)
 	switch {
 	case !hasSyn:
-		err = errors.New("rcvSynSent: expected SYN")
+		err = errExpectedSYN
 
 	case hasAck && seg.ACK != tcb.snd.UNA+1:
-		err = errors.New("rcvSynSent: bad seg.ack")
+		err = errBadSegack
 	}
 	if err != nil {
 		return 0, err
@@ -201,7 +201,7 @@ func (tcb *ControlBlock) rcvSynRcvd(seg Segment) (pending Flags, err error) {
 	// case !seg.Flags.HasAll(FlagACK):
 	// 	err = errors.New("rcvSynRcvd: expected ACK")
 	case seg.ACK != tcb.snd.UNA+1:
-		err = errors.New("rcvSynRcvd: bad seg.ack")
+		err = errBadSegack
 	}
 	if err != nil {
 		return 0, err
@@ -224,7 +224,7 @@ func (tcb *ControlBlock) rcvEstablished(seg Segment) (pending Flags, err error) 
 func (tcb *ControlBlock) rcvFinWait1(seg Segment) (pending Flags, err error) {
 	flags := seg.Flags
 	if !flags.HasAny(FlagACK) {
-		return 0, errors.New("rcvFinWait1: expected ACK")
+		return 0, errFinwaitExpectedACK
 	} else if flags.HasAny(FlagFIN) {
 		tcb.state = StateClosing // Simultaneous close. See figure 13 of RFC 9293.
 	} else {
@@ -236,7 +236,7 @@ func (tcb *ControlBlock) rcvFinWait1(seg Segment) (pending Flags, err error) {
 
 func (tcb *ControlBlock) rcvFinWait2(seg Segment) (pending Flags, err error) {
 	if !seg.Flags.HasAll(finack) {
-		return pending, errors.New("rcvFinWait2: expected FIN|ACK")
+		return pending, errFinwaitExpectedFinack
 	}
 	tcb.state = StateTimeWait
 	return FlagACK, nil
@@ -261,7 +261,6 @@ func (tcb *ControlBlock) resetRcv(localWND Size, remoteISS Value) {
 }
 
 func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
-	const errPfx = "reject incoming seg: "
 	flags := seg.Flags
 	hasAck := flags.HasAll(FlagACK)
 	// Short circuit SEQ checks if SYN present since the incoming segment initializes connection.
@@ -274,25 +273,25 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	// See section 3.4 of RFC 9293 for more on these checks.
 	switch {
 	case seg.WND > math.MaxUint16:
-		err = errors.New(errPfx + "wnd > 2**16")
+		err = errWindowOverflow
 	case tcb.state == StateClosed:
 		err = io.ErrClosedPipe
 
 	case checkSEQ && !InWindow(seg.SEQ, tcb.rcv.NXT, tcb.rcv.WND):
-		err = errors.New(errPfx + "seq not in receive window")
+		err = errSeqNotInWindow
 
 	case checkSEQ && !InWindow(seg.Last(), tcb.rcv.NXT, tcb.rcv.WND):
-		err = errors.New(errPfx + "last not in receive window")
+		err = errLastNotInWindow
 
 	case checkSEQ && seg.SEQ != tcb.rcv.NXT:
 		// This part diverts from TCB as described in RFC 9293. We want to support
 		// only sequential segments to keep implementation simple and maintainable.
-		err = errors.New(errPfx + "seq != rcv.nxt (use sequential segments)")
+		err = errRequireSequential
 	}
 	if err != nil {
 		return err
 	}
-
+	isDebug := tcb.logenabled(slog.LevelDebug)
 	// Drop-segment checks.
 	switch {
 	// Special treatment of duplicate ACKs on established connection and of ACKs of unsent data.
@@ -300,22 +299,27 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	case established && acksOld && !ctlOrDataSegment:
 		err = errDropSegment
 		tcb.pending[0] &= FlagFIN // Completely ignore duplicate ACKs but do not erase fin bit.
-		tcb.debug("rcv:ACK-dup")
-		tcb.debug("rcv:ACK-dup", slog.String("state", tcb.state.String()),
-			slog.Uint64("seg.ack", uint64(seg.ACK)), slog.Uint64("snd.una", uint64(tcb.snd.UNA)))
+		if isDebug {
+			tcb.debug("rcv:ACK-dup", slog.String("state", tcb.state.String()),
+				slog.Uint64("seg.ack", uint64(seg.ACK)), slog.Uint64("snd.una", uint64(tcb.snd.UNA)))
+		}
 
 	case established && acksUnsentData:
 		err = errDropSegment
 		tcb.pending[0] = FlagACK // Send ACK for unsent data.
-		tcb.debug("rcv:ACK-unsent", slog.String("state", tcb.state.String()),
-			slog.Uint64("seg.ack", uint64(seg.ACK)), slog.Uint64("snd.nxt", uint64(tcb.snd.NXT)))
+		if isDebug {
+			tcb.debug("rcv:ACK-unsent", slog.String("state", tcb.state.String()),
+				slog.Uint64("seg.ack", uint64(seg.ACK)), slog.Uint64("snd.nxt", uint64(tcb.snd.NXT)))
+		}
 
 	case preestablished && (acksOld || acksUnsentData):
 		err = errDropSegment
 		tcb.pending[0] = FlagRST
 		tcb.rstPtr = seg.ACK
 		tcb.resetSnd(tcb.snd.ISS, seg.WND)
-		tcb.debug("rcv:RST-old", slog.String("state", tcb.state.String()), slog.Uint64("ack", uint64(seg.ACK)))
+		if isDebug {
+			tcb.debug("rcv:RST-old", slog.String("state", tcb.state.String()), slog.Uint64("ack", uint64(seg.ACK)))
+		}
 
 	case preestablished && flags.HasAny(FlagRST):
 		err = errDropSegment
@@ -323,7 +327,9 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 		tcb.state = StateListen
 		tcb.resetSnd(tcb.snd.ISS+rstJump, tcb.snd.WND)
 		tcb.resetRcv(tcb.rcv.WND, 3_14159_2653^tcb.rcv.IRS)
-		tcb.debug("rcv:RST-remote", slog.String("state", tcb.state.String()))
+		if isDebug {
+			tcb.debug("rcv:RST-remote", slog.String("state", tcb.state.String()))
+		}
 	}
 	return err
 }
@@ -331,7 +337,6 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
 	hasAck := seg.Flags.HasAny(FlagACK)
 	checkSeq := !seg.Flags.HasAny(FlagRST)
-	const errPfx = "invalid out segment: "
 	seglast := seg.Last()
 	switch {
 	case tcb.state == StateClosed:
@@ -339,13 +344,13 @@ func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
 	case seg.WND > math.MaxUint16:
 		err = errWindowTooLarge
 	case hasAck && seg.ACK != tcb.rcv.NXT:
-		err = errors.New(errPfx + "ack != rcv.nxt")
+		err = errAckNotNext
 
 	case checkSeq && !InWindow(seg.SEQ, tcb.snd.NXT, tcb.snd.WND):
-		err = errors.New(errPfx + "seq not in send window")
+		err = errSeqNotInWindow
 
 	case checkSeq && !InWindow(seglast, tcb.snd.NXT, tcb.snd.WND):
-		err = errors.New(errPfx + "last not in send window")
+		err = errLastNotInWindow
 	}
 	return err
 }
