@@ -1,13 +1,13 @@
 package stacks
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/netip"
+	"runtime"
 	"strconv"
 	"time"
 
@@ -107,6 +107,7 @@ type PortStack struct {
 	mtu    uint16
 	auxUDP UDPPacket
 	auxTCP TCPPacket
+	auxARP eth.ARPv4Header
 }
 
 // Common errors.
@@ -149,6 +150,7 @@ func (ps *PortStack) MACAs6() [6]byte { return ps.mac }
 // If [Stack.HandleEth] is not called often enough prevent packet queue from
 // filling up on a socket RecvEth will start to return [ErrDroppedPacket].
 func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
+	// defer ps.trace("RecvEth:end")
 	var ihdr eth.IPv4Header
 	payload := ethernetFrame
 	if len(payload) < eth.SizeEthernetHeader+eth.SizeIPv4Header {
@@ -169,7 +171,7 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 		}
 	}
 	etype := ehdr.AssertType()
-	if !eth.IsBroadcastHW(ehdr.Destination[:]) && !bytes.Equal(ehdr.Destination[:], ps.mac[:]) {
+	if ehdr.Destination != eth.BroadcastHW6() && ehdr.Destination != ps.mac {
 		return nil // Ignore packet, is not for us.
 	} else if etype != eth.EtherTypeIPv4 && etype != eth.EtherTypeARP {
 		return nil // Ignore Non-IPv4 packets.
@@ -179,10 +181,9 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 		if len(payload) < eth.SizeEthernetHeader+eth.SizeARPv4Header {
 			return errPacketSmol
 		}
-		ahdr := eth.DecodeARPv4Header(payload[eth.SizeEthernetHeader:])
-		return ps.arpClient.recv(&ahdr)
+		ps.auxARP = eth.DecodeARPv4Header(payload[eth.SizeEthernetHeader:])
+		return ps.arpClient.recv(&ps.auxARP)
 	}
-
 	// IP parsing block.
 	var ipOffset uint8
 	ihdr, ipOffset = eth.DecodeIPv4Header(payload[eth.SizeEthernetHeader:])
@@ -343,6 +344,7 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 }
 
 func (ps *PortStack) HandleEth(dst []byte) (n int, err error) {
+	// defer ps.trace("HandleEth:end")
 	isTrace := ps.isLogEnabled(levelTrace)
 	if isTrace {
 		ps.trace("HandleEth:start", slog.Int("dstlen", len(dst)))
@@ -580,10 +582,43 @@ func (ps *PortStack) trace(msg string, attrs ...slog.Attr) {
 }
 
 func (ps *PortStack) isLogEnabled(lvl slog.Level) bool {
-	return ps.logger != nil && ps.logger.Handler().Enabled(context.Background(), lvl)
+	return heapAllocDebugging || (ps.logger != nil && ps.logger.Handler().Enabled(context.Background(), lvl))
 }
 
+const heapAllocDebugging = false
+
+var memstats runtime.MemStats
+var lastAllocs uint64
+
 func (ps *PortStack) logAttrsPrint(level slog.Level, msg string, attrs ...slog.Attr) {
+	if heapAllocDebugging {
+		runtime.ReadMemStats(&memstats)
+		if memstats.TotalAlloc != lastAllocs {
+			print("[ALLOC] inc=", int64(memstats.TotalAlloc)-int64(lastAllocs))
+			print(" tot=", memstats.TotalAlloc)
+			println()
+		}
+		if level == levelTrace {
+			print("TRACE ")
+		} else if level < slog.LevelDebug {
+			print("SEQS ")
+		} else {
+			print(level.String(), " ")
+		}
+		print(msg)
+		for _, a := range attrs {
+			switch a.Value.Kind() {
+			case slog.KindString:
+				print(" ", a.Key, "=", a.Value.String())
+			}
+		}
+		println()
+		runtime.ReadMemStats(&memstats)
+		if memstats.TotalAlloc != lastAllocs {
+			lastAllocs = memstats.TotalAlloc
+		}
+		return
+	}
 	if ps.logger != nil {
 		ps.logger.LogAttrs(context.Background(), level, msg, attrs...)
 	}
