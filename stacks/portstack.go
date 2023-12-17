@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"runtime"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/soypat/seqs/eth"
@@ -51,6 +52,7 @@ func NewPortStack(cfg PortStackConfig) *PortStack {
 	s.link = cfg.Link
 	s.link.NetNotify(s.Notify)
 	s.link.RecvEthHandle(s.RecvEth)
+	s.sockets = make(map[int]socketer)
 	return s
 }
 
@@ -89,7 +91,7 @@ var ErrFlagPending = io.ErrNoProgress
 //     The handler however can be aware of this fact and still use the pkt argument since the header+payload contents
 //     are not modified by the stack.
 type PortStack struct {
-	link          netlink.Netlinker
+	link netlink.Netlinker
 	lastRx        time.Time
 	lastRxSuccess time.Time
 	lastTx        time.Time
@@ -114,6 +116,8 @@ type PortStack struct {
 	auxUDP UDPPacket
 	auxTCP TCPPacket
 	auxARP eth.ARPv4Header
+	sockets
+	socketsMu sync.RWMutex
 }
 
 // Common errors.

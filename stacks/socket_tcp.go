@@ -34,6 +34,7 @@ type TCPSocket struct {
 	rx        ring
 	abortErr  error
 	closing   bool
+	boundAddr netip.AddrPort
 }
 
 type TCPSocketConfig struct {
@@ -146,6 +147,45 @@ func (sock *TCPSocket) OpenDialTCP(localPort uint16, remoteMAC [6]byte, remote n
 // OpenListenTCP only handles one connection at a time, so API may change in future to accomodate multiple connections.
 func (sock *TCPSocket) OpenListenTCP(localPortNum uint16, iss seqs.Value) error {
 	return sock.open(seqs.StateListen, localPortNum, iss, [6]byte{}, netip.AddrPort{})
+}
+
+// Use IANA RFC 6335 port range 49152–65535 for ephemeral (dynamic) ports
+var eport = uint16(49151)
+
+func ephemeralPort() uint16 {
+	if eport == uint16(65535) {
+		eport = uint16(49151)
+	} else {
+		eport++
+	}
+	return eport
+}
+
+func (sock *TCPSocket) Connect(ip netip.AddrPort) error {
+	var iss seqs.Value = 100
+	// TODO remote mac needs to come from ARP resolution?
+	var remoteMAC = [6]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
+	return sock.open(seqs.StateSynSent, ephemeralPort(), iss, remoteMAC, ip)
+}
+
+func (sock *TCPSocket) Bind(ip netip.AddrPort) error {
+	sock.boundAddr = ip
+	return nil
+}
+
+func (sock *TCPSocket) Listen(backlog int) error {
+	var iss seqs.Value = 100
+	return sock.open(seqs.StateListen, sock.boundAddr.Port(),
+		iss, [6]byte{}, netip.AddrPort{})
+}
+
+func (sock *TCPSocket) Accept() (newSock socketer, peer netip.AddrPort, err error) {
+	const socketBuf = 256
+	newSock, err = NewTCPSocket(sock.stack, TCPSocketConfig{
+		TxBufSize: socketBuf,
+		RxBufSize: socketBuf,
+	})
+	return newSock, netip.AddrPort{}, err
 }
 
 func (sock *TCPSocket) open(state seqs.State, localPortNum uint16, iss seqs.Value, remoteMAC [6]byte, remoteAddr netip.AddrPort) error {
