@@ -673,7 +673,7 @@ func (ps *PortStack) NICLoop() {
 		stallRx := true
 		// Poll for incoming packets.
 		for i := 0; i < 1; i++ {
-			gotPacket, err := ps.link.TryPoll()
+			gotPacket, err := ps.link.PollOne()
 			if err != nil {
 				println("poll error:", err.Error())
 			}
