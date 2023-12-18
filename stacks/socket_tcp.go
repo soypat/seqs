@@ -179,7 +179,7 @@ func (sock *TCPSocket) Listen(backlog int) error {
 		iss, [6]byte{}, netip.AddrPort{})
 }
 
-func (sock *TCPSocket) Accept() (newSock socketer, peer netip.AddrPort, err error) {
+func (sock *TCPSocket) Accept() (newSock *TCPSocket, peer netip.AddrPort, err error) {
 	const socketBuf = 256
 	newSock, err = NewTCPSocket(sock.stack, TCPSocketConfig{
 		TxBufSize: socketBuf,
