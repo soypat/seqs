@@ -6,12 +6,15 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/netip"
 	"runtime"
 	"strconv"
 	"time"
 
 	"github.com/soypat/seqs/eth"
+	"github.com/soypat/seqs/eth/dhcp"
+	"tinygo.org/x/drivers/netlink"
 )
 
 const (
@@ -28,16 +31,15 @@ type PortStackConfig struct {
 	// If GlobalHandler returns an error the frame is discarded and PortStack.HandleEth returns the error.
 	// GlobalHandler ethernethandler
 	Logger *slog.Logger
-	MAC    [6]byte
 	// MTU is the maximum transmission unit of the ethernet interface.
-	MTU uint16
+	MTU  uint16
+	Link netlink.Netlinker
 }
 
 // NewPortStack creates a ready to use TCP/UDP Stack instance.
 func NewPortStack(cfg PortStackConfig) *PortStack {
 	s := &PortStack{}
 	s.arpClient.stack = s
-	s.mac = cfg.MAC
 	// s.ip = cfg.IP.As4()
 	s.portsUDP = make([]udpPort, cfg.MaxOpenPortsUDP)
 	s.portsTCP = make([]tcpPort, cfg.MaxOpenPortsTCP)
@@ -46,6 +48,9 @@ func NewPortStack(cfg PortStackConfig) *PortStack {
 		panic("please use a smaller MTU. max=" + strconv.Itoa(defaultMTU))
 	}
 	s.mtu = cfg.MTU
+	s.link = cfg.Link
+	s.link.NetNotify(s.Notify)
+	s.link.RecvEthHandle(s.RecvEth)
 	return s
 }
 
@@ -84,6 +89,7 @@ var ErrFlagPending = io.ErrNoProgress
 //     The handler however can be aware of this fact and still use the pkt argument since the header+payload contents
 //     are not modified by the stack.
 type PortStack struct {
+	link          netlink.Netlinker
 	lastRx        time.Time
 	lastRxSuccess time.Time
 	lastTx        time.Time
@@ -132,7 +138,7 @@ var (
 	errBadIPTotalLenOrIHL = errors.New("bad IP TotalLength/IHL")
 )
 
-func (ps *PortStack) Addr() netip.Addr { return netip.AddrFrom4(ps.ip) }
+func (ps *PortStack) Addr() (netip.Addr, error) { return netip.AddrFrom4(ps.ip), nil }
 func (ps *PortStack) SetAddr(addr netip.Addr) {
 	if !addr.Is4() {
 		panic("SetAddr only supports IPv4, or argument not initialized")
@@ -141,7 +147,7 @@ func (ps *PortStack) SetAddr(addr netip.Addr) {
 }
 
 func (ps *PortStack) MTU() uint16 { return ps.mtu }
-
+func (ps *PortStack) SetMAC(mac net.HardwareAddr) { copy(ps.mac[:], mac) }
 func (ps *PortStack) MACAs6() [6]byte { return ps.mac }
 
 // RecvEth validates an ethernet+ipv4 frame in payload. If it is OK then it
@@ -557,6 +563,131 @@ func (ps *PortStack) CloseTCP(portNum uint16) error {
 	}
 	port.Close()
 	return nil
+}
+
+func (ps *PortStack) linkUp() {
+	println("Link is UP")
+
+	// Make a copy of the device MAC as [6]byte
+	mac, _ := ps.link.GetHardwareAddr()
+	ps.SetMAC(mac)
+
+	// Begin asynchronous packet handling.
+	go ps.NICLoop()
+
+	// Perform DHCP request.
+	dhcpClient := NewDHCPClient(ps, dhcp.DefaultClientPort)
+	err := dhcpClient.BeginRequest(DHCPRequestConfig{
+		RequestedAddr: netip.AddrFrom4([4]byte{192, 168, 1, 69}),
+		Xid:           0x12345678,
+	})
+	if err != nil {
+		panic("dhcp failed: " + err.Error())
+	}
+	for !dhcpClient.Done() {
+		println("dhcp ongoing...")
+		time.Sleep(time.Second / 2)
+	}
+	ip := dhcpClient.Offer()
+	println("DHCP complete IP:", ip.String())
+	ps.SetAddr(ip) // It's important to set the IP address after DHCP completes.
+
+	// Interface is UP
+	println("Interface is UP")
+}
+
+func (ps *PortStack) linkDown() {
+	println("Link is DOWN")
+	// TODO kill NICLoop()
+	// Interface is DOWN
+	println("Interface is DOWN")
+}
+
+func (ps *PortStack) Notify(event netlink.Event) {
+	switch event {
+	case netlink.EventNetUp:
+		ps.linkUp()
+	case netlink.EventNetDown:
+		ps.linkDown()
+	}
+}
+
+func (ps *PortStack) NICLoop() {
+	// Maximum number of packets to queue before sending them.
+	const (
+		queueSize                = 4
+		maxRetriesBeforeDropping = 3
+		// TODO want to use ps.MTU but that's not a constant, so...
+		MTU                      = 2048
+	)
+	var queue [queueSize][MTU]byte
+	var lenBuf [queueSize]int
+	var retries [queueSize]int
+	markSent := func(i int) {
+		queue[i] = [MTU]byte{} // Not really necessary.
+		lenBuf[i] = 0
+		retries[i] = 0
+	}
+	for {
+		//printGCStatsIfChanged(ps.logger)
+		stallRx := true
+		// Poll for incoming packets.
+		for i := 0; i < 1; i++ {
+			gotPacket, err := ps.link.PollOne()
+			if err != nil {
+				println("poll error:", err.Error())
+			}
+			if !gotPacket {
+				break
+			}
+			stallRx = false
+		}
+
+		// Queue packets to be sent.
+		for i := range queue {
+			if retries[i] != 0 {
+				continue // Packet currently queued for retransmission.
+			}
+			var err error
+			buf := queue[i][:]
+			lenBuf[i], err = ps.HandleEth(buf[:])
+			if err != nil {
+				println("stack error n(should be 0)=", lenBuf[i], "err=", err.Error())
+				lenBuf[i] = 0
+				continue
+			}
+			if lenBuf[i] == 0 {
+				break
+			}
+		}
+		stallTx := lenBuf == [queueSize]int{}
+		if stallTx {
+			if stallRx {
+				// Avoid busy waiting when both Rx and Tx stall.
+				time.Sleep(51 * time.Millisecond)
+			}
+			continue
+		}
+
+		// Send queued packets.
+		for i := range queue {
+			n := lenBuf[i]
+			if n <= 0 {
+				continue
+			}
+			err := ps.link.SendEth(queue[i][:n])
+			if err != nil {
+				// Queue packet for retransmission.
+				retries[i]++
+				if retries[i] > maxRetriesBeforeDropping {
+					markSent(i)
+					println("dropped outgoing packet:", err.Error())
+				}
+			} else {
+				markSent(i)
+			}
+		}
+	}
 }
 
 func (ps *PortStack) now() time.Time {
