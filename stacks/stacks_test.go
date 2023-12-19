@@ -32,9 +32,6 @@ func TestDHCP(t *testing.T) {
 	clientStack := Stacks[0]
 	serverStack := Stacks[1]
 
-	setLog(clientStack, "cl", slog.LevelDebug)
-	setLog(serverStack, "sv", slog.LevelDebug)
-
 	clientStack.SetAddr(netip.AddrFrom4([4]byte{}))
 	serverStack.SetAddr(netip.AddrFrom4([4]byte{}))
 
@@ -363,7 +360,7 @@ func TestPortStackTCPDecoding(t *testing.T) {
 	const dataport = 1234
 	packets := []string{
 		"28cdc1054d3ed85ed34303eb08004500003c76eb400040063f76c0a80192c0a80178ee1604d2a0ceb98a00000000a002faf06e800000020405b40402080a14ccf8250000000001030307",
-		"28cdc101137c88aedd0a709208004500002db03a4000400675590a0000be0a00007ac7ce04d22a67581700000d535018fa4bffff000068656c6c6f",
+		"28cdc101137c88aedd0a709208004500002db03a4000400675590a0000be0a00007ac7ce04d22a67581700000d535018fa4b0000000068656c6c6f",
 	}
 	for i, data := range packets {
 		data, _ := hex.DecodeString(data)
