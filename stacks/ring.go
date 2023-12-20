@@ -5,6 +5,8 @@ import (
 	"io"
 )
 
+var errRingBufferFull = errors.New("seqs/ring: buffer full")
+
 type ring struct {
 	buf []byte
 	off int
@@ -13,20 +15,23 @@ type ring struct {
 
 func (r *ring) Write(b []byte) (int, error) {
 	free := r.Free()
-	if len(b) > free {
-		return 0, errors.New("no more space")
+	if free == 0 {
+		return 0, errRingBufferFull
 	}
 	midFree := r.midFree()
 	if midFree > 0 {
-		n := copy(r.buf[r.end:], b)
+		// start     end       off    len(buf)
+		//   |  used  |  mfree  |  used  |
+		n := copy(r.buf[r.end:r.off], b)
 		r.end += n
 		return n, nil
 	}
-
+	// start       off       end      len(buf)
+	//   |  sfree   |  used   |  efree   |
 	n := copy(r.buf[r.end:], b)
 	r.end = n
 	if n < len(b) {
-		n2 := copy(r.buf, b[n:])
+		n2 := copy(r.buf, b[n:r.off])
 		r.end = n2
 		n += n2
 	}

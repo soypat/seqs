@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/soypat/seqs"
 	"github.com/soypat/seqs/eth"
@@ -310,8 +309,8 @@ func TestTCPSocketOpenOfClosedPort(t *testing.T) {
 		t.Fatalf("not established: client=%s server=%s", client.State(), server.State())
 	}
 
-	saddrport := netip.AddrPortFrom(sstack.Addr(), server.Port()+newPortoffset)
-	err := client.OpenDialTCP(client.Port()+newPortoffset+1, sstack.HardwareAddr6(), saddrport, newISS)
+	saddrport := netip.AddrPortFrom(sstack.Addr(), server.LocalPort()+newPortoffset)
+	err := client.OpenDialTCP(client.LocalPort()+newPortoffset+1, sstack.HardwareAddr6(), saddrport, newISS)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +326,7 @@ func TestTCPSocketOpenOfClosedPort(t *testing.T) {
 	testSocketDuplex(t, client, server, egr, 128)
 }
 
-func testSocketDuplex(t *testing.T, client, server *stacks.TCPSocket, egr *Exchanger, messages int) {
+func testSocketDuplex(t *testing.T, client, server *stacks.TCPConn, egr *Exchanger, messages int) {
 	if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
 		panic("not established")
 	}
@@ -370,7 +369,7 @@ func TestPortStackTCPDecoding(t *testing.T) {
 			MTU:             2048,
 			MAC:             ehdr.Destination,
 		})
-		sock, err := stacks.NewTCPSocket(ps, stacks.TCPSocketConfig{})
+		sock, err := stacks.NewTCPConn(ps, stacks.TCPConnConfig{})
 		if err != nil {
 			t.Fatal(i, err)
 		}
@@ -495,7 +494,7 @@ func isDroppedPacket(err error) bool {
 	return err != nil && (errors.Is(err, stacks.ErrDroppedPacket) || strings.HasPrefix(err.Error(), "drop"))
 }
 
-func createTCPClientServerPair(t *testing.T) (client, server *stacks.TCPSocket) {
+func createTCPClientServerPair(t *testing.T) (client, server *stacks.TCPConn) {
 	t.Helper()
 	const (
 		clientPort = 1025
@@ -513,7 +512,7 @@ func createTCPClientServerPair(t *testing.T) (client, server *stacks.TCPSocket) 
 	// Configure server
 	serverIP := netip.AddrPortFrom(serverStack.Addr(), serverPort)
 
-	serverTCP, err := stacks.NewTCPSocket(serverStack, stacks.TCPSocketConfig{
+	serverTCP, err := stacks.NewTCPConn(serverStack, stacks.TCPConnConfig{
 		TxBufSize: 2048,
 		RxBufSize: 2048,
 	})
@@ -527,7 +526,7 @@ func createTCPClientServerPair(t *testing.T) (client, server *stacks.TCPSocket) 
 	}
 
 	// Configure client.
-	clientTCP, err := stacks.NewTCPSocket(clientStack, stacks.TCPSocketConfig{
+	clientTCP, err := stacks.NewTCPConn(clientStack, stacks.TCPConnConfig{
 		TxBufSize: 2048,
 		RxBufSize: 2048,
 	})
@@ -535,7 +534,6 @@ func createTCPClientServerPair(t *testing.T) (client, server *stacks.TCPSocket) 
 		t.Fatal(err)
 	}
 	err = clientTCP.OpenDialTCP(clientPort, serverStack.HardwareAddr6(), serverIP, clientISS)
-	// clientTCP, err := stacks.DialTCP(clientStack, clientPort, Stacks[1].MACAs6(), serverIP, clientISS, clientWND)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -568,11 +566,11 @@ func createPortStacks(t *testing.T, n int) (Stacks []*stacks.PortStack) {
 	return Stacks
 }
 
-func socketReadAllString(s *stacks.TCPSocket) string {
+func socketReadAllString(s *stacks.TCPConn) string {
 	var str strings.Builder
 	var buf [1024]byte
 	for s.BufferedInput() > 0 {
-		n, err := s.ReadDeadline(buf[:], time.Time{})
+		n, err := s.Read(buf[:])
 		str.Write(buf[:n])
 		if n == 0 || err != nil {
 			break
@@ -581,7 +579,7 @@ func socketReadAllString(s *stacks.TCPSocket) string {
 	return str.String()
 }
 
-func socketSendString(s *stacks.TCPSocket, str string) {
+func socketSendString(s *stacks.TCPConn, str string) {
 	_, err := s.Write([]byte(str))
 	if err != nil {
 		panic(err)
