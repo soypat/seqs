@@ -64,7 +64,7 @@ func (c *arpClient) BeginResolve(addr netip.Addr) error {
 		ProtoType:      uint16(eth.EtherTypeIPv4),
 		HardwareLength: 6,
 		ProtoLength:    4,
-		HardwareSender: c.stack.MACAs6(),
+		HardwareSender: c.stack.HardwareAddr6(),
 		ProtoSender:    c.stack.ip,
 		HardwareTarget: [6]byte{}, // Zeroes, is filled by target.
 		ProtoTarget:    addr.As4(),
@@ -91,7 +91,7 @@ func (c *arpClient) handle(dst []byte) (n int) {
 		// We have a pending request from user to perform ARP.
 		ehdr := eth.EthernetHeader{
 			Destination:     eth.BroadcastHW6(),
-			Source:          c.stack.MACAs6(),
+			Source:          c.stack.HardwareAddr6(),
 			SizeOrEtherType: uint16(eth.EtherTypeARP),
 		}
 		ehdr.Put(dst)
@@ -103,7 +103,7 @@ func (c *arpClient) handle(dst []byte) (n int) {
 		// We need to respond to an ARP request that queries our address.
 		ehdr := eth.EthernetHeader{
 			Destination:     c.pendingResponse.HardwareTarget,
-			Source:          c.stack.MACAs6(),
+			Source:          c.stack.HardwareAddr6(),
 			SizeOrEtherType: uint16(eth.EtherTypeARP),
 		}
 		ehdr.Put(dst)
@@ -133,7 +133,7 @@ func (c *arpClient) recv(ahdr *eth.ARPv4Header) error {
 		ahdr.HardwareTarget = ahdr.HardwareSender
 		ahdr.ProtoTarget = ahdr.ProtoSender
 
-		ahdr.HardwareSender = c.stack.MACAs6()
+		ahdr.HardwareSender = c.stack.HardwareAddr6()
 		ahdr.ProtoSender = c.stack.ip
 		ahdr.Operation = 2 // Set as reply. This also flags the packet as pending.
 		c.pendingResponse = *ahdr

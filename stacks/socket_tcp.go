@@ -274,7 +274,7 @@ func (sock *TCPSocket) send(response []byte) (n int, err error) {
 }
 
 func (sock *TCPSocket) setSrcDest(pkt *TCPPacket) {
-	pkt.Eth.Source = sock.stack.MACAs6()
+	pkt.Eth.Source = sock.stack.HardwareAddr6()
 	pkt.IP.Source = sock.stack.ip
 	pkt.TCP.SourcePort = sock.localPort
 

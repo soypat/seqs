@@ -137,12 +137,13 @@ func (ps *PortStack) SetAddr(addr netip.Addr) {
 	if !addr.Is4() {
 		panic("SetAddr only supports IPv4, or argument not initialized")
 	}
+	ps.trace("SetAddr")
 	ps.ip = addr.As4()
 }
 
 func (ps *PortStack) MTU() uint16 { return ps.mtu }
 
-func (ps *PortStack) MACAs6() [6]byte { return ps.mac }
+func (ps *PortStack) HardwareAddr6() [6]byte { return ps.mac }
 
 // RecvEth validates an ethernet+ipv4 frame in payload. If it is OK then it
 // defers response handling of the packets during a call to [Stack.HandleEth].
@@ -595,7 +596,7 @@ func (ps *PortStack) logAttrsPrint(level slog.Level, msg string, attrs ...slog.A
 		runtime.ReadMemStats(&memstats)
 		if memstats.TotalAlloc != lastAllocs {
 			print("[ALLOC] inc=", int64(memstats.TotalAlloc)-int64(lastAllocs))
-			print(" tot=", memstats.TotalAlloc)
+			print(" tot=", memstats.TotalAlloc, " seqs")
 			println()
 		}
 		if level == levelTrace {

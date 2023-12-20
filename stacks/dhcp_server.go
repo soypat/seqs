@@ -187,7 +187,7 @@ func (d *DHCPServer) setResponseUDP(clientport uint16, packet *UDPPacket, payloa
 	const ipLenInWords = 5
 	// Ethernet frame.
 	packet.Eth.Destination = eth.BroadcastHW6()
-	packet.Eth.Source = d.stack.MACAs6()
+	packet.Eth.Source = d.stack.HardwareAddr6()
 
 	packet.Eth.SizeOrEtherType = uint16(eth.EtherTypeIPv4)
 

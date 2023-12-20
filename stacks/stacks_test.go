@@ -113,8 +113,8 @@ func TestARP(t *testing.T) {
 	if !ip.IsValid() {
 		t.Fatal("invalid IP")
 	}
-	if mac != target.MACAs6() {
-		t.Errorf("result.HardwareSender=%s want=%s", mac, target.MACAs6())
+	if mac != target.HardwareAddr6() {
+		t.Errorf("result.HardwareSender=%s want=%s", mac, target.HardwareAddr6())
 	}
 	if ip.As4() != target.Addr().As4() {
 		t.Errorf("result.ProtoSender=%s want=%s", ip, target.Addr().As4())
@@ -311,7 +311,7 @@ func TestTCPSocketOpenOfClosedPort(t *testing.T) {
 	}
 
 	saddrport := netip.AddrPortFrom(sstack.Addr(), server.Port()+newPortoffset)
-	err := client.OpenDialTCP(client.Port()+newPortoffset+1, sstack.MACAs6(), saddrport, newISS)
+	err := client.OpenDialTCP(client.Port()+newPortoffset+1, sstack.HardwareAddr6(), saddrport, newISS)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -534,7 +534,7 @@ func createTCPClientServerPair(t *testing.T) (client, server *stacks.TCPSocket) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = clientTCP.OpenDialTCP(clientPort, serverStack.MACAs6(), serverIP, clientISS)
+	err = clientTCP.OpenDialTCP(clientPort, serverStack.HardwareAddr6(), serverIP, clientISS)
 	// clientTCP, err := stacks.DialTCP(clientStack, clientPort, Stacks[1].MACAs6(), serverIP, clientISS, clientWND)
 	if err != nil {
 		t.Fatal(err)

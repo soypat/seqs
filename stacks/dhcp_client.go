@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/netip"
 	"strconv"
+	"unsafe"
 
 	"github.com/soypat/seqs/eth"
 	"github.com/soypat/seqs/eth/dhcp"
@@ -19,18 +20,19 @@ var (
 )
 
 type DHCPClient struct {
-	stack *PortStack
-	state uint8
+	stack      *PortStack
+	currentXid uint32
+	port       uint16
+	aux        UDPPacket // Avoid heap allocation.
+	aborted    bool
+	state      uint8
 	// The result IP of the DHCP transaction (our new IP).
 	offer [4]byte
 	// DHCP server IP
 	svip        [4]byte
 	requestedIP [4]byte
-	currentXid  uint32
-	port        uint16
-	aborted     bool
-	aux         UDPPacket // Avoid heap allocation.
 	optionbuf   [4]dhcp.Option
+	msgbug      [1]byte
 }
 
 // State transition table:
@@ -98,7 +100,7 @@ func (d *DHCPClient) ourHeader() dhcp.HeaderV4 {
 		SIAddr: d.svip,
 		YIAddr: d.offer,
 	}
-	mac := d.stack.MACAs6()
+	mac := d.stack.HardwareAddr6()
 	copy(hdr.CHAddr[:], mac[:])
 	return hdr
 }
@@ -121,13 +123,12 @@ func (d *DHCPClient) send(dst []byte) (n int, err error) {
 	// for offer, ack or if we still need to send a discover (StateNone).
 	var Options []dhcp.Option
 	var nextstate uint8
-	var optByte [1]byte
 	switch d.state { // Send.
 	case dhcpStateNone:
 		// DHCP options.
-		optByte[0] = byte(dhcp.MsgDiscover)
+		d.msgbug[0] = byte(dhcp.MsgDiscover)
 		Options = append(d.optionbuf[:0], []dhcp.Option{
-			{Num: dhcp.OptMessageType, Data: optByte[:]},
+			{Num: dhcp.OptMessageType, Data: d.msgbug[:1]},
 			{Num: dhcp.OptParameterRequestList, Data: dhcpDefaultParamReqList},
 		}...)
 		if d.requestedIP != [4]byte{} {
@@ -136,10 +137,10 @@ func (d *DHCPClient) send(dst []byte) (n int, err error) {
 		nextstate = dhcpStateWaitOffer
 
 	case dhcpStateGotOffer:
-		optByte[0] = byte(dhcp.MsgRequest)
+		d.msgbug[0] = byte(dhcp.MsgRequest)
 		// Accept this server's offer.
 		Options = append(d.optionbuf[:0], []dhcp.Option{
-			{Num: dhcp.OptMessageType, Data: optByte[:]},
+			{Num: dhcp.OptMessageType, Data: d.msgbug[:1]},
 			{Num: dhcp.OptRequestedIPaddress, Data: d.offer[:]},
 			{Num: dhcp.OptServerIdentification, Data: d.svip[:]},
 		}...)
@@ -212,7 +213,7 @@ func (d *DHCPClient) recv(pkt *UDPPacket) (err error) {
 				msgType = dhcp.MessageType(opt.Data[0])
 			}
 		}
-		if debugEnabled {
+		if debugEnabled && !heapAllocDebugging {
 			d.stack.debug("DHCP:rx", slog.String("opt", opt.Num.String()), slog.String("data", stringNumList(opt.Data)))
 		}
 		return nil
@@ -261,7 +262,7 @@ func (d *DHCPClient) setResponseUDP(packet *UDPPacket, payload []byte) {
 	// Ethernet frame.
 	broadcast := eth.BroadcastHW6()
 	packet.Eth.Destination = broadcast
-	packet.Eth.Source = d.stack.MACAs6()
+	packet.Eth.Source = d.stack.HardwareAddr6()
 	packet.Eth.SizeOrEtherType = uint16(eth.EtherTypeIPv4)
 
 	// IPv4 frame.
@@ -306,12 +307,12 @@ func dhcpStringify(udpPayload []byte) string {
 }
 
 func stringNumList(data []byte) string {
-	var s string
+	buf := make([]byte, 0, len(data)*2)
 	for i, b := range data {
 		if i > 0 {
-			s += ","
+			buf = append(buf, ',')
 		}
-		s += strconv.Itoa(int(b))
+		buf = strconv.AppendUint(buf, uint64(b), 10)
 	}
-	return s
+	return unsafe.String(&buf[0], len(buf))
 }
