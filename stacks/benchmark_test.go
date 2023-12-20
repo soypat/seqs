@@ -19,7 +19,7 @@ func BenchmarkPortStack(b *testing.B) {
 		MTU:             2048,
 	})
 	addr := netip.AddrFrom4([4]byte{192, 168, 1, 1})
-	tcpsock, _ := stacks.NewTCPSocket(ps, stacks.TCPSocketConfig{})
+	tcpsock, _ := stacks.NewTCPConn(ps, stacks.TCPConnConfig{})
 	err := tcpsock.OpenDialTCP(80, [6]byte{0x01, 0x00, 0x5e, 0x00, 0x00, 0x01}, netip.AddrPortFrom(addr.Next(), 80), 0xbeadfeed)
 	if err != nil {
 		b.Fatal(err)

@@ -3,11 +3,9 @@ package stacks
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/netip"
-	"runtime"
 	"strconv"
 	"time"
 
@@ -143,6 +141,7 @@ func (ps *PortStack) SetAddr(addr netip.Addr) {
 
 func (ps *PortStack) MTU() uint16 { return ps.mtu }
 
+// HardwareAddr6 returns the Stack's 6 byte MAC address (or EUI-48).
 func (ps *PortStack) HardwareAddr6() [6]byte { return ps.mac }
 
 // RecvEth validates an ethernet+ipv4 frame in payload. If it is OK then it
@@ -565,89 +564,29 @@ func (ps *PortStack) now() time.Time {
 }
 
 func (ps *PortStack) info(msg string, attrs ...slog.Attr) {
-	ps.logAttrsPrint(slog.LevelInfo, msg, attrs...)
+	_logattrs(ps.logger, slog.LevelInfo, msg, attrs...)
 }
 
 func (ps *PortStack) error(msg string, attrs ...slog.Attr) {
-	ps.logAttrsPrint(slog.LevelError, msg, attrs...)
+	_logattrs(ps.logger, slog.LevelError, msg, attrs...)
 }
 
 func (ps *PortStack) debug(msg string, attrs ...slog.Attr) {
-	ps.logAttrsPrint(slog.LevelDebug, msg, attrs...)
+	_logattrs(ps.logger, slog.LevelDebug, msg, attrs...)
 }
 
 const levelTrace = slog.LevelDebug - 2
 
 func (ps *PortStack) trace(msg string, attrs ...slog.Attr) {
-	ps.logAttrsPrint(levelTrace, msg, attrs...)
+	_logattrs(ps.logger, levelTrace, msg, attrs...)
 }
 
 func (ps *PortStack) isLogEnabled(lvl slog.Level) bool {
 	return heapAllocDebugging || (ps.logger != nil && ps.logger.Handler().Enabled(context.Background(), lvl))
 }
 
-const heapAllocDebugging = false
-
-var memstats runtime.MemStats
-var lastAllocs uint64
-
-func (ps *PortStack) logAttrsPrint(level slog.Level, msg string, attrs ...slog.Attr) {
-	if heapAllocDebugging {
-		runtime.ReadMemStats(&memstats)
-		if memstats.TotalAlloc != lastAllocs {
-			print("[ALLOC] inc=", int64(memstats.TotalAlloc)-int64(lastAllocs))
-			print(" tot=", memstats.TotalAlloc, " seqs")
-			println()
-		}
-		if level == levelTrace {
-			print("TRACE ")
-		} else if level < slog.LevelDebug {
-			print("SEQS ")
-		} else {
-			print(level.String(), " ")
-		}
-		print(msg)
-		for _, a := range attrs {
-			switch a.Value.Kind() {
-			case slog.KindString:
-				print(" ", a.Key, "=", a.Value.String())
-			}
-		}
-		println()
-		runtime.ReadMemStats(&memstats)
-		if memstats.TotalAlloc != lastAllocs {
-			lastAllocs = memstats.TotalAlloc
-		}
-		return
-	}
-	if ps.logger != nil {
-		ps.logger.LogAttrs(context.Background(), level, msg, attrs...)
-	}
-}
-
 func (ps *PortStack) SetLogger(log *slog.Logger) {
 	ps.logger = log
-}
-
-// logAttrsPrint is a hand-rolled slog.Handler implementation for use in memory contrained systems.
-func logAttrsPrint(level slog.Level, msg string, attrs ...slog.Attr) {
-	var levelStr string = level.String()
-
-	print(levelStr)
-	print(" ")
-	print(msg)
-
-	for _, a := range attrs {
-		print(" ")
-		print(a.Key)
-		print("=")
-		if a.Value.Kind() == slog.KindAny {
-			fmt.Printf("%+v", a.Value.Any())
-		} else {
-			print(a.Value.String())
-		}
-	}
-	println()
 }
 
 var _ porter = udpPort{}
