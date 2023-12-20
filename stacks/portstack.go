@@ -344,14 +344,13 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 }
 
 func (ps *PortStack) HandleEth(dst []byte) (n int, err error) {
-	// defer ps.trace("HandleEth:end")
-	isTrace := ps.isLogEnabled(levelTrace)
-	if isTrace {
-		ps.trace("HandleEth:start", slog.Int("dstlen", len(dst)))
+	isSubTrace := ps.isLogEnabled(levelTrace)
+	if isSubTrace {
+		// ps.trace("HandleEth:start", slog.Int("dstlen", len(dst)))
 	}
 	n, err = ps.handleEth(dst)
 	if n > 0 && err == nil {
-		if isTrace {
+		if isSubTrace {
 			ps.trace("HandleEth:send", slog.Int("plen", n))
 		}
 		ps.lastTx = ps.now()
