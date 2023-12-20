@@ -66,6 +66,7 @@ func NewTCPConn(stack *PortStack, cfg TCPConnConfig) (*TCPConn, error) {
 		tx:    ring{buf: make([]byte, cfg.TxBufSize)},
 		rx:    ring{buf: make([]byte, cfg.RxBufSize)},
 	}
+	sock.trace("NewTCPConn:end")
 	return sock, nil
 }
 
@@ -89,6 +90,7 @@ func (sock *TCPConn) State() seqs.State {
 
 // FlushOutputBuffer waits until the output buffer is empty or the socket is closed.
 func (sock *TCPConn) FlushOutputBuffer() error {
+	sock.trace("TCPConn.FlushOutputBuffer:start")
 	if sock.State().IsClosed() {
 		return net.ErrClosed
 	}
@@ -105,11 +107,12 @@ func (sock *TCPConn) FlushOutputBuffer() error {
 
 // Write writes argument data to the socket's output buffer which is queued to be sent.
 func (sock *TCPConn) Write(b []byte) (n int, _ error) {
-	connid := sock.connid
 	err := sock.checkEstablished()
 	if err != nil {
 		return 0, err
 	}
+	sock.trace("TCPConn.Write:start")
+	connid := sock.connid
 	if sock.deadlineExceeded(sock.wdead) {
 		return 0, os.ErrDeadlineExceeded
 	}
@@ -151,6 +154,7 @@ func (sock *TCPConn) Read(b []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	sock.trace("TCPConn.Read:start")
 	connid := sock.connid
 	for sock.rx.Buffered() == 0 && sock.State() == seqs.StateEstablished {
 		if sock.abortErr != nil {
@@ -202,6 +206,7 @@ func (sock *TCPConn) SetDeadline(t time.Time) error {
 // SetReadDeadline sets the deadline for future Read calls
 // and any currently-blocked Read call. A zero value for t means Read will not time out.
 func (sock *TCPConn) SetReadDeadline(t time.Time) error {
+	sock.trace("TCPConn.SetReadDeadline:start")
 	err := sock.checkEstablished()
 	if err == nil {
 		sock.rdead = t
@@ -215,6 +220,7 @@ func (sock *TCPConn) SetReadDeadline(t time.Time) error {
 // some of the data was successfully written.
 // A zero value for t means Write will not time out.
 func (sock *TCPConn) SetWriteDeadline(t time.Time) error {
+	sock.trace("TCPConn.SetWriteDeadline:start")
 	err := sock.checkEstablished()
 	if err == nil {
 		sock.wdead = t
@@ -228,12 +234,14 @@ func (sock *TCPConn) deadlineExceeded(dead time.Time) bool {
 
 // OpenDialTCP opens an active TCP connection to the given remote address.
 func (sock *TCPConn) OpenDialTCP(localPort uint16, remoteMAC [6]byte, remote netip.AddrPort, iss seqs.Value) error {
+	sock.trace("TCPConn.OpenDialTCP:start")
 	return sock.open(seqs.StateSynSent, localPort, iss, remoteMAC, remote)
 }
 
 // OpenListenTCP opens a passive TCP connection that listens on the given port.
 // OpenListenTCP only handles one connection at a time, so API may change in future to accomodate multiple connections.
 func (sock *TCPConn) OpenListenTCP(localPortNum uint16, iss seqs.Value) error {
+	sock.trace("TCPConn.OpenListenTCP:start")
 	return sock.open(seqs.StateListen, localPortNum, iss, [6]byte{}, netip.AddrPort{})
 }
 
@@ -295,6 +303,7 @@ func (sock *TCPConn) checkEstablished() error {
 }
 
 func (sock *TCPConn) recv(pkt *TCPPacket) (err error) {
+	sock.trace("TCPConn.recv:start")
 	prevState := sock.scb.State()
 	if prevState.IsClosed() {
 		return io.EOF
@@ -314,7 +323,7 @@ func (sock *TCPConn) recv(pkt *TCPPacket) (err error) {
 		return nil // Segment not admitted, yield to sender.
 	}
 	if prevState != sock.scb.State() {
-		sock.stack.info("TCP:rx-statechange", slog.Uint64("port", uint64(sock.localPort)), slog.String("old", prevState.String()), slog.String("new", sock.scb.State().String()), slog.String("rxflags", segIncoming.Flags.String()))
+		sock.info("TCP:rx-statechange", slog.Uint64("port", uint64(sock.localPort)), slog.String("old", prevState.String()), slog.String("new", sock.scb.State().String()), slog.String("rxflags", segIncoming.Flags.String()))
 	}
 	if segIncoming.Flags.HasAny(seqs.FlagPSH) {
 		if len(payload) != int(segIncoming.DATALEN) {
@@ -335,6 +344,7 @@ func (sock *TCPConn) recv(pkt *TCPPacket) (err error) {
 }
 
 func (sock *TCPConn) send(response []byte) (n int, err error) {
+	sock.trace("TCPConn.send:start")
 	if !sock.remote.IsValid() {
 		return 0, nil // No remote address yet, yield.
 	}
@@ -370,7 +380,7 @@ func (sock *TCPConn) send(response []byte) (n int, err error) {
 	sock.pkt.CalculateHeaders(seg, payload)
 	sock.pkt.PutHeaders(response)
 	if prevState != sock.scb.State() {
-		sock.stack.info("TCP:tx-statechange", slog.Uint64("port", uint64(sock.localPort)), slog.String("old", prevState.String()), slog.String("new", sock.scb.State().String()), slog.String("txflags", seg.Flags.String()))
+		sock.info("TCP:tx-statechange", slog.Uint64("port", uint64(sock.localPort)), slog.String("old", prevState.String()), slog.String("new", sock.scb.State().String()), slog.String("txflags", seg.Flags.String()))
 	}
 	err = sock.stateCheck()
 	return sizeTCPNoOptions + n, err
@@ -403,6 +413,7 @@ func (sock *TCPConn) mustSendSyn() bool {
 }
 
 func (sock *TCPConn) deleteState() {
+	sock.trace("TCPConn.deleteState")
 	*sock = TCPConn{
 		stack: sock.stack,
 		rx:    ring{buf: sock.rx.buf},
@@ -425,12 +436,15 @@ func (sock *TCPConn) stateCheck() (portStackErr error) {
 	// Close checks:
 	if sock.closing && txEmpty && sock.scb.State() == seqs.StateEstablished { // Get RAW state of SCB.
 		sock.scb.Close()
-		sock.stack.debug("TCP:delayed-close", slog.Uint64("port", uint64(sock.localPort)))
+		sock.debug("TCP:delayed-close", slog.Uint64("port", uint64(sock.localPort)))
 	}
 	if sock.scb.HasPending() {
 		portStackErr = ErrFlagPending // Flag to PortStack that we have pending data to send.
 	} else if state.IsClosed() {
 		portStackErr = io.EOF // On EOF portStack will abort the connection.
+	}
+	if portStackErr != nil {
+		sock.info("TCPConn.stateCheck:err", slog.String("ps.err", portStackErr.Error()))
 	}
 	return portStackErr
 }
@@ -438,6 +452,18 @@ func (sock *TCPConn) stateCheck() (portStackErr error) {
 // abort is called by the PortStack when the port is closed. This happens
 // on EOF returned by Handle/RecvEth. See TCPSocket.stateCheck for information on when
 // a connection is aborted.
-func (t *TCPConn) abort() {
-	t.deleteState()
+func (sock *TCPConn) abort() {
+	sock.deleteState()
+}
+
+func (sock *TCPConn) trace(msg string, attrs ...slog.Attr) {
+	_logattrs(sock.stack.logger, levelTrace, msg, attrs...)
+}
+
+func (sock *TCPConn) debug(msg string, attrs ...slog.Attr) {
+	_logattrs(sock.stack.logger, slog.LevelDebug, msg, attrs...)
+}
+
+func (sock *TCPConn) info(msg string, attrs ...slog.Attr) {
+	_logattrs(sock.stack.logger, slog.LevelInfo, msg, attrs...)
 }
