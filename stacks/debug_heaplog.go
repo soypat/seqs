@@ -1,4 +1,4 @@
-///go:build debugheaplog
+//go:build debugheaplog
 
 package stacks
 
