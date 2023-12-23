@@ -12,6 +12,7 @@ import (
 
 	"github.com/soypat/seqs"
 	"github.com/soypat/seqs/eth"
+	"github.com/soypat/seqs/internal"
 )
 
 var _ net.Conn = &TCPConn{}
@@ -320,6 +321,11 @@ func (sock *TCPConn) recv(pkt *TCPPacket) (err error) {
 
 	err = sock.scb.Recv(segIncoming)
 	if err != nil {
+		if sock.scb.State() == seqs.StateClosed {
+			sock.info("TCP:rx-abort")
+			sock.abortErr = err
+			return io.EOF // Connection closed by reset.
+		}
 		return nil // Segment not admitted, yield to sender.
 	}
 	if prevState != sock.scb.State() {
@@ -457,13 +463,13 @@ func (sock *TCPConn) abort() {
 }
 
 func (sock *TCPConn) trace(msg string, attrs ...slog.Attr) {
-	_logattrs(sock.stack.logger, levelTrace, msg, attrs...)
+	internal.LogAttrs(sock.stack.logger, internal.LevelTrace, msg, attrs...)
 }
 
 func (sock *TCPConn) debug(msg string, attrs ...slog.Attr) {
-	_logattrs(sock.stack.logger, slog.LevelDebug, msg, attrs...)
+	internal.LogAttrs(sock.stack.logger, slog.LevelDebug, msg, attrs...)
 }
 
 func (sock *TCPConn) info(msg string, attrs ...slog.Attr) {
-	_logattrs(sock.stack.logger, slog.LevelInfo, msg, attrs...)
+	internal.LogAttrs(sock.stack.logger, slog.LevelInfo, msg, attrs...)
 }

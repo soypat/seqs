@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/soypat/seqs/eth"
+	"github.com/soypat/seqs/internal"
 )
 
 const (
@@ -47,7 +48,7 @@ func NewPortStack(cfg PortStackConfig) *PortStack {
 	return s
 }
 
-var ErrFlagPending = io.ErrNoProgress
+var ErrFlagPending = errors.New("seqs: pending data")
 
 // PortStack implements partial TCP/UDP packet muxing to respective sockets with [PortStack.RcvEth].
 // This implementation limits itself basic header validation and port matching.
@@ -344,7 +345,7 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 }
 
 func (ps *PortStack) HandleEth(dst []byte) (n int, err error) {
-	isSubTrace := ps.isLogEnabled(levelTrace)
+	isSubTrace := ps.isLogEnabled(internal.LevelTrace - 1)
 	if isSubTrace {
 		// ps.trace("HandleEth:start", slog.Int("dstlen", len(dst)))
 	}
@@ -563,25 +564,23 @@ func (ps *PortStack) now() time.Time {
 }
 
 func (ps *PortStack) info(msg string, attrs ...slog.Attr) {
-	_logattrs(ps.logger, slog.LevelInfo, msg, attrs...)
+	internal.LogAttrs(ps.logger, slog.LevelInfo, msg, attrs...)
 }
 
 func (ps *PortStack) error(msg string, attrs ...slog.Attr) {
-	_logattrs(ps.logger, slog.LevelError, msg, attrs...)
+	internal.LogAttrs(ps.logger, slog.LevelError, msg, attrs...)
 }
 
 func (ps *PortStack) debug(msg string, attrs ...slog.Attr) {
-	_logattrs(ps.logger, slog.LevelDebug, msg, attrs...)
+	internal.LogAttrs(ps.logger, slog.LevelDebug, msg, attrs...)
 }
 
-const levelTrace = slog.LevelDebug - 2
-
 func (ps *PortStack) trace(msg string, attrs ...slog.Attr) {
-	_logattrs(ps.logger, levelTrace, msg, attrs...)
+	internal.LogAttrs(ps.logger, internal.LevelTrace, msg, attrs...)
 }
 
 func (ps *PortStack) isLogEnabled(lvl slog.Level) bool {
-	return heapAllocDebugging || (ps.logger != nil && ps.logger.Handler().Enabled(context.Background(), lvl))
+	return internal.HeapAllocDebugging || (ps.logger != nil && ps.logger.Handler().Enabled(context.Background(), lvl))
 }
 
 func (ps *PortStack) SetLogger(log *slog.Logger) {
