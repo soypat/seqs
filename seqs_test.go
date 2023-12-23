@@ -431,6 +431,23 @@ func TestExchange_helloworld(t *testing.T) {
 	tcbB.HelperExchange(t, exchangeB)
 }
 
+func TestResetEstablished(t *testing.T) {
+	var tcb seqs.ControlBlock
+	const windowA, windowB = 502, 4096
+	const issA, issB = 0x5e722b7d, 0xbe6e4c0f
+	tcb.HelperInitState(seqs.StateEstablished, issA, issA, windowA)
+	tcb.HelperInitRcv(issB, issB, windowB)
+
+	err := tcb.Recv(seqs.Segment{SEQ: issB, ACK: issA, Flags: seqs.FlagRST, WND: windowB})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if tcb.State() != seqs.StateClosed {
+		t.Error("expected closed state; got ", tcb.State().String())
+	}
+	checkNoPending(t, &tcb)
+}
+
 func TestExchange_helloworld_client(t *testing.T) {
 	return
 	// Client Transmission Control Block.
