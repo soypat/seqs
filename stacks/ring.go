@@ -78,7 +78,7 @@ func (r *ring) Free() int {
 	if r.off == 0 {
 		return len(r.buf) - r.end
 	}
-	if r.end > r.off {
+	if r.off < r.end {
 		// start       off       end      len(buf)
 		//   |  sfree   |  used   |  efree   |
 		startFree := r.off

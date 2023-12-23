@@ -1,6 +1,7 @@
 package stacks
 
 import (
+	"bytes"
 	"io"
 	"math/rand"
 	"testing"
@@ -87,6 +88,61 @@ func TestRing(t *testing.T) {
 	_ = r.string()
 }
 
+func TestRing2(t *testing.T) {
+	const maxsize = 6
+	rng := rand.New(rand.NewSource(0))
+	data := make([]byte, maxsize)
+	ringbuf := make([]byte, maxsize)
+	auxbuf := make([]byte, maxsize)
+	rng.Read(data)
+	for i := 0; i < 1024; i++ {
+		dsize := max(rng.Intn(len(data)), 1)
+		if !testRing1_loopback(t, rng, ringbuf, data[:dsize], auxbuf) {
+			t.Fatalf("failed test %d", i)
+		}
+	}
+}
+
+func testRing1_loopback(t *testing.T, rng *rand.Rand, ringbuf, data, auxbuf []byte) bool {
+	if len(data) > len(ringbuf) || len(data) > len(auxbuf) {
+		panic("invalid ringbuf or data")
+	}
+	dsize := len(data)
+	var r ring
+	r.buf = ringbuf
+
+	nfirst := rng.Intn(dsize) / 2
+	nsecond := rng.Intn(dsize) / 2
+	if nfirst == 0 || nsecond == 0 {
+		return true
+	}
+	offset := rng.Intn(dsize - 1)
+
+	setRingData(&r, offset, data[:nfirst])
+	ngot, err := r.Write(data[nfirst : nfirst+nsecond])
+	if err != nil {
+		t.Error(err)
+		return false
+	}
+	if ngot != nsecond {
+		t.Errorf("did not write data correctly: got %d; want %d", ngot, nsecond)
+	}
+	// Case where data wraps around end of buffer.
+	n, err := r.Read(auxbuf[:])
+	if err != nil {
+		t.Error(err)
+		return false
+	}
+
+	if n != nfirst+nsecond {
+		t.Errorf("got %d; want %d (%d+%d)", n, nfirst+nsecond, nfirst, nsecond)
+	}
+	if !bytes.Equal(auxbuf[:n], data[:n]) {
+		t.Errorf("got %q; want %q", auxbuf[:n], data[:n])
+	}
+	return t.Failed()
+}
+
 func fragmentReadInto(r io.Reader, buf []byte) (n int, _ error) {
 	maxSize := len(buf) / 4
 	for {
@@ -117,4 +173,5 @@ func setRingData(r *ring, offset int, data []byte) {
 		r.end = n
 	}
 	r.off = offset
+	r.onReadEnd()
 }
