@@ -6,6 +6,9 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"net"
+
+	"github.com/soypat/seqs/internal"
 )
 
 const (
@@ -58,9 +61,10 @@ type ControlBlock struct {
 	// pending is the queue of pending flags to be sent in the next 2 segments.
 	// On a call to Send the queue is advanced and flags set in the segment are unset.
 	// The second position of the queue is used for FIN segments.
-	pending [2]Flags
-	state   State
-	log     *slog.Logger
+	pending      [2]Flags
+	state        State
+	challengeAck bool
+	log          *slog.Logger
 }
 
 // sendSpace contains Send Sequence Space data. Its sequence numbers correspond to local data.
@@ -135,6 +139,13 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 	var seq Value = tcb.snd.NXT
 	if pending.HasAny(FlagRST) {
 		seq = tcb.rstPtr
+	}
+
+	if tcb.challengeAck {
+		tcb.challengeAck = false
+		seq = tcb.snd.NXT
+		ack = tcb.rcv.NXT
+		pending = FlagACK
 	}
 
 	seg := Segment{
@@ -212,12 +223,18 @@ func (tcb *ControlBlock) rcvSynRcvd(seg Segment) (pending Flags, err error) {
 
 func (tcb *ControlBlock) rcvEstablished(seg Segment) (pending Flags, err error) {
 	flags := seg.Flags
-	pending = FlagACK
-	if flags.HasAny(FlagFIN) {
-		// See Figure 5: TCP Connection State Diagram of RFC 9293.
-		tcb.state = StateCloseWait
-		tcb.pending[1] = FlagFIN // Queue FIN for after the CloseWait ACK.
+
+	dataToAck := seg.DATALEN > 0
+	hasFin := flags.HasAny(FlagFIN)
+	if dataToAck || hasFin {
+		pending = FlagACK
+		if hasFin {
+			// See Figure 5: TCP Connection State Diagram of RFC 9293.
+			tcb.state = StateCloseWait
+			tcb.pending[1] = FlagFIN // Queue FIN for after the CloseWait ACK.
+		}
 	}
+
 	return pending, nil
 }
 
@@ -285,12 +302,16 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 
 	case checkSEQ && seg.SEQ != tcb.rcv.NXT:
 		// This part diverts from TCB as described in RFC 9293. We want to support
-		// only sequential segments to keep implementation simple and maintainable.
+		// only sequential segments to keep implementation simple and maintainable. See SHLD-31.
 		err = errRequireSequential
 	}
 	if err != nil {
 		return err
 	}
+	if flags.HasAny(FlagRST) {
+		return tcb.handleRST(seg.SEQ)
+	}
+
 	isDebug := tcb.logenabled(slog.LevelDebug)
 	// Drop-segment checks.
 	switch {
@@ -319,16 +340,6 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 		tcb.resetSnd(tcb.snd.ISS, seg.WND)
 		if isDebug {
 			tcb.debug("rcv:RST-old", slog.String("state", tcb.state.String()), slog.Uint64("ack", uint64(seg.ACK)))
-		}
-
-	case preestablished && flags.HasAny(FlagRST):
-		err = errDropSegment
-		tcb.pending[0] = 0
-		tcb.state = StateListen
-		tcb.resetSnd(tcb.snd.ISS+rstJump, tcb.snd.WND)
-		tcb.resetRcv(tcb.rcv.WND, 3_14159_2653^tcb.rcv.IRS)
-		if isDebug {
-			tcb.debug("rcv:RST-remote", slog.String("state", tcb.state.String()))
 		}
 	}
 	return err
@@ -361,7 +372,7 @@ func (tcb *ControlBlock) close() {
 	tcb.pending = [2]Flags{}
 	tcb.resetRcv(0, 0)
 	tcb.resetSnd(0, 0)
-	tcb.debug("close tcb")
+	tcb.debug("tcb:close")
 }
 
 // hasIRS checks if the ControlBlock has received a valid initial sequence number (IRS).
@@ -374,23 +385,37 @@ func (tcb *ControlBlock) isOpen() bool {
 	return tcb.state != StateClosed && tcb.state != StateTimeWait
 }
 
+func (tcb *ControlBlock) handleRST(seq Value) error {
+	tcb.debug("rcv:RST", slog.String("state", tcb.state.String()))
+	if seq != tcb.rcv.NXT {
+		// See RFC9293: If the RST bit is set and the sequence number does not exactly match the next expected sequence value, yet is within the current receive window, TCP endpoints MUST send an acknowledgment (challenge ACK).
+		tcb.challengeAck = true
+		tcb.pending[0] |= FlagACK
+		return errDropSegment
+	}
+	if tcb.state.IsPreestablished() {
+		tcb.pending[0] = 0
+		tcb.state = StateListen
+		tcb.resetSnd(tcb.snd.ISS+rstJump, tcb.snd.WND)
+		tcb.resetRcv(tcb.rcv.WND, 3_14159_2653^tcb.rcv.IRS)
+	} else {
+		tcb.close() // Enter closed state and return.
+		return net.ErrClosed
+	}
+	return errDropSegment
+}
+
 func (tcb *ControlBlock) logenabled(lvl slog.Level) bool {
-	return tcb.log != nil && tcb.log.Handler().Enabled(context.Background(), lvl)
+	return internal.HeapAllocDebugging || (tcb.log != nil && tcb.log.Handler().Enabled(context.Background(), lvl))
 }
 
 func (tcb *ControlBlock) debug(msg string, attrs ...slog.Attr) {
-	if tcb.log != nil {
-		tcb.log.LogAttrs(context.Background(), slog.LevelDebug, msg, attrs...)
-	}
+	internal.LogAttrs(tcb.log, slog.LevelDebug, msg, attrs...)
 }
 
-// func (tcb *ControlBlock) queueFlags(flags Flags) {
-// 	if tcb.pending[0]&FlagFIN&FlagSYN == 0 {
-// 		tcb.pending[0] |= flags
-// 	} else {
-// 		tcb.pending[1] |= flags
-// 	}
-// }
+func (tcb *ControlBlock) trace(msg string, attrs ...slog.Attr) {
+	internal.LogAttrs(tcb.log, internal.LevelTrace, msg, attrs...)
+}
 
 // Flags is a TCP flags masked implementation i.e: SYN, FIN, ACK.
 type Flags uint16

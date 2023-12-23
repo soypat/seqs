@@ -4,6 +4,8 @@ import (
 	"errors"
 	"log/slog"
 	"math"
+
+	"github.com/soypat/seqs/internal"
 )
 
 // Functions in this file correspond loosely to the API described in
@@ -90,6 +92,7 @@ func (tcb *ControlBlock) Send(seg Segment) error {
 	if err != nil {
 		return err
 	}
+	prevState := tcb.state
 
 	hasFIN := seg.Flags.HasAny(FlagFIN)
 	hasACK := seg.Flags.HasAny(FlagACK)
@@ -126,6 +129,24 @@ func (tcb *ControlBlock) Send(seg Segment) error {
 	seglen := seg.LEN()
 	tcb.snd.NXT.UpdateForward(seglen)
 	tcb.rcv.WND = seg.WND
+
+	if tcb.logenabled(internal.LevelTrace) {
+		tcb.trace("send",
+			slog.String("state", tcb.state.String()),
+			slog.String("prevstate", prevState.String()),
+			slog.Uint64("newpend", uint64(newPending)),
+			slog.Uint64("snd.nxt", uint64(tcb.snd.NXT)),
+			slog.Uint64("snd.wnd", uint64(tcb.snd.UNA)),
+		)
+		tcb.trace("send:seg",
+			slog.Uint64("seg.flags", uint64(seg.Flags)),
+			slog.Uint64("seg.seq", uint64(seg.SEQ)),
+			slog.Uint64("seg.ack", uint64(seg.ACK)),
+			slog.Uint64("seg.wnd", uint64(seg.WND)),
+			slog.Uint64("seg.len", uint64(seglen)),
+		)
+	}
+
 	return nil
 }
 
@@ -138,7 +159,7 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 	if err != nil {
 		return err
 	}
-
+	prevState := tcb.state
 	prevNxt := tcb.snd.NXT
 	var pending Flags
 	switch tcb.state {
@@ -180,6 +201,23 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 	}
 	seglen := seg.LEN()
 	tcb.rcv.NXT.UpdateForward(seglen)
+
+	if tcb.logenabled(internal.LevelTrace) {
+		tcb.trace("recv",
+			slog.String("state", tcb.state.String()),
+			slog.String("prevstate", prevState.String()),
+			slog.Uint64("snd.nxt", uint64(tcb.snd.NXT)),
+			slog.Uint64("rcv.nxt", uint64(tcb.rcv.NXT)),
+			slog.Uint64("rcv.wnd", uint64(tcb.rcv.WND)),
+		)
+		tcb.trace("recv:seg",
+			slog.Uint64("seg.flags", uint64(seg.Flags)),
+			slog.Uint64("seg.seq", uint64(seg.SEQ)),
+			slog.Uint64("seg.ack", uint64(seg.ACK)),
+			slog.Uint64("seg.wnd", uint64(seg.WND)),
+			slog.Uint64("seg.len", uint64(seglen)),
+		)
+	}
 	return err
 }
 
