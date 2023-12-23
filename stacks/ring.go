@@ -1,6 +1,7 @@
 package stacks
 
 import (
+	"bytes"
 	"errors"
 	"io"
 )
@@ -15,7 +16,7 @@ type ring struct {
 
 func (r *ring) Write(b []byte) (int, error) {
 	free := r.Free()
-	if free == 0 {
+	if len(b) > free {
 		return 0, errRingBufferFull
 	}
 	midFree := r.midFree()
@@ -29,7 +30,7 @@ func (r *ring) Write(b []byte) (int, error) {
 	// start       off       end      len(buf)
 	//   |  sfree   |  used   |  efree   |
 	n := copy(r.buf[r.end:], b)
-	r.end = n
+	r.end += n
 	if n < len(b) {
 		n2 := copy(r.buf, b[n:r.off])
 		r.end = n2
@@ -74,7 +75,10 @@ func (r *ring) Reset() {
 }
 
 func (r *ring) Free() int {
-	if r.end >= r.off {
+	if r.off == 0 {
+		return len(r.buf) - r.end
+	}
+	if r.end > r.off {
 		// start       off       end      len(buf)
 		//   |  sfree   |  used   |  efree   |
 		startFree := r.off
@@ -111,4 +115,10 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func (r *ring) string() string {
+	var b bytes.Buffer
+	b.ReadFrom(r)
+	return b.String()
 }
