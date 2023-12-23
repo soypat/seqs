@@ -62,7 +62,7 @@ func TestRing(t *testing.T) {
 
 		copy(buf[:], overdata[:nfirst])
 		setRingData(r, offset, buf[:nfirst])
-		println(r.end, r.off)
+		println("test", r.end, r.off, offset, r)
 		ngot, err := r.Write([]byte(overdata[nfirst : nfirst+nsecond]))
 		if err != nil {
 			t.Fatal(err)
@@ -76,6 +76,7 @@ func TestRing(t *testing.T) {
 		if err != nil {
 			break
 		}
+
 		if n != nfirst+nsecond {
 			t.Errorf("got %d; want %d (%d+%d)", n, nfirst+nsecond, nfirst, nsecond)
 		}
