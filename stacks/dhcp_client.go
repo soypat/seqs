@@ -11,6 +11,7 @@ import (
 
 	"github.com/soypat/seqs/eth"
 	"github.com/soypat/seqs/eth/dhcp"
+	"github.com/soypat/seqs/internal"
 )
 
 var (
@@ -213,7 +214,7 @@ func (d *DHCPClient) recv(pkt *UDPPacket) (err error) {
 				msgType = dhcp.MessageType(opt.Data[0])
 			}
 		}
-		if debugEnabled && !heapAllocDebugging {
+		if debugEnabled && !internal.HeapAllocDebugging {
 			d.stack.debug("DHCP:rx", slog.String("opt", opt.Num.String()), slog.String("data", stringNumList(opt.Data)))
 		}
 		return nil

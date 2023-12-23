@@ -50,16 +50,18 @@ func (tcb *ControlBlock) HelperExchange(t *testing.T, exchange []Exchange) {
 			t.Fatalf(pfx+"[%d] pending:got none, want=%+v", i, *ex.WantPending)
 		} else if ex.WantPending != nil && pending != *ex.WantPending {
 			t.Errorf(pfx+"[%d] pending:\n got=%+v\nwant=%+v", i, pending, *ex.WantPending)
+		} else if ok && ex.WantPending == nil {
+			t.Errorf(pfx+"[%d] pending:\n got=%+v\nwant=none", i, pending)
 		}
 	}
 }
 
-func (tcb *ControlBlock) HelperInitState(state State, iss, nxt Value, localWindow Size) {
+func (tcb *ControlBlock) HelperInitState(state State, localISS, localNXT Value, localWindow Size) {
 	tcb.state = state
 	tcb.snd = sendSpace{
-		ISS: iss,
-		UNA: iss,
-		NXT: nxt,
+		ISS: localISS,
+		UNA: localISS,
+		NXT: localNXT,
 		WND: 1, // 1 byte window, so we can test the SEQ field.
 		// UP, WL1, WL2 defaults to zero values.
 	}
