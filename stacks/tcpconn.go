@@ -321,6 +321,11 @@ func (sock *TCPConn) recv(pkt *TCPPacket) (err error) {
 
 	err = sock.scb.Recv(segIncoming)
 	if err != nil {
+		if sock.scb.State() == seqs.StateClosed {
+			sock.info("TCP:rx-abort")
+			sock.abortErr = err
+			return io.EOF // Connection closed by reset.
+		}
 		return nil // Segment not admitted, yield to sender.
 	}
 	if prevState != sock.scb.State() {
