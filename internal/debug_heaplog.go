@@ -1,6 +1,6 @@
 //go:build debugheaplog
 
-package stacks
+package internal
 
 import (
 	"log/slog"
@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	heapAllocDebugging = true
+	HeapAllocDebugging = true
 	timefmt            = "[01-02 15:04:05.000]"
 )
 
@@ -21,7 +21,7 @@ var (
 	timebuf [len(timefmt) * 2]byte
 )
 
-func _logattrs(_ *slog.Logger, level slog.Level, msg string, attrs ...slog.Attr) {
+func LogAttrs(_ *slog.Logger, level slog.Level, msg string, attrs ...slog.Attr) {
 	now := time.Now()
 	n := len(now.AppendFormat(timebuf[:0], timefmt))
 	runtime.ReadMemStats(&memstats)
@@ -31,7 +31,7 @@ func _logattrs(_ *slog.Logger, level slog.Level, msg string, attrs ...slog.Attr)
 		println()
 	}
 	print("time=", unsafe.String(&timebuf[0], n), " ")
-	if level == levelTrace {
+	if level == LevelTrace {
 		print("TRACE ")
 	} else if level < slog.LevelDebug {
 		print("SEQS ")
