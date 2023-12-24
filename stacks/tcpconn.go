@@ -331,7 +331,7 @@ func (sock *TCPConn) recv(pkt *TCPPacket) (err error) {
 	if prevState != sock.scb.State() {
 		sock.info("TCP:rx-statechange", slog.Uint64("port", uint64(sock.localPort)), slog.String("old", prevState.String()), slog.String("new", sock.scb.State().String()), slog.String("rxflags", segIncoming.Flags.String()))
 	}
-	if segIncoming.Flags.HasAny(seqs.FlagPSH) {
+	if segIncoming.DATALEN > 0 {
 		if len(payload) != int(segIncoming.DATALEN) {
 			return errors.New("segment data length does not match payload length")
 		}
@@ -420,7 +420,7 @@ func (sock *TCPConn) mustSendSyn() bool {
 }
 
 func (sock *TCPConn) deleteState() {
-	sock.trace("TCPConn.deleteState")
+	sock.trace("TCPConn.deleteState", slog.Uint64("port", uint64(sock.localPort)))
 	*sock = TCPConn{
 		stack: sock.stack,
 		rx:    ring{buf: sock.rx.buf},
