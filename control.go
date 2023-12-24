@@ -126,9 +126,8 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 
 	if established {
 		pending |= FlagACK // ACK is always set in established state. Not in RFC9293 but somehow expected?
-		if payloadLen > 0 {
-			pending |= FlagPSH // TODO(soypat): Add ACK here without breaking tests.
-		}
+	} else {
+		payloadLen = 0 // Can't send data if not established.
 	}
 
 	var ack Value
@@ -286,7 +285,7 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	preestablished := tcb.state.IsPreestablished()
 	acksOld := hasAck && !LessThan(tcb.snd.UNA, seg.ACK)
 	acksUnsentData := hasAck && !LessThanEq(seg.ACK, tcb.snd.NXT)
-	ctlOrDataSegment := established && flags.HasAny(FlagFIN|FlagRST|FlagPSH)
+	ctlOrDataSegment := established && (seg.DATALEN > 0 || flags.HasAny(FlagFIN|FlagRST))
 	// See section 3.4 of RFC 9293 for more on these checks.
 	switch {
 	case seg.WND > math.MaxUint16:
@@ -415,6 +414,39 @@ func (tcb *ControlBlock) debug(msg string, attrs ...slog.Attr) {
 
 func (tcb *ControlBlock) trace(msg string, attrs ...slog.Attr) {
 	internal.LogAttrs(tcb.log, internal.LevelTrace, msg, attrs...)
+}
+
+func (tcb *ControlBlock) logerr(msg string, attrs ...slog.Attr) {
+	internal.LogAttrs(tcb.log, slog.LevelError, msg, attrs...)
+}
+
+func (tcb *ControlBlock) traceSnd(msg string) {
+	tcb.trace(msg,
+		slog.String("state", tcb.state.String()),
+		slog.Uint64("pend", uint64(tcb.pending[0])),
+		slog.Uint64("snd.nxt", uint64(tcb.snd.NXT)),
+		slog.Uint64("snd.una", uint64(tcb.snd.UNA)),
+		slog.Uint64("snd.wnd", uint64(tcb.snd.WND)),
+	)
+}
+
+func (tcb *ControlBlock) traceRcv(msg string) {
+	tcb.trace(msg,
+		slog.String("state", tcb.state.String()),
+		slog.Uint64("rcv.nxt", uint64(tcb.rcv.NXT)),
+		slog.Uint64("rcv.wnd", uint64(tcb.rcv.WND)),
+		slog.Bool("challenge", tcb.challengeAck),
+	)
+}
+
+func (tcb *ControlBlock) traceSeg(msg string, seg Segment) {
+	tcb.trace(msg,
+		slog.Uint64("seg.seq", uint64(seg.SEQ)),
+		slog.Uint64("seg.ack", uint64(seg.ACK)),
+		slog.Uint64("seg.wnd", uint64(seg.WND)),
+		slog.Uint64("seg.flags", uint64(seg.Flags)),
+		slog.Uint64("seg.data", uint64(seg.DATALEN)),
+	)
 }
 
 // Flags is a TCP flags masked implementation i.e: SYN, FIN, ACK.
