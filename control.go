@@ -126,9 +126,8 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 
 	if established {
 		pending |= FlagACK // ACK is always set in established state. Not in RFC9293 but somehow expected?
-		if payloadLen > 0 {
-			pending |= FlagPSH // TODO(soypat): Add ACK here without breaking tests.
-		}
+	} else {
+		payloadLen = 0 // Can't send data if not established.
 	}
 
 	var ack Value
@@ -286,7 +285,7 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	preestablished := tcb.state.IsPreestablished()
 	acksOld := hasAck && !LessThan(tcb.snd.UNA, seg.ACK)
 	acksUnsentData := hasAck && !LessThanEq(seg.ACK, tcb.snd.NXT)
-	ctlOrDataSegment := established && flags.HasAny(FlagFIN|FlagRST|FlagPSH)
+	ctlOrDataSegment := established && (seg.DATALEN > 0 || flags.HasAny(FlagFIN|FlagRST))
 	// See section 3.4 of RFC 9293 for more on these checks.
 	switch {
 	case seg.WND > math.MaxUint16:
