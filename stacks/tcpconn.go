@@ -51,8 +51,8 @@ type TCPConn struct {
 }
 
 type TCPConnConfig struct {
-	TxBufSize int
-	RxBufSize int
+	TxBufSize uint16
+	RxBufSize uint16
 }
 
 func NewTCPConn(stack *PortStack, cfg TCPConnConfig) (*TCPConn, error) {
@@ -62,13 +62,17 @@ func NewTCPConn(stack *PortStack, cfg TCPConnConfig) (*TCPConn, error) {
 	if cfg.TxBufSize == 0 {
 		cfg.TxBufSize = defaultSocketSize
 	}
-	sock := &TCPConn{
+	sock := makeTCPConn(stack, cfg)
+	sock.trace("NewTCPConn:end")
+	return &sock, nil
+}
+
+func makeTCPConn(stack *PortStack, cfg TCPConnConfig) TCPConn {
+	return TCPConn{
 		stack: stack,
 		tx:    ring{buf: make([]byte, cfg.TxBufSize)},
 		rx:    ring{buf: make([]byte, cfg.RxBufSize)},
 	}
-	sock.trace("NewTCPConn:end")
-	return sock, nil
 }
 
 // PortStack returns the PortStack that this socket is attached to.
@@ -236,14 +240,33 @@ func (sock *TCPConn) deadlineExceeded(dead time.Time) bool {
 // OpenDialTCP opens an active TCP connection to the given remote address.
 func (sock *TCPConn) OpenDialTCP(localPort uint16, remoteMAC [6]byte, remote netip.AddrPort, iss seqs.Value) error {
 	sock.trace("TCPConn.OpenDialTCP:start")
-	return sock.open(seqs.StateSynSent, localPort, iss, remoteMAC, remote)
+	return sock.openstack(seqs.StateSynSent, localPort, iss, remoteMAC, remote)
 }
 
 // OpenListenTCP opens a passive TCP connection that listens on the given port.
 // OpenListenTCP only handles one connection at a time, so API may change in future to accomodate multiple connections.
 func (sock *TCPConn) OpenListenTCP(localPortNum uint16, iss seqs.Value) error {
 	sock.trace("TCPConn.OpenListenTCP:start")
-	return sock.open(seqs.StateListen, localPortNum, iss, [6]byte{}, netip.AddrPort{})
+	return sock.openstack(seqs.StateListen, localPortNum, iss, [6]byte{}, netip.AddrPort{})
+}
+
+func (sock *TCPConn) openstack(state seqs.State, localPortNum uint16, iss seqs.Value, remoteMAC [6]byte, remoteAddr netip.AddrPort) error {
+	err := sock.stack.OpenTCP(localPortNum, sock)
+	if err != nil {
+		return err
+	}
+	if state == seqs.StateSynSent {
+		err = sock.stack.FlagPendingTCP(localPortNum)
+		if err != nil {
+			sock.stack.CloseTCP(localPortNum)
+			return err
+		}
+	}
+	err = sock.open(state, localPortNum, iss, remoteMAC, remoteAddr)
+	if err != nil {
+		sock.stack.CloseTCP(localPortNum)
+	}
+	return err
 }
 
 func (sock *TCPConn) open(state seqs.State, localPortNum uint16, iss seqs.Value, remoteMAC [6]byte, remoteAddr netip.AddrPort) error {
@@ -257,16 +280,7 @@ func (sock *TCPConn) open(state seqs.State, localPortNum uint16, iss seqs.Value,
 	sock.localPort = localPortNum
 	sock.rx.Reset()
 	sock.tx.Reset()
-	err = sock.stack.OpenTCP(localPortNum, sock)
-	if err != nil {
-		return err
-	}
 	if state == seqs.StateSynSent {
-		err = sock.stack.FlagPendingTCP(localPortNum)
-		if err != nil {
-			sock.stack.CloseTCP(localPortNum)
-			return err
-		}
 		err = sock.scb.Send(sock.synsentSegment())
 	}
 	if err == nil {
@@ -422,9 +436,10 @@ func (sock *TCPConn) mustSendSyn() bool {
 func (sock *TCPConn) deleteState() {
 	sock.trace("TCPConn.deleteState", slog.Uint64("port", uint64(sock.localPort)))
 	*sock = TCPConn{
-		stack: sock.stack,
-		rx:    ring{buf: sock.rx.buf},
-		tx:    ring{buf: sock.tx.buf},
+		stack:  sock.stack,
+		rx:     ring{buf: sock.rx.buf},
+		tx:     ring{buf: sock.tx.buf},
+		connid: sock.connid + 1,
 	}
 }
 
