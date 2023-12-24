@@ -180,3 +180,5 @@ func (l *TCPListener) isPendingHandling() bool {
 }
 
 func (l *TCPListener) isOpen() bool { return l.open }
+
+func (l *TCPListener) PortStack() *PortStack { return l.stack }

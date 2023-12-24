@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"math"
 	"net/netip"
-	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -20,6 +19,7 @@ const (
 	testingLargeNetworkSize = 2 // Minimum=2
 	exchangesToEstablish    = 3
 	exchangesToClose        = 4
+	defaultTCPBufferSize    = 2048
 )
 
 func TestDHCP(t *testing.T) {
@@ -384,6 +384,15 @@ func TestPortStackTCPDecoding(t *testing.T) {
 	}
 }
 
+func TestListener(t *testing.T) {
+	client, listener := createTCPClientListenerPair(t)
+	egr := NewExchanger(client.PortStack(), listener.PortStack())
+	exdone, _ := egr.DoExchanges(t, exchangesToEstablish)
+	if exdone == 0 {
+		panic(exdone)
+	}
+}
+
 type Exchanger struct {
 	Stacks   []*stacks.PortStack
 	pipesN   []int
@@ -494,16 +503,39 @@ func isDroppedPacket(err error) bool {
 	return err != nil && (errors.Is(err, stacks.ErrDroppedPacket) || strings.HasPrefix(err.Error(), "drop"))
 }
 
+func createTCPClientListenerPair(t *testing.T) (client *stacks.TCPConn, listener *stacks.TCPListener) {
+	t.Helper()
+	const (
+		clientPort = 1025
+		serverPort = 80
+	)
+	Stacks := createPortStacks(t, 2)
+	clientStack := Stacks[0]
+	listenerStack := Stacks[1]
+
+	// Configure listener (server).
+	listenerAddr := netip.AddrPortFrom(listenerStack.Addr(), serverPort)
+	listener, err := stacks.NewTCPListener(listenerStack, stacks.TCPListenerConfig{
+		ConnTxBufSize:  defaultTCPBufferSize,
+		MaxConnections: 1,
+		ConnRxBufSize:  defaultTCPBufferSize,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = listener.StartListening(listenerAddr.Port())
+	if err != nil {
+		t.Fatal(err)
+	}
+	client = newTCPDialer(t, clientStack, clientPort, listenerAddr, listenerStack.HardwareAddr6())
+	return client, listener
+}
+
 func createTCPClientServerPair(t *testing.T) (client, server *stacks.TCPConn) {
 	t.Helper()
 	const (
 		clientPort = 1025
-		clientISS  = 100
-		clientWND  = 1000
-
 		serverPort = 80
-		serverISS  = 300
-		serverWND  = 1300
 	)
 	Stacks := createPortStacks(t, 2)
 	clientStack := Stacks[0]
@@ -513,36 +545,35 @@ func createTCPClientServerPair(t *testing.T) (client, server *stacks.TCPConn) {
 	serverIP := netip.AddrPortFrom(serverStack.Addr(), serverPort)
 
 	serverTCP, err := stacks.NewTCPConn(serverStack, stacks.TCPConnConfig{
-		TxBufSize: 2048,
-		RxBufSize: 2048,
+		TxBufSize: defaultTCPBufferSize,
+		RxBufSize: defaultTCPBufferSize,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = serverTCP.OpenListenTCP(serverIP.Port(), serverISS)
-	// serverTCP, err := stacks.ListenTCP(serverStack, serverIP.Port(), serverISS, serverWND)
+	err = serverTCP.OpenListenTCP(serverIP.Port(), 500)
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	// Configure client.
-	clientTCP, err := stacks.NewTCPConn(clientStack, stacks.TCPConnConfig{
-		TxBufSize: 2048,
-		RxBufSize: 2048,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = clientTCP.OpenDialTCP(clientPort, serverStack.HardwareAddr6(), serverIP, clientISS)
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = clientStack.FlagPendingTCP(clientPort)
-	if err != nil {
-		t.Fatal(err)
-	}
-
+	clientTCP := newTCPDialer(t, clientStack, clientPort, serverIP, serverStack.HardwareAddr6())
 	return clientTCP, serverTCP
+}
+
+func newTCPDialer(t *testing.T, localstack *stacks.PortStack, localPort uint16, remoteAddr netip.AddrPort, remoteMAC [6]byte) *stacks.TCPConn {
+	t.Helper()
+	// Configure client.
+	clientTCP, err := stacks.NewTCPConn(localstack, stacks.TCPConnConfig{
+		TxBufSize: defaultTCPBufferSize,
+		RxBufSize: defaultTCPBufferSize,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = clientTCP.OpenDialTCP(localPort, remoteMAC, remoteAddr, 300)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return clientTCP
 }
 
 func createPortStacks(t *testing.T, n int) (Stacks []*stacks.PortStack) {
@@ -584,28 +615,4 @@ func socketSendString(s *stacks.TCPConn, str string) {
 	if err != nil {
 		panic(err)
 	}
-}
-
-type multihandler func(dst []byte, rxPkt *stacks.TCPPacket) (int, error)
-
-func (mh multihandler) handleEth(dst []byte) (n int, err error) {
-	return mh(dst, nil)
-}
-
-func (mh multihandler) recvTCP(rxPkt *stacks.TCPPacket) error {
-	_, err := mh(nil, rxPkt)
-	return err
-}
-
-func (mh multihandler) isPendingHandling() bool {
-	n, _ := mh(nil, nil)
-	return n > 0
-}
-
-func setLog(ps *stacks.PortStack, group string, lvl slog.Level) {
-	output := os.Stdout
-	log := slog.New(slog.NewTextHandler(output, &slog.HandlerOptions{
-		Level: lvl,
-	}))
-	ps.SetLogger(log.WithGroup(group))
 }
