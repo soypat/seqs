@@ -331,7 +331,7 @@ func (sock *TCPConn) recv(pkt *TCPPacket) (err error) {
 	if prevState != sock.scb.State() {
 		sock.info("TCP:rx-statechange", slog.Uint64("port", uint64(sock.localPort)), slog.String("old", prevState.String()), slog.String("new", sock.scb.State().String()), slog.String("rxflags", segIncoming.Flags.String()))
 	}
-	if segIncoming.Flags.HasAny(seqs.FlagPSH) {
+	if segIncoming.DATALEN > 0 {
 		if len(payload) != int(segIncoming.DATALEN) {
 			return errors.New("segment data length does not match payload length")
 		}
@@ -358,6 +358,9 @@ func (sock *TCPConn) send(response []byte) (n int, err error) {
 		// Connection is still closed, we need to establish
 		return sock.handleInitSyn(response)
 	}
+	// Advertise our receive window as the amount of space available in our receive buffer.
+	sock.scb.SetRecvWindow(seqs.Size(sock.rx.Free()))
+
 	available := min(sock.tx.Buffered(), len(response)-sizeTCPNoOptions)
 	seg, ok := sock.scb.PendingSegment(available)
 	if !ok {
@@ -365,8 +368,6 @@ func (sock *TCPConn) send(response []byte) (n int, err error) {
 		return 0, nil
 	}
 
-	// Advertise our receive window as the amount of space available in our receive buffer.
-	sock.scb.SetRecvWindow(seqs.Size(sock.rx.Free()))
 	prevState := sock.scb.State()
 	err = sock.scb.Send(seg)
 	if err != nil {
@@ -419,7 +420,7 @@ func (sock *TCPConn) mustSendSyn() bool {
 }
 
 func (sock *TCPConn) deleteState() {
-	sock.trace("TCPConn.deleteState")
+	sock.trace("TCPConn.deleteState", slog.Uint64("port", uint64(sock.localPort)))
 	*sock = TCPConn{
 		stack: sock.stack,
 		rx:    ring{buf: sock.rx.buf},
