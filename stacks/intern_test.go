@@ -40,7 +40,7 @@ func TestRing(t *testing.T) {
 		n := rng.Intn(bufSize)
 		copy(buf[:], overdata[:n])
 		offset := rng.Intn(bufSize - 1)
-		setRingData(r, offset, buf[:n])
+		setRingData(t, r, offset, buf[:n])
 
 		// Case where data wraps around end of buffer.
 		n, err = r.Read(buf[:])
@@ -62,8 +62,8 @@ func TestRing(t *testing.T) {
 		offset := rng.Intn(bufSize - 1)
 
 		copy(buf[:], overdata[:nfirst])
-		setRingData(r, offset, buf[:nfirst])
-		println("test", r.end, r.off, offset, r)
+		setRingData(t, r, offset, buf[:nfirst])
+		// println("test", r.end, r.off, offset, r)
 		ngot, err := r.Write([]byte(overdata[nfirst : nfirst+nsecond]))
 		if err != nil {
 			t.Fatal(err)
@@ -118,7 +118,7 @@ func testRing1_loopback(t *testing.T, rng *rand.Rand, ringbuf, data, auxbuf []by
 	}
 	offset := rng.Intn(dsize - 1)
 
-	setRingData(&r, offset, data[:nfirst])
+	setRingData(t, &r, offset, data[:nfirst])
 	ngot, err := r.Write(data[nfirst : nfirst+nsecond])
 	if err != nil {
 		t.Error(err)
@@ -140,7 +140,7 @@ func testRing1_loopback(t *testing.T, rng *rand.Rand, ringbuf, data, auxbuf []by
 	if !bytes.Equal(auxbuf[:n], data[:n]) {
 		t.Errorf("got %q; want %q", auxbuf[:n], data[:n])
 	}
-	return t.Failed()
+	return !t.Failed()
 }
 
 func fragmentReadInto(r io.Reader, buf []byte) (n int, _ error) {
@@ -161,17 +161,37 @@ func fragmentReadInto(r io.Reader, buf []byte) (n int, _ error) {
 	}
 }
 
-func setRingData(r *ring, offset int, data []byte) {
+func setRingData(t *testing.T, r *ring, offset int, data []byte) {
+	t.Helper()
 	if len(data) > len(r.buf) {
 		panic("data too large")
 	}
 	n := copy(r.buf[offset:], data)
 	r.end = offset + n
-	if n+offset > len(r.buf) {
+	if len(data)+offset > len(r.buf) {
 		// End of buffer not enough to hold data, wrap around.
 		n = copy(r.buf, data[n:])
 		r.end = n
 	}
 	r.off = offset
 	r.onReadEnd()
+	// println("buf:", len(r.buf), "end:", r.end, "off:", r.off, offset, "data:", len(data))
+	free := r.Free()
+	wantFree := len(r.buf) - len(data)
+	if free != wantFree {
+		t.Fatalf("free got %d; want %d", free, wantFree)
+	}
+	buffered := r.Buffered()
+	wantBuffered := len(data)
+	if buffered != wantBuffered {
+		t.Fatalf("buffered got %d; want %d", buffered, wantBuffered)
+	}
+	end := r.end
+	off := r.off
+	sdata := r.string()
+	if sdata != string(data) {
+		t.Fatalf("data got %q; want %q", sdata, data)
+	}
+	r.end = end
+	r.off = off
 }

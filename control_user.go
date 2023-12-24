@@ -30,13 +30,13 @@ var (
 	errAckNotNext        = newRejectErr("ack != snd.nxt")
 )
 
-func newRejectErr(err string) *rejectErr { return &rejectErr{err: err} }
+func newRejectErr(err string) *rejectErr { return &rejectErr{err: "reject in/out seg: " + err} }
 
 type rejectErr struct {
 	err string
 }
 
-func (e *rejectErr) Error() string { return "reject in/out seg: " + e.err }
+func (e *rejectErr) Error() string { return e.err }
 
 // State returns the current state of the connection.
 func (tcb *ControlBlock) State() State { return tcb.state }
@@ -90,9 +90,11 @@ func (tcb *ControlBlock) Close() (err error) {
 func (tcb *ControlBlock) Send(seg Segment) error {
 	err := tcb.validateOutgoingSegment(seg)
 	if err != nil {
+		tcb.traceSnd("tcb:snd.reject")
+		tcb.traceSeg("tcb:snd.reject", seg)
+		tcb.logerr("tcb:snd.reject", slog.String("err", err.Error()))
 		return err
 	}
-	prevState := tcb.state
 
 	hasFIN := seg.Flags.HasAny(FlagFIN)
 	hasACK := seg.Flags.HasAny(FlagACK)
@@ -131,20 +133,8 @@ func (tcb *ControlBlock) Send(seg Segment) error {
 	tcb.rcv.WND = seg.WND
 
 	if tcb.logenabled(internal.LevelTrace) {
-		tcb.trace("send",
-			slog.String("state", tcb.state.String()),
-			slog.String("prevstate", prevState.String()),
-			slog.Uint64("newpend", uint64(newPending)),
-			slog.Uint64("snd.nxt", uint64(tcb.snd.NXT)),
-			slog.Uint64("snd.wnd", uint64(tcb.snd.UNA)),
-		)
-		tcb.trace("send:seg",
-			slog.Uint64("seg.flags", uint64(seg.Flags)),
-			slog.Uint64("seg.seq", uint64(seg.SEQ)),
-			slog.Uint64("seg.ack", uint64(seg.ACK)),
-			slog.Uint64("seg.wnd", uint64(seg.WND)),
-			slog.Uint64("seg.len", uint64(seglen)),
-		)
+		tcb.traceSnd("tcb:snd")
+		tcb.traceSeg("tcb:snd", seg)
 	}
 
 	return nil
@@ -157,9 +147,11 @@ func (tcb *ControlBlock) Send(seg Segment) error {
 func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 	err = tcb.validateIncomingSegment(seg)
 	if err != nil {
+		tcb.traceRcv("tcb:rcv.reject")
+		tcb.traceSeg("tcb:rcv.reject", seg)
+		tcb.logerr("tcb:rcv.reject", slog.String("err", err.Error()))
 		return err
 	}
-	prevState := tcb.state
 	prevNxt := tcb.snd.NXT
 	var pending Flags
 	switch tcb.state {
@@ -189,7 +181,7 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 
 	tcb.pending[0] = pending
 	if prevNxt != 0 && tcb.snd.NXT != prevNxt && tcb.logenabled(slog.LevelDebug) {
-		tcb.debug("rcv:snd.nxt-change", slog.String("state", tcb.state.String()),
+		tcb.debug("tcb:snd.nxt-change", slog.String("state", tcb.state.String()),
 			slog.Uint64("seg.ack", uint64(seg.ACK)), slog.Uint64("snd.nxt", uint64(tcb.snd.NXT)),
 			slog.Uint64("prevnxt", uint64(prevNxt)), slog.Uint64("seg.seq", uint64(seg.SEQ)))
 	}
@@ -203,20 +195,8 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 	tcb.rcv.NXT.UpdateForward(seglen)
 
 	if tcb.logenabled(internal.LevelTrace) {
-		tcb.trace("recv",
-			slog.String("state", tcb.state.String()),
-			slog.String("prevstate", prevState.String()),
-			slog.Uint64("snd.nxt", uint64(tcb.snd.NXT)),
-			slog.Uint64("rcv.nxt", uint64(tcb.rcv.NXT)),
-			slog.Uint64("rcv.wnd", uint64(tcb.rcv.WND)),
-		)
-		tcb.trace("recv:seg",
-			slog.Uint64("seg.flags", uint64(seg.Flags)),
-			slog.Uint64("seg.seq", uint64(seg.SEQ)),
-			slog.Uint64("seg.ack", uint64(seg.ACK)),
-			slog.Uint64("seg.wnd", uint64(seg.WND)),
-			slog.Uint64("seg.len", uint64(seglen)),
-		)
+		tcb.traceRcv("tcb:rcv")
+		tcb.traceSeg("recv:seg", seg)
 	}
 	return err
 }
@@ -242,7 +222,8 @@ func (tcb *ControlBlock) MaxInFlightData() Size {
 	return tcb.snd.WND - unacked - 1 // TODO: is this -1 supposed to be here?
 }
 
-// SetWindow sets the receive window size.
+// SetWindow sets the local receive window size. This represents the maximum amount of data
+// that is permitted to be in flight.
 func (tcb *ControlBlock) SetRecvWindow(wnd Size) {
 	tcb.rcv.WND = wnd
 }

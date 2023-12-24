@@ -358,6 +358,9 @@ func (sock *TCPConn) send(response []byte) (n int, err error) {
 		// Connection is still closed, we need to establish
 		return sock.handleInitSyn(response)
 	}
+	// Advertise our receive window as the amount of space available in our receive buffer.
+	sock.scb.SetRecvWindow(seqs.Size(sock.rx.Free()))
+
 	available := min(sock.tx.Buffered(), len(response)-sizeTCPNoOptions)
 	seg, ok := sock.scb.PendingSegment(available)
 	if !ok {
@@ -365,8 +368,6 @@ func (sock *TCPConn) send(response []byte) (n int, err error) {
 		return 0, nil
 	}
 
-	// Advertise our receive window as the amount of space available in our receive buffer.
-	sock.scb.SetRecvWindow(seqs.Size(sock.rx.Free()))
 	prevState := sock.scb.State()
 	err = sock.scb.Send(seg)
 	if err != nil {

@@ -417,6 +417,39 @@ func (tcb *ControlBlock) trace(msg string, attrs ...slog.Attr) {
 	internal.LogAttrs(tcb.log, internal.LevelTrace, msg, attrs...)
 }
 
+func (tcb *ControlBlock) logerr(msg string, attrs ...slog.Attr) {
+	internal.LogAttrs(tcb.log, slog.LevelError, msg, attrs...)
+}
+
+func (tcb *ControlBlock) traceSnd(msg string) {
+	tcb.trace(msg,
+		slog.String("state", tcb.state.String()),
+		slog.Uint64("pend", uint64(tcb.pending[0])),
+		slog.Uint64("snd.nxt", uint64(tcb.snd.NXT)),
+		slog.Uint64("snd.una", uint64(tcb.snd.UNA)),
+		slog.Uint64("snd.wnd", uint64(tcb.snd.WND)),
+	)
+}
+
+func (tcb *ControlBlock) traceRcv(msg string) {
+	tcb.trace(msg,
+		slog.String("state", tcb.state.String()),
+		slog.Uint64("rcv.nxt", uint64(tcb.rcv.NXT)),
+		slog.Uint64("rcv.wnd", uint64(tcb.rcv.WND)),
+		slog.Bool("challenge", tcb.challengeAck),
+	)
+}
+
+func (tcb *ControlBlock) traceSeg(msg string, seg Segment) {
+	tcb.trace(msg,
+		slog.Uint64("seg.seq", uint64(seg.SEQ)),
+		slog.Uint64("seg.ack", uint64(seg.ACK)),
+		slog.Uint64("seg.wnd", uint64(seg.WND)),
+		slog.Uint64("seg.flags", uint64(seg.Flags)),
+		slog.Uint64("seg.data", uint64(seg.DATALEN)),
+	)
+}
+
 // Flags is a TCP flags masked implementation i.e: SYN, FIN, ACK.
 type Flags uint16
 

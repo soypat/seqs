@@ -98,6 +98,12 @@ func (r *ring) midFree() int {
 }
 
 func (r *ring) onReadEnd() {
+	if r.end == len(r.buf) {
+		r.end = 0 // Wrap around.
+	}
+	if r.off == len(r.buf) {
+		r.off = 0 // Wrap around.
+	}
 	if r.off == r.end {
 		r.Reset() // We read everything, reset.
 	}
