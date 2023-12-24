@@ -51,40 +51,6 @@ func TestRing(t *testing.T) {
 			t.Error("got", buf[:n], "want", overdata[:n])
 		}
 	}
-
-	// Set random data and write some more and read it back.
-	for i := 0; i < 32; i++ {
-		nfirst := rng.Intn(bufSize) / 2
-		nsecond := rng.Intn(bufSize) / 2
-		if nfirst+nsecond > bufSize {
-			nfirst = bufSize - nsecond
-		}
-		offset := rng.Intn(bufSize - 1)
-
-		copy(buf[:], overdata[:nfirst])
-		setRingData(r, offset, buf[:nfirst])
-		println("test", r.end, r.off, offset, r)
-		ngot, err := r.Write([]byte(overdata[nfirst : nfirst+nsecond]))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if ngot != nsecond {
-			t.Errorf("%d did not write data correctly: got %d; want %d", i, ngot, nsecond)
-		}
-		buf = [bufSize]byte{}
-		// Case where data wraps around end of buffer.
-		n, err = r.Read(buf[:])
-		if err != nil {
-			break
-		}
-
-		if n != nfirst+nsecond {
-			t.Errorf("got %d; want %d (%d+%d)", n, nfirst+nsecond, nfirst, nsecond)
-		}
-		if string(buf[:n]) != overdata[:n] {
-			t.Errorf("got %q; want %q", buf[:n], overdata[:n])
-		}
-	}
 	_ = r.string()
 }
 
@@ -109,6 +75,7 @@ func testRing1_loopback(t *testing.T, rng *rand.Rand, ringbuf, data, auxbuf []by
 	}
 	dsize := len(data)
 	var r ring
+	_ = r.string() // Enable presence during debugging.
 	r.buf = ringbuf
 
 	nfirst := rng.Intn(dsize) / 2
@@ -119,6 +86,7 @@ func testRing1_loopback(t *testing.T, rng *rand.Rand, ringbuf, data, auxbuf []by
 	offset := rng.Intn(dsize - 1)
 
 	setRingData(&r, offset, data[:nfirst])
+	println(offset, r.off, r.end, nfirst)
 	ngot, err := r.Write(data[nfirst : nfirst+nsecond])
 	if err != nil {
 		t.Error(err)
