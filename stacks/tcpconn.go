@@ -446,12 +446,11 @@ func (sock *TCPConn) stateCheck() (portStackErr error) {
 		sock.debug("TCP:delayed-close", slog.Uint64("port", uint64(sock.localPort)))
 	}
 	if sock.scb.HasPending() {
+		sock.trace("TCPConn.stateCheck:hasPending")
 		portStackErr = ErrFlagPending // Flag to PortStack that we have pending data to send.
 	} else if state.IsClosed() {
+		sock.trace("TCPConn.stateCheck:closed")
 		portStackErr = io.EOF // On EOF portStack will abort the connection.
-	}
-	if portStackErr != nil {
-		sock.info("TCPConn.stateCheck:err", slog.String("ps.err", portStackErr.Error()))
 	}
 	return portStackErr
 }
