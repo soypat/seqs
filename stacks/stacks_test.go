@@ -440,12 +440,16 @@ func TestListener(t *testing.T) {
 
 	assertOneTCPTx(t, "client close; sends FIN|ACK", finack, egr)
 	wantStates(seqs.StateFinWait1, seqs.StateEstablished)
-
 	egr.HandleRx(t)
 	wantStates(seqs.StateFinWait1, seqs.StateCloseWait)
 
-	assertOneTCPTx(t, "server responds FIN|ACK", finack, egr)
+	assertOneTCPTx(t, "server ACK of FIN|ACK", seqs.FlagACK, egr)
+	wantStates(seqs.StateFinWait1, seqs.StateCloseWait)
+	egr.HandleRx(t)
 	wantStates(seqs.StateFinWait2, seqs.StateCloseWait)
+
+	assertOneTCPTx(t, "server ACK of FIN|ACK", seqs.FlagACK, egr)
+	wantStates(seqs.StateFinWait1, seqs.StateCloseWait)
 
 	if !client.State().IsClosed() || !server.State().IsClosed() {
 		t.Fatalf("not closed: client=%s server=%s", client.State(), server.State())
