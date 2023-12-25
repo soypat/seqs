@@ -3,6 +3,7 @@ package seqs
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"testing"
 )
 
@@ -23,6 +24,8 @@ func (tcb *ControlBlock) HelperExchange(t *testing.T, exchange []Exchange) {
 	for i, ex := range exchange {
 		if ex.Outgoing != nil && ex.Incoming != nil {
 			t.Fatalf(pfx+"[%d] cannot send and receive in the same exchange, please split into two exchanges.", i)
+		} else if ex.Outgoing == nil && ex.Incoming == nil {
+			t.Fatalf(pfx+"[%d] must send or receive a segment.", i)
 		}
 		if ex.Outgoing != nil {
 			err := tcb.Send(*ex.Outgoing)
@@ -41,6 +44,7 @@ func (tcb *ControlBlock) HelperExchange(t *testing.T, exchange []Exchange) {
 				}
 			}
 		}
+		t.Log(ex.String(tcb.state, tcb.state))
 		state := tcb.State()
 		if state != ex.WantState {
 			t.Errorf(pfx+"[%d] unexpected state:\n got=%s\nwant=%s", i, state, ex.WantState)
@@ -160,4 +164,56 @@ const (
 
 func IsDroppedErr(err error) bool {
 	return err != nil && errors.Is(err, errDropSegment)
+}
+
+func (ex *Exchange) String(A, B State) string {
+	buf := make([]byte, 0, 64)
+	buf = ex.appendVisualization(buf, A, B)
+	return string(buf)
+}
+
+// appendVisualization appends a RFC9293 styled visualization of exchange to buf.
+// i.e:
+//
+//	SynSent <-- <SEQ=300><ACK=91>[SYN,ACK]  <-- SynRcvd
+func (ex *Exchange) appendVisualization(buf []byte, A, B State) []byte {
+	const emptySpaces = "            "
+	buf = buf[len(buf):] // clip off any previous data so we work with our data only.
+	appendVal := func(buf []byte, name string, i Value) []byte {
+		buf = append(buf, '<')
+		buf = append(buf, name...)
+		buf = append(buf, '=')
+		buf = strconv.AppendInt(buf, int64(i), 10)
+		buf = append(buf, '>')
+		return buf
+	}
+	var seg *Segment
+	sentByA := ex.Outgoing != nil
+	if ex.Outgoing != nil {
+		seg = ex.Outgoing
+	} else if ex.Incoming != nil {
+		seg = ex.Incoming
+	} else {
+		return buf
+	}
+	dirSep := []byte(" <-- ")
+	if !sentByA {
+		dirSep = []byte(" --> ")
+	}
+	astr := A.String()
+	buf = append(buf, astr...)
+	buf = append(buf, emptySpaces[:11-len(astr)]...) // Fill up to 11 characters
+	buf = append(buf, dirSep...)
+	buf = appendVal(buf, "SEQ", seg.SEQ)
+	buf = appendVal(buf, "ACK", seg.ACK)
+	if seg.DATALEN > 0 {
+		buf = appendVal(buf, "DATA", Value(seg.DATALEN))
+	}
+	buf = append(buf, seg.Flags.String()...)
+	if len(buf) < 44 {
+		buf = append(buf, emptySpaces[:44-len(buf)]...) // Fill up to 44 characters
+	}
+	buf = append(buf, dirSep...)
+	buf = append(buf, B.String()...)
+	return buf
 }

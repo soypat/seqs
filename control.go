@@ -114,7 +114,7 @@ func (seg *Segment) Last() Value {
 func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 	pending := tcb.pending[0]
 	established := tcb.state == StateEstablished
-	if !established {
+	if !established && tcb.state != StateCloseWait {
 		payloadLen = 0 // Can't send data if not established.
 	}
 	if pending == 0 && payloadLen == 0 {
@@ -243,11 +243,12 @@ func (tcb *ControlBlock) rcvFinWait1(seg Segment) (pending Flags, err error) {
 		return 0, errFinwaitExpectedACK
 	} else if flags.HasAny(FlagFIN) {
 		tcb.state = StateClosing // Simultaneous close. See figure 13 of RFC 9293.
+		pending = FlagACK
 	} else {
 		tcb.state = StateFinWait2
+		pending = FlagACK
 	}
-
-	return FlagACK, nil
+	return pending, nil
 }
 
 func (tcb *ControlBlock) rcvFinWait2(seg Segment) (pending Flags, err error) {
@@ -569,4 +570,9 @@ func (s State) IsClosing() bool {
 // all state related to the remote connection. It returns true if Closed or in TimeWait.
 func (s State) IsClosed() bool {
 	return s == StateClosed || s == StateTimeWait
+}
+
+// IsSynchronized returns true
+func (s State) IsSynchronized() bool {
+	return s >= StateEstablished
 }

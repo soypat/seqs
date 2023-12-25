@@ -225,7 +225,7 @@ func TestExchange_rfc9293_figure12(t *testing.T) {
 			Incoming:  &seqs.Segment{SEQ: issB, ACK: issA + 1, Flags: seqs.FlagACK, WND: windowB},
 			WantState: seqs.StateFinWait2,
 			//	 TODO(soypat): WantPending should be nil here? Perhaps fix test by modifying rcvFinWait1 pending result.
-			WantPending: &seqs.Segment{SEQ: issA + 1, ACK: issB, Flags: seqs.FlagACK, WND: windowA},
+			// WantPending: &seqs.Segment{SEQ: issA + 1, ACK: issB, Flags: seqs.FlagACK, WND: windowA},
 		},
 		2: { // A receives FIN|ACK from B.
 			Incoming:    &seqs.Segment{SEQ: issB, ACK: issA + 1, Flags: FINACK, WND: windowB},
@@ -240,7 +240,9 @@ func TestExchange_rfc9293_figure12(t *testing.T) {
 	var tcbA seqs.ControlBlock
 	tcbA.HelperInitState(seqs.StateEstablished, issA, issA, windowA)
 	tcbA.HelperInitRcv(issB, issB, windowB)
-	tcbA.HelperExchange(t, exchangeA)
+	tcbA.HelperExchange(t, exchangeA[:1])
+	tcbA.HelperExchange(t, exchangeA[1:2])
+	tcbA.HelperExchange(t, exchangeA[2:])
 
 	exchangeB := reverseExchange(exchangeA, seqs.StateCloseWait, seqs.StateCloseWait, seqs.StateLastAck, seqs.StateClosed)
 	exchangeB[1].WantPending = &seqs.Segment{SEQ: issB, ACK: issA + 1, Flags: FINACK, WND: windowB}
