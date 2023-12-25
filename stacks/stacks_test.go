@@ -22,6 +22,10 @@ const (
 	defaultTCPBufferSize    = 2048
 
 	defaultTestDuplexMessages = 128
+
+	finack = seqs.FlagFIN | seqs.FlagACK
+	pshack = seqs.FlagPSH | seqs.FlagACK
+	synack = seqs.FlagSYN | seqs.FlagACK
 )
 
 func TestDHCP(t *testing.T) {
@@ -136,13 +140,13 @@ func TestTCPEstablish(t *testing.T) {
 
 	// Test initial states.
 	wantStates(seqs.StateSynSent, seqs.StateListen)
-	assertOneTCPTx(t, "client initial SYN", egr)
+	assertOneTCPTx(t, "client initial SYN", seqs.FlagSYN, egr)
 	wantStates(seqs.StateSynSent, seqs.StateListen) // Not yet received by server.
 	checkNoMoreDataSent(t, "after client SYN", egr)
 
 	egr.HandleRx(t)
 	wantStates(seqs.StateSynSent, seqs.StateSynRcvd)
-	assertOneTCPTx(t, "server SYN|ACK", egr)
+	assertOneTCPTx(t, "server SYN|ACK", synack, egr)
 	wantStates(seqs.StateSynSent, seqs.StateSynRcvd)
 	checkNoMoreDataSent(t, "after server SYN|ACK", egr)
 
@@ -151,7 +155,7 @@ func TestTCPEstablish(t *testing.T) {
 	wantStates(seqs.StateEstablished, seqs.StateSynRcvd)
 
 	// Client responds with ACK.
-	assertOneTCPTx(t, "client ACK to server's SYN|ACK", egr)
+	assertOneTCPTx(t, "client ACK to server's SYN|ACK", seqs.FlagACK, egr)
 	wantStates(seqs.StateEstablished, seqs.StateSynRcvd)
 	checkNoMoreDataSent(t, "after client's ACK to SYN|ACK", egr)
 
@@ -434,12 +438,14 @@ func TestListener(t *testing.T) {
 	client.Close()
 	wantStates(seqs.StateFinWait1, seqs.StateEstablished)
 
-	assertOneTCPTx(t, "client close", egr)
+	assertOneTCPTx(t, "client close; sends FIN|ACK", finack, egr)
+	wantStates(seqs.StateFinWait1, seqs.StateEstablished)
 
 	egr.HandleRx(t)
-	wantStates(seqs.StateFinWait2, seqs.StateCloseWait)
+	wantStates(seqs.StateFinWait1, seqs.StateCloseWait)
 
-	assertOneTCPTx(t, "client close", egr)
+	assertOneTCPTx(t, "server responds FIN|ACK", finack, egr)
+	wantStates(seqs.StateFinWait2, seqs.StateCloseWait)
 
 	if !client.State().IsClosed() || !server.State().IsClosed() {
 		t.Fatalf("not closed: client=%s server=%s", client.State(), server.State())
@@ -708,7 +714,7 @@ func checkNoMoreDataSent(t *testing.T, msg string, egr *Exchanger) {
 		}
 	}
 }
-func assertOneTCPTx(t *testing.T, msg string, egr *Exchanger) {
+func assertOneTCPTx(t *testing.T, msg string, wantFlags seqs.Flags, egr *Exchanger) {
 	t.Helper()
 	nseg := len(egr.segments)
 	txs, n := egr.HandleTx(t)
@@ -721,6 +727,8 @@ func assertOneTCPTx(t *testing.T, msg string, egr *Exchanger) {
 		t.Fatalf("more than one tx: %d", txs)
 	} else if totsegs != 1 {
 		t.Fatal("expected one TCP segment")
+	} else if egr.LastSegment().Flags != wantFlags {
+		t.Fatalf("expected flags=%v got=%v", wantFlags, egr.LastSegment().Flags)
 	}
 }
 
