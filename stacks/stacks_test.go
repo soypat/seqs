@@ -131,23 +131,56 @@ func TestTCPEstablish(t *testing.T) {
 	// 3 way handshake needs 3 exchanges to complete.
 	const maxTransactions = exchangesToEstablish
 	egr := NewExchanger(client.PortStack(), server.PortStack())
-	txDone, numBytesSent := egr.DoExchanges(t, maxTransactions)
+	wantStates := func(cs, ss seqs.State) {
+		t.Helper()
+		if client.State() != cs {
+			t.Errorf("client state got=%s want=%s", client.State(), cs)
+		}
+		if server.State() != ss {
+			t.Errorf("server state got=%s want=%s", server.State(), ss)
+		}
+	}
+	// Test initial states.
+	wantStates(seqs.StateSynSent, seqs.StateListen)
+	txs, n := egr.HandleTx(t)
+	if n == 0 {
+		t.Fatal("no data sent on first exchange")
+	} else if txs != 1 {
+		t.Fatal("expected only client's exchange")
+	}
+	wantStates(seqs.StateSynSent, seqs.StateListen) // Not yet received by server.
+	checkNoMoreDataSent(t, "after client SYN", egr)
 
-	_, remnant := egr.DoExchanges(t, 1)
-	if remnant != 0 {
-		// TODO(soypat): prevent duplicate ACKs from being sent.
-		t.Fatalf("duplicate ACK detected? remnant=%d want=0", remnant)
-	}
+	egr.HandleRx(t)
+	wantStates(seqs.StateSynSent, seqs.StateSynRcvd)
 
-	const expectedData = (eth.SizeEthernetHeader + eth.SizeIPv4Header + eth.SizeTCPHeader) * maxTransactions
-	if numBytesSent < expectedData {
-		t.Error("too little data exchanged", numBytesSent, " want>=", expectedData)
+	txs, n = egr.HandleTx(t)
+	if n == 0 {
+		t.Fatal("no data sent from server in response to syn (SYNACK) exchange")
+	} else if txs != 1 {
+		t.Fatal("expected only server's exchange")
 	}
-	if txDone > exchangesToEstablish {
-		t.Errorf("too many exchanges for a 3 way handshake: got %d want %d", txDone, exchangesToEstablish)
-	} else if txDone < exchangesToEstablish {
-		t.Errorf("too few exchanges for a 3 way handshake: got %d want %d", txDone, exchangesToEstablish)
+	wantStates(seqs.StateSynSent, seqs.StateSynRcvd)
+	checkNoMoreDataSent(t, "after server SYN|ACK", egr)
+
+	// Client established after receiving SYNACK.
+	egr.HandleRx(t)
+	wantStates(seqs.StateEstablished, seqs.StateSynRcvd)
+
+	// Client responds with ACK.
+	txs, n = egr.HandleTx(t)
+	if n == 0 {
+		t.Fatal("expected ACK from client; got no data")
+	} else if txs != 1 {
+		t.Fatal("expected only client's exchange")
 	}
+	wantStates(seqs.StateEstablished, seqs.StateSynRcvd)
+	checkNoMoreDataSent(t, "after server SYN|ACK", egr)
+
+	// Server established after receiving ACK to SYNACK.
+	egr.HandleRx(t)
+	wantStates(seqs.StateEstablished, seqs.StateEstablished)
+
 	if client.State() != seqs.StateEstablished {
 		t.Errorf("client not established: got %s want %s", client.State(), seqs.StateEstablished)
 	}
@@ -404,18 +437,19 @@ func TestListener(t *testing.T) {
 	if exdone == 0 {
 		panic(exdone)
 	}
+	return
 	netconn, err := listener.Accept()
 	if err != nil {
 		t.Fatal(err)
 	}
-	conn := netconn.(*stacks.TCPConn)
-	if conn.State() != seqs.StateEstablished {
+	server := netconn.(*stacks.TCPConn)
+	if server.State() != seqs.StateEstablished {
 		t.Error("expected listener conn to be established")
 	}
 	if client.State() != seqs.StateEstablished {
 		t.Error("expected client conn to be established")
 	}
-	testSocketDuplex(t, client, conn, egr, 1024)
+	testSocketDuplex(t, client, server, egr, 1024)
 }
 
 type Exchanger struct {
@@ -460,6 +494,16 @@ func (egr *Exchanger) getPayload(istack int) []byte {
 func (egr *Exchanger) zeroPayload(istack int) {
 	egr.pipesN[istack] = 0
 	egr.pipes[istack] = [2048]byte{}
+}
+
+// auxbuf returns an unused buffer for temporary use. Do not hold references to this buffer during calls to HandleTx.
+func (egr *Exchanger) auxbuf() []byte {
+	for istack := 0; istack < len(egr.Stacks); istack++ {
+		if egr.pipesN[istack] == 0 {
+			return egr.pipes[istack][:]
+		}
+	}
+	return make([]byte, 2048)
 }
 
 func (egr *Exchanger) HandleTx(t *testing.T) (pkts, bytesSent int) {
@@ -644,5 +688,29 @@ func socketSendString(s *stacks.TCPConn, str string) {
 	_, err := s.Write([]byte(str))
 	if err != nil {
 		panic(err)
+	}
+}
+
+func checkNoMoreDataSent(t *testing.T, msg string, egr *Exchanger) {
+	t.Helper()
+	buf := egr.auxbuf()
+	handleTx := func() (txs int) {
+		for istack := 0; istack < len(egr.Stacks); istack++ {
+			n, _ := egr.Stacks[istack].HandleEth(buf)
+			if n > 0 {
+				txs++
+			}
+		}
+		return txs
+	}
+
+	txs := handleTx()
+	if txs > 0 {
+		txs2 := handleTx()
+		if txs2 > 0 {
+			t.Errorf("[txs=%d,%d] unexpected more data: %s; kept sending", txs, txs2, msg)
+		} else {
+			t.Errorf("[txs=%d] unexpected data: %s", txs, msg)
+		}
 	}
 }

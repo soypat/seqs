@@ -270,7 +270,7 @@ func (sock *TCPConn) openstack(state seqs.State, localPortNum uint16, iss seqs.V
 }
 
 func (sock *TCPConn) open(state seqs.State, localPortNum uint16, iss seqs.Value, remoteMAC [6]byte, remoteAddr netip.AddrPort) error {
-	err := sock.scb.Open(iss, seqs.Size(len(sock.rx.buf)), seqs.StateSynSent)
+	err := sock.scb.Open(iss, seqs.Size(len(sock.rx.buf)), state)
 	if err != nil {
 		return err
 	}
@@ -364,6 +364,7 @@ func (sock *TCPConn) recv(pkt *TCPPacket) (err error) {
 }
 
 func (sock *TCPConn) send(response []byte) (n int, err error) {
+	defer sock.onsend(&n)
 	sock.trace("TCPConn.send:start")
 	if !sock.remote.IsValid() {
 		return 0, nil // No remote address yet, yield.
@@ -431,6 +432,12 @@ func (sock *TCPConn) awaitingSyn() bool {
 
 func (sock *TCPConn) mustSendSyn() bool {
 	return sock.awaitingSyn() && time.Since(sock.lastTx) > 3*time.Second
+}
+
+func (sock *TCPConn) onsend(n *int) {
+	if *n > 0 {
+		sock.lastTx = sock.stack.now()
+	}
 }
 
 func (sock *TCPConn) deleteState() {

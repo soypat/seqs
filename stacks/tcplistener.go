@@ -92,7 +92,7 @@ func (l *TCPListener) Close() error {
 // Addr returns the listener's network address. Implements [net.Listener].
 func (l *TCPListener) Addr() net.Addr {
 	l.laddr = net.TCPAddr{
-		IP:   l.stack.Addr().AsSlice(),
+		IP:   l.stack.ip[:],
 		Port: int(l.port),
 	}
 	return &l.laddr
@@ -123,19 +123,16 @@ func (l *TCPListener) recv(pkt *TCPPacket) error {
 		return io.EOF
 	}
 	var freeconn *TCPConn
-	isSYN := pkt.TCP.Flags().HasAny(seqs.FlagSYN)
-	for i := range l.conns {
-		conn := &l.conns[i]
-		if !l.used[i] {
-			if freeconn == nil {
-				freeconn = conn // Get first available connection in list.
-				if isSYN {
-					break // If SYN, use this TCPConn for new connection.
-				}
-			}
-			continue
+	isSYN := pkt.TCP.Flags() == seqs.FlagSYN
+	var connidx int
+	for connidx = range l.conns {
+		conn := &l.conns[connidx]
+		if pkt.TCP.Ack == 0 && isSYN && !l.used[connidx] && conn.State() == seqs.StateListen {
+			// Get first available connection in list for first SYN packet, initiating connection.
+			freeconn = conn
+			break
 		}
-		if pkt.TCP.SourcePort != conn.LocalPort() ||
+		if pkt.TCP.SourcePort != conn.remote.Port() ||
 			pkt.IP.Source != conn.remote.Addr().As4() {
 			continue // Not for this connection.
 		}
@@ -151,6 +148,7 @@ func (l *TCPListener) recv(pkt *TCPPacket) error {
 	}
 	err := freeconn.recv(pkt)
 	if err == io.EOF {
+		l.freeConnForReuse(connidx)
 		freeconn.abort()
 		return nil
 	}
