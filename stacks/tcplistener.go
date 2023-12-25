@@ -3,11 +3,13 @@ package stacks
 import (
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/netip"
 	"runtime"
 
 	"github.com/soypat/seqs"
+	"github.com/soypat/seqs/internal"
 )
 
 var _ net.Listener = (*TCPListener)(nil)
@@ -109,10 +111,11 @@ func (l *TCPListener) send(dst []byte) (n int, err error) {
 		}
 		n, err = conn.send(dst)
 		if err == io.EOF {
-			conn.abort()
+			l.freeConnForReuse(i)
+			err = nil
 		}
 		if n > 0 {
-			return n, ErrFlagPending
+			return n, err
 		}
 	}
 	return 0, nil
@@ -138,8 +141,8 @@ func (l *TCPListener) recv(pkt *TCPPacket) error {
 		}
 		err := conn.recv(pkt)
 		if err == io.EOF {
-			conn.abort()
-			return nil
+			l.freeConnForReuse(connidx)
+			err = nil
 		}
 		return err
 	}
@@ -150,12 +153,13 @@ func (l *TCPListener) recv(pkt *TCPPacket) error {
 	if err == io.EOF {
 		l.freeConnForReuse(connidx)
 		freeconn.abort()
-		return nil
+		err = nil
 	}
 	return err
 }
 
 func (l *TCPListener) abort() {
+	l.info("lst:abort", slog.Uint64("lport", uint64(l.port)))
 	l.open = false
 	l.connid++
 	for i := range l.conns {
@@ -168,6 +172,7 @@ func (l *TCPListener) abort() {
 
 func (l *TCPListener) freeConnForReuse(idx int) {
 	conn := &l.conns[idx]
+	l.info("lst:freeConnForReuse", slog.Uint64("lport", uint64(conn.localPort)), slog.Uint64("rport", uint64(conn.remote.Port())))
 	conn.abort()
 	conn.open(seqs.StateListen, l.port, l.iss, [6]byte{}, netip.AddrPort{})
 	l.iss += 3237
@@ -181,3 +186,11 @@ func (l *TCPListener) isPendingHandling() bool {
 func (l *TCPListener) isOpen() bool { return l.open }
 
 func (l *TCPListener) PortStack() *PortStack { return l.stack }
+
+func (l *TCPListener) trace(msg string, attrs ...slog.Attr) {
+	internal.LogAttrs(l.stack.logger, internal.LevelTrace, msg, attrs...)
+}
+
+func (l *TCPListener) info(msg string, attrs ...slog.Attr) {
+	internal.LogAttrs(l.stack.logger, slog.LevelInfo, msg, attrs...)
+}

@@ -364,8 +364,7 @@ func (sock *TCPConn) recv(pkt *TCPPacket) (err error) {
 }
 
 func (sock *TCPConn) send(response []byte) (n int, err error) {
-	defer sock.onsend(&n)
-	sock.trace("TCPConn.send:start")
+	defer sock.trace("TCPConn.send:start")
 	if !sock.remote.IsValid() {
 		return 0, nil // No remote address yet, yield.
 	}
@@ -405,6 +404,7 @@ func (sock *TCPConn) send(response []byte) (n int, err error) {
 		sock.info("TCP:tx-statechange", slog.Uint64("port", uint64(sock.localPort)), slog.String("old", prevState.String()), slog.String("new", sock.scb.State().String()), slog.String("txflags", seg.Flags.String()))
 	}
 	err = sock.stateCheck()
+	sock.onsend(sizeTCPNoOptions + n)
 	return sizeTCPNoOptions + n, err
 }
 
@@ -423,6 +423,7 @@ func (sock *TCPConn) handleInitSyn(response []byte) (n int, err error) {
 	sock.setSrcDest(&sock.pkt)
 	sock.pkt.CalculateHeaders(sock.synsentSegment(), nil)
 	sock.pkt.PutHeaders(response)
+	sock.onsend(sizeTCPNoOptions)
 	return sizeTCPNoOptions, nil
 }
 
@@ -434,8 +435,8 @@ func (sock *TCPConn) mustSendSyn() bool {
 	return sock.awaitingSyn() && time.Since(sock.lastTx) > 3*time.Second
 }
 
-func (sock *TCPConn) onsend(n *int) {
-	if *n > 0 {
+func (sock *TCPConn) onsend(n int) {
+	if n > 0 {
 		sock.lastTx = sock.stack.now()
 	}
 }
