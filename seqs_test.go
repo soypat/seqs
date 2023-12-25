@@ -253,9 +253,10 @@ func TestExchange_rfc9293_figure12(t *testing.T) {
 	var tcbA seqs.ControlBlock
 	tcbA.HelperInitState(seqs.StateEstablished, issA, issA, windowA)
 	tcbA.HelperInitRcv(issB, issB, windowB)
-	tcbA.HelperExchange(t, exchangeA[:1])
-	tcbA.HelperExchange(t, exchangeA[1:2])
-	tcbA.HelperExchange(t, exchangeA[2:])
+	tcbA.HelperExchange(t, exchangeA)
+	// tcbA.HelperExchange(t, exchangeA[:1])
+	// tcbA.HelperExchange(t, exchangeA[1:2])
+	// tcbA.HelperExchange(t, exchangeA[2:])
 
 	return
 	exchangeB := reverseExchange(exchangeA)

@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"math/bits"
 	"net"
 
 	"github.com/soypat/seqs/internal"
@@ -490,29 +491,33 @@ func (flags Flags) String() string {
 	if flags == 0 {
 		return "[]"
 	}
+	buf := make([]byte, 0, 2+3*bits.OnesCount16(uint16(flags)))
+	buf = append(buf, '[')
+	buf = flags.AppendFormat(buf)
+	buf = append(buf, ']')
+	return string(buf)
+}
+
+// AppendFormat appends a human readable flag string to b returning the extended buffer.
+func (flags Flags) AppendFormat(b []byte) []byte {
+	if flags == 0 {
+		return b
+	}
 	// String Flag const
 	const flaglen = 3
-	var flagbuff [2 + (flaglen+1)*9]byte
 	const strflags = "FINSYNRSTPSHACKURGECECWRNS "
-	n := 0
-	for i := 0; i*3 < len(strflags)-flaglen; i++ {
-		if flags&(1<<i) != 0 {
-			if n == 0 {
-				flagbuff[0] = '['
-				n++
-			} else {
-				flagbuff[n] = ','
-				n++
-			}
-			copy(flagbuff[n:n+3], []byte(strflags[i*flaglen:i*flaglen+flaglen]))
-			n += 3
+	var addcommas bool
+	for flags != 0 { // written by Github Copilot- looks OK.
+		i := bits.TrailingZeros16(uint16(flags))
+		if addcommas {
+			b = append(b, ',')
+		} else {
+			addcommas = true
 		}
+		b = append(b, strflags[i*flaglen:i*flaglen+flaglen]...)
+		flags &= ^(1 << i)
 	}
-	if n > 0 {
-		flagbuff[n] = ']'
-		n++
-	}
-	return string(flagbuff[:n])
+	return b
 }
 
 // State enumerates states a TCP connection progresses through during its lifetime.
