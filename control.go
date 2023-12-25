@@ -64,6 +64,7 @@ type ControlBlock struct {
 	pending      [2]Flags
 	state        State
 	challengeAck bool
+	islistener   bool
 	log          *slog.Logger
 }
 

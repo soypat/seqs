@@ -12,15 +12,17 @@ import (
 
 // Exchange represents a single exchange of segments.
 type Exchange struct {
-	Outgoing    *Segment
-	Incoming    *Segment
-	WantPending *Segment // Expected pending segment. If nil not checked.
-	WantState   State    // Expected end state.
+	Outgoing      *Segment
+	Incoming      *Segment
+	WantPending   *Segment // Expected pending segment. If nil not checked.
+	WantState     State    // Expected end state.
+	WantPeerState State    // Expected end state of peer. Not necessary when calling HelperExchange but can aid with logging information.
 }
 
 func (tcb *ControlBlock) HelperExchange(t *testing.T, exchange []Exchange) {
 	t.Helper()
 	const pfx = "exchange"
+	t.Log(tcb.state, "Exchange start")
 	for i, ex := range exchange {
 		if ex.Outgoing != nil && ex.Incoming != nil {
 			t.Fatalf(pfx+"[%d] cannot send and receive in the same exchange, please split into two exchanges.", i)
@@ -44,7 +46,9 @@ func (tcb *ControlBlock) HelperExchange(t *testing.T, exchange []Exchange) {
 				}
 			}
 		}
-		t.Log(ex.String(tcb.state, tcb.state))
+
+		t.Log(ex.RFC9293String(tcb.state, ex.WantPeerState))
+
 		state := tcb.State()
 		if state != ex.WantState {
 			t.Errorf(pfx+"[%d] unexpected state:\n got=%s\nwant=%s", i, state, ex.WantState)
@@ -166,7 +170,7 @@ func IsDroppedErr(err error) bool {
 	return err != nil && errors.Is(err, errDropSegment)
 }
 
-func (ex *Exchange) String(A, B State) string {
+func (ex *Exchange) RFC9293String(A, B State) string {
 	buf := make([]byte, 0, 64)
 	buf = ex.appendVisualization(buf, A, B)
 	return string(buf)
