@@ -70,10 +70,11 @@ func (l *TCPListener) StartListening(port uint16) error {
 	if l.isOpen() {
 		return errors.New("already listening")
 	}
-	err := l.stack.OpenTCP(l.port, l)
+	err := l.stack.OpenTCP(port, l)
 	if err != nil {
 		return err
 	}
+	l.port = port
 	l.open = true
 	for i := range l.conns {
 		l.freeConnForReuse(i)

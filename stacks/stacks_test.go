@@ -327,30 +327,42 @@ func TestTCPSocketOpenOfClosedPort(t *testing.T) {
 }
 
 func testSocketDuplex(t *testing.T, client, server *stacks.TCPConn, egr *Exchanger, messages int) {
+	t.Helper()
 	if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
 		panic("not established")
 	}
 	// Send data from client to server multiple times.
+	baseCdata := []byte("from client: hello server ")
+	baseSdata := []byte("from server: hello client ")
 	for i := 0; i < messages; i++ {
-		istr := strconv.Itoa(i)
-		cdata := "hello server " + istr
-		sdata := "hello client " + istr
-
-		socketSendString(client, cdata)
-		socketSendString(server, sdata)
-		tx, bytes := egr.DoExchanges(t, 2)
+		cdata := strconv.AppendInt(baseCdata, int64(i), 10)
+		sdata := strconv.AppendInt(baseSdata, int64(i), 10)
+		messagelen := len(cdata) // Same length for both client and server.
+		socketSendString(client, string(cdata))
+		socketSendString(server, string(sdata))
+		prevSegs := len(egr.segments)
+		tx, bytes := egr.DoExchanges(t, 1)
 		if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
 			t.Fatalf("not established: client=%s server=%s", client.State(), server.State())
+		}
+		totSegments := len(egr.segments) - prevSegs
+		if totSegments != 2 {
+			t.Errorf("expected 2 segments exchanged, got %d", totSegments)
+		} else if messagelen != int(egr.LastSegment().DATALEN) || messagelen != int(egr.SegmentToLast(1).DATALEN) {
+			t.Errorf("expected %d bytes exchanged, got %d,%d", messagelen, egr.LastSegment().DATALEN, egr.SegmentToLast(1).DATALEN)
 		}
 		_, _ = tx, bytes
 		// t.Logf("tx=%d bytes=%d", tx, bytes)
 		clientstr := socketReadAllString(client)
 		serverstr := socketReadAllString(server)
-		if clientstr != sdata {
+		if clientstr != string(sdata) {
 			t.Errorf("client: got %q want %q", clientstr, sdata)
 		}
-		if serverstr != cdata {
+		if serverstr != string(cdata) {
 			t.Errorf("server: got %q want %q", serverstr, cdata)
+		}
+		if t.Failed() {
+			return // Return on first error.
 		}
 	}
 }
@@ -387,10 +399,23 @@ func TestPortStackTCPDecoding(t *testing.T) {
 func TestListener(t *testing.T) {
 	client, listener := createTCPClientListenerPair(t)
 	egr := NewExchanger(client.PortStack(), listener.PortStack())
+	// Establish the connection on one port.
 	exdone, _ := egr.DoExchanges(t, exchangesToEstablish)
 	if exdone == 0 {
 		panic(exdone)
 	}
+	netconn, err := listener.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn := netconn.(*stacks.TCPConn)
+	if conn.State() != seqs.StateEstablished {
+		t.Error("expected listener conn to be established")
+	}
+	if client.State() != seqs.StateEstablished {
+		t.Error("expected client conn to be established")
+	}
+	testSocketDuplex(t, client, conn, egr, 1024)
 }
 
 type Exchanger struct {
@@ -421,6 +446,11 @@ func (egr *Exchanger) LastSegment() seqs.Segment {
 		return seqs.Segment{}
 	}
 	return egr.segments[len(egr.segments)-1]
+}
+
+// SegmentToLast returns the ith from last TCP segment sent over the stack. When fromLast==0 returns last segment.
+func (egr *Exchanger) SegmentToLast(fromLast int) seqs.Segment {
+	return egr.segments[len(egr.segments)-fromLast-1]
 }
 
 func (egr *Exchanger) getPayload(istack int) []byte {
@@ -599,7 +629,7 @@ func createPortStacks(t *testing.T, n int) (Stacks []*stacks.PortStack) {
 
 func socketReadAllString(s *stacks.TCPConn) string {
 	var str strings.Builder
-	var buf [1024]byte
+	var buf [256]byte
 	for s.BufferedInput() > 0 {
 		n, err := s.Read(buf[:])
 		str.Write(buf[:n])
