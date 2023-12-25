@@ -140,26 +140,26 @@ func TestTCPEstablish(t *testing.T) {
 			t.Errorf("server state got=%s want=%s", server.State(), ss)
 		}
 	}
+	wantOneTCPTx := func(msg string) {
+		t.Helper()
+		txs, n := egr.HandleTx(t)
+		if txs == 0 {
+			t.Fatalf("no data sent: %s", msg)
+		} else if n < 54 {
+			t.Fatalf("wanted one TCP packet, got short %d", n)
+		} else if txs > 1 {
+			t.Fatalf("more than one tx: %d", txs)
+		}
+	}
 	// Test initial states.
 	wantStates(seqs.StateSynSent, seqs.StateListen)
-	txs, n := egr.HandleTx(t)
-	if n == 0 {
-		t.Fatal("no data sent on first exchange")
-	} else if txs != 1 {
-		t.Fatal("expected only client's exchange")
-	}
+	wantOneTCPTx("client initial SYN")
 	wantStates(seqs.StateSynSent, seqs.StateListen) // Not yet received by server.
 	checkNoMoreDataSent(t, "after client SYN", egr)
 
 	egr.HandleRx(t)
 	wantStates(seqs.StateSynSent, seqs.StateSynRcvd)
-
-	txs, n = egr.HandleTx(t)
-	if n == 0 {
-		t.Fatal("no data sent from server in response to syn (SYNACK) exchange")
-	} else if txs != 1 {
-		t.Fatal("expected only server's exchange")
-	}
+	wantOneTCPTx("server SYN|ACK")
 	wantStates(seqs.StateSynSent, seqs.StateSynRcvd)
 	checkNoMoreDataSent(t, "after server SYN|ACK", egr)
 
@@ -168,25 +168,13 @@ func TestTCPEstablish(t *testing.T) {
 	wantStates(seqs.StateEstablished, seqs.StateSynRcvd)
 
 	// Client responds with ACK.
-	txs, n = egr.HandleTx(t)
-	if n == 0 {
-		t.Fatal("expected ACK from client; got no data")
-	} else if txs != 1 {
-		t.Fatal("expected only client's exchange")
-	}
+	wantOneTCPTx("client ACK to server's SYN|ACK")
 	wantStates(seqs.StateEstablished, seqs.StateSynRcvd)
-	checkNoMoreDataSent(t, "after server SYN|ACK", egr)
+	checkNoMoreDataSent(t, "after client's ACK to SYN|ACK", egr)
 
 	// Server established after receiving ACK to SYNACK.
 	egr.HandleRx(t)
 	wantStates(seqs.StateEstablished, seqs.StateEstablished)
-
-	if client.State() != seqs.StateEstablished {
-		t.Errorf("client not established: got %s want %s", client.State(), seqs.StateEstablished)
-	}
-	if server.State() != seqs.StateEstablished {
-		t.Errorf("server not established: got %s want %s", server.State(), seqs.StateEstablished)
-	}
 }
 
 func TestTCPSendReceive_simplex(t *testing.T) {
