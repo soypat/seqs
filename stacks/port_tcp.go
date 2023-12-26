@@ -83,6 +83,10 @@ type TCPPacket struct {
 }
 
 func (pkt *TCPPacket) String() string {
+	payload := pkt.Payload()
+	if len(payload) == 0 {
+		return "TCP Packet: " + pkt.Eth.String() + " " + pkt.IP.String() + " " + pkt.TCP.String()
+	}
 	return "TCP Packet: " + pkt.Eth.String() + " " + pkt.IP.String() + " " + pkt.TCP.String() + " payload:" + strconv.Quote(string(pkt.Payload()))
 }
 

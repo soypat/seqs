@@ -51,8 +51,8 @@ type TCPConn struct {
 }
 
 type TCPConnConfig struct {
-	TxBufSize int
-	RxBufSize int
+	TxBufSize uint16
+	RxBufSize uint16
 }
 
 func NewTCPConn(stack *PortStack, cfg TCPConnConfig) (*TCPConn, error) {
@@ -62,13 +62,17 @@ func NewTCPConn(stack *PortStack, cfg TCPConnConfig) (*TCPConn, error) {
 	if cfg.TxBufSize == 0 {
 		cfg.TxBufSize = defaultSocketSize
 	}
-	sock := &TCPConn{
+	sock := makeTCPConn(stack, cfg)
+	sock.trace("NewTCPConn:end")
+	return &sock, nil
+}
+
+func makeTCPConn(stack *PortStack, cfg TCPConnConfig) TCPConn {
+	return TCPConn{
 		stack: stack,
 		tx:    ring{buf: make([]byte, cfg.TxBufSize)},
 		rx:    ring{buf: make([]byte, cfg.RxBufSize)},
 	}
-	sock.trace("NewTCPConn:end")
-	return sock, nil
 }
 
 // PortStack returns the PortStack that this socket is attached to.
@@ -108,7 +112,7 @@ func (sock *TCPConn) FlushOutputBuffer() error {
 
 // Write writes argument data to the socket's output buffer which is queued to be sent.
 func (sock *TCPConn) Write(b []byte) (n int, _ error) {
-	err := sock.checkEstablished()
+	err := sock.checkPipeOpen()
 	if err != nil {
 		return 0, err
 	}
@@ -151,7 +155,7 @@ func (sock *TCPConn) Write(b []byte) (n int, _ error) {
 // Read reads data from the socket's input buffer. If the buffer is empty,
 // Read will block until data is available.
 func (sock *TCPConn) Read(b []byte) (int, error) {
-	err := sock.checkEstablished()
+	err := sock.checkPipeOpen()
 	if err != nil {
 		return 0, err
 	}
@@ -208,7 +212,7 @@ func (sock *TCPConn) SetDeadline(t time.Time) error {
 // and any currently-blocked Read call. A zero value for t means Read will not time out.
 func (sock *TCPConn) SetReadDeadline(t time.Time) error {
 	sock.trace("TCPConn.SetReadDeadline:start")
-	err := sock.checkEstablished()
+	err := sock.checkPipeOpen()
 	if err == nil {
 		sock.rdead = t
 	}
@@ -222,7 +226,7 @@ func (sock *TCPConn) SetReadDeadline(t time.Time) error {
 // A zero value for t means Write will not time out.
 func (sock *TCPConn) SetWriteDeadline(t time.Time) error {
 	sock.trace("TCPConn.SetWriteDeadline:start")
-	err := sock.checkEstablished()
+	err := sock.checkPipeOpen()
 	if err == nil {
 		sock.wdead = t
 	}
@@ -236,28 +240,18 @@ func (sock *TCPConn) deadlineExceeded(dead time.Time) bool {
 // OpenDialTCP opens an active TCP connection to the given remote address.
 func (sock *TCPConn) OpenDialTCP(localPort uint16, remoteMAC [6]byte, remote netip.AddrPort, iss seqs.Value) error {
 	sock.trace("TCPConn.OpenDialTCP:start")
-	return sock.open(seqs.StateSynSent, localPort, iss, remoteMAC, remote)
+	return sock.openstack(seqs.StateSynSent, localPort, iss, remoteMAC, remote)
 }
 
 // OpenListenTCP opens a passive TCP connection that listens on the given port.
 // OpenListenTCP only handles one connection at a time, so API may change in future to accomodate multiple connections.
 func (sock *TCPConn) OpenListenTCP(localPortNum uint16, iss seqs.Value) error {
 	sock.trace("TCPConn.OpenListenTCP:start")
-	return sock.open(seqs.StateListen, localPortNum, iss, [6]byte{}, netip.AddrPort{})
+	return sock.openstack(seqs.StateListen, localPortNum, iss, [6]byte{}, netip.AddrPort{})
 }
 
-func (sock *TCPConn) open(state seqs.State, localPortNum uint16, iss seqs.Value, remoteMAC [6]byte, remoteAddr netip.AddrPort) error {
-	err := sock.scb.Open(iss, seqs.Size(len(sock.rx.buf)), seqs.StateSynSent)
-	if err != nil {
-		return err
-	}
-	sock.scb.SetLogger(sock.stack.logger)
-	sock.remoteMAC = remoteMAC
-	sock.remote = remoteAddr
-	sock.localPort = localPortNum
-	sock.rx.Reset()
-	sock.tx.Reset()
-	err = sock.stack.OpenTCP(localPortNum, sock)
+func (sock *TCPConn) openstack(state seqs.State, localPortNum uint16, iss seqs.Value, remoteMAC [6]byte, remoteAddr netip.AddrPort) error {
+	err := sock.stack.OpenTCP(localPortNum, sock)
 	if err != nil {
 		return err
 	}
@@ -267,6 +261,26 @@ func (sock *TCPConn) open(state seqs.State, localPortNum uint16, iss seqs.Value,
 			sock.stack.CloseTCP(localPortNum)
 			return err
 		}
+	}
+	err = sock.open(state, localPortNum, iss, remoteMAC, remoteAddr)
+	if err != nil {
+		sock.stack.CloseTCP(localPortNum)
+	}
+	return err
+}
+
+func (sock *TCPConn) open(state seqs.State, localPortNum uint16, iss seqs.Value, remoteMAC [6]byte, remoteAddr netip.AddrPort) error {
+	err := sock.scb.Open(iss, seqs.Size(len(sock.rx.buf)), state)
+	if err != nil {
+		return err
+	}
+	sock.scb.SetLogger(sock.stack.logger)
+	sock.remoteMAC = remoteMAC
+	sock.remote = remoteAddr
+	sock.localPort = localPortNum
+	sock.rx.Reset()
+	sock.tx.Reset()
+	if state == seqs.StateSynSent {
 		err = sock.scb.Send(sock.synsentSegment())
 	}
 	if err == nil {
@@ -277,27 +291,28 @@ func (sock *TCPConn) open(state seqs.State, localPortNum uint16, iss seqs.Value,
 
 func (sock *TCPConn) Close() error {
 	toSend := sock.tx.Buffered()
+	sock.closing = true
 	if toSend == 0 {
 		err := sock.scb.Close()
 		if err != nil {
 			return err
 		}
 	}
-	sock.closing = true
 	sock.stack.FlagPendingTCP(sock.localPort)
 	return nil
 }
 
 func (sock *TCPConn) isPendingHandling() bool {
-	return sock.mustSendSyn() || sock.scb.HasPending() || sock.tx.Buffered() > 0 || sock.closing
+	return sock.scb.HasPending() || sock.mustSendSyn() || sock.tx.Buffered() > 0 || sock.closing
 }
 
-func (sock *TCPConn) checkEstablished() error {
+// checkPipeOpen checks if user data can be sent over the socket.
+func (sock *TCPConn) checkPipeOpen() error {
 	if sock.abortErr != nil {
 		return sock.abortErr
 	}
 	state := sock.State()
-	if state.IsClosed() || state.IsClosing() {
+	if sock.closing || state.IsClosed() || state.IsClosing() {
 		return net.ErrClosed
 	}
 	return nil
@@ -350,7 +365,7 @@ func (sock *TCPConn) recv(pkt *TCPPacket) (err error) {
 }
 
 func (sock *TCPConn) send(response []byte) (n int, err error) {
-	sock.trace("TCPConn.send:start")
+	defer sock.trace("TCPConn.send:start")
 	if !sock.remote.IsValid() {
 		return 0, nil // No remote address yet, yield.
 	}
@@ -365,7 +380,7 @@ func (sock *TCPConn) send(response []byte) (n int, err error) {
 	seg, ok := sock.scb.PendingSegment(available)
 	if !ok {
 		// No pending control segment or data to send. Yield to handleUser.
-		return 0, nil
+		return 0, sock.stateCheck()
 	}
 
 	prevState := sock.scb.State()
@@ -390,6 +405,7 @@ func (sock *TCPConn) send(response []byte) (n int, err error) {
 		sock.info("TCP:tx-statechange", slog.Uint64("port", uint64(sock.localPort)), slog.String("old", prevState.String()), slog.String("new", sock.scb.State().String()), slog.String("txflags", seg.Flags.String()))
 	}
 	err = sock.stateCheck()
+	sock.onsend(sizeTCPNoOptions + n)
 	return sizeTCPNoOptions + n, err
 }
 
@@ -408,6 +424,7 @@ func (sock *TCPConn) handleInitSyn(response []byte) (n int, err error) {
 	sock.setSrcDest(&sock.pkt)
 	sock.pkt.CalculateHeaders(sock.synsentSegment(), nil)
 	sock.pkt.PutHeaders(response)
+	sock.onsend(sizeTCPNoOptions)
 	return sizeTCPNoOptions, nil
 }
 
@@ -419,12 +436,19 @@ func (sock *TCPConn) mustSendSyn() bool {
 	return sock.awaitingSyn() && time.Since(sock.lastTx) > 3*time.Second
 }
 
+func (sock *TCPConn) onsend(n int) {
+	if n > 0 {
+		sock.lastTx = sock.stack.now()
+	}
+}
+
 func (sock *TCPConn) deleteState() {
 	sock.trace("TCPConn.deleteState", slog.Uint64("port", uint64(sock.localPort)))
 	*sock = TCPConn{
-		stack: sock.stack,
-		rx:    ring{buf: sock.rx.buf},
-		tx:    ring{buf: sock.tx.buf},
+		stack:  sock.stack,
+		rx:     ring{buf: sock.rx.buf},
+		tx:     ring{buf: sock.tx.buf},
+		connid: sock.connid + 1,
 	}
 }
 
@@ -441,10 +465,19 @@ func (sock *TCPConn) stateCheck() (portStackErr error) {
 	state := sock.State()
 	txEmpty := sock.tx.Buffered() == 0
 	// Close checks:
-	if sock.closing && txEmpty && sock.scb.State() == seqs.StateEstablished { // Get RAW state of SCB.
-		sock.scb.Close()
-		sock.debug("TCP:delayed-close", slog.Uint64("port", uint64(sock.localPort)))
+	if sock.closing {
+		if txEmpty && sock.scb.State() == seqs.StateEstablished { // Get RAW state of SCB.
+			sock.scb.Close()
+			sock.debug("TCP:delayed-close", slog.Uint64("port", uint64(sock.localPort)))
+		} else {
+			now := sock.stack.now()
+			if now.Sub(sock.lastTx) > 3*time.Second {
+				sock.logerr("TCP:idleabort")
+				return io.EOF // Abort connection- no response from remote.
+			}
+		}
 	}
+
 	if sock.scb.HasPending() {
 		sock.trace("TCPConn.stateCheck:hasPending")
 		portStackErr = ErrFlagPending // Flag to PortStack that we have pending data to send.
@@ -472,4 +505,8 @@ func (sock *TCPConn) debug(msg string, attrs ...slog.Attr) {
 
 func (sock *TCPConn) info(msg string, attrs ...slog.Attr) {
 	internal.LogAttrs(sock.stack.logger, slog.LevelInfo, msg, attrs...)
+}
+
+func (sock *TCPConn) logerr(msg string, attrs ...slog.Attr) {
+	internal.LogAttrs(sock.stack.logger, slog.LevelError, msg, attrs...)
 }
