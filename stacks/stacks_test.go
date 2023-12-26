@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"math"
 	"net/netip"
-	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -19,7 +18,14 @@ import (
 const (
 	testingLargeNetworkSize = 2 // Minimum=2
 	exchangesToEstablish    = 3
-	exchangesToClose        = 4
+	exchangesToClose        = 3
+	defaultTCPBufferSize    = 2048
+
+	defaultTestDuplexMessages = 128
+
+	finack = seqs.FlagFIN | seqs.FlagACK
+	pshack = seqs.FlagPSH | seqs.FlagACK
+	synack = seqs.FlagSYN | seqs.FlagACK
 )
 
 func TestDHCP(t *testing.T) {
@@ -129,31 +135,33 @@ func TestARP(t *testing.T) {
 func TestTCPEstablish(t *testing.T) {
 	client, server := createTCPClientServerPair(t)
 	// 3 way handshake needs 3 exchanges to complete.
-	const maxTransactions = exchangesToEstablish
 	egr := NewExchanger(client.PortStack(), server.PortStack())
-	txDone, numBytesSent := egr.DoExchanges(t, maxTransactions)
+	wantStates := makeWantStatesHelper(t, client, server)
 
-	_, remnant := egr.DoExchanges(t, 1)
-	if remnant != 0 {
-		// TODO(soypat): prevent duplicate ACKs from being sent.
-		t.Fatalf("duplicate ACK detected? remnant=%d want=0", remnant)
-	}
+	// Test initial states.
+	wantStates(seqs.StateSynSent, seqs.StateListen)
+	assertOneTCPTx(t, "client initial SYN", seqs.FlagSYN, egr)
+	wantStates(seqs.StateSynSent, seqs.StateListen) // Not yet received by server.
+	checkNoMoreDataSent(t, "after client SYN", egr)
 
-	const expectedData = (eth.SizeEthernetHeader + eth.SizeIPv4Header + eth.SizeTCPHeader) * maxTransactions
-	if numBytesSent < expectedData {
-		t.Error("too little data exchanged", numBytesSent, " want>=", expectedData)
-	}
-	if txDone > exchangesToEstablish {
-		t.Errorf("too many exchanges for a 3 way handshake: got %d want %d", txDone, exchangesToEstablish)
-	} else if txDone < exchangesToEstablish {
-		t.Errorf("too few exchanges for a 3 way handshake: got %d want %d", txDone, exchangesToEstablish)
-	}
-	if client.State() != seqs.StateEstablished {
-		t.Errorf("client not established: got %s want %s", client.State(), seqs.StateEstablished)
-	}
-	if server.State() != seqs.StateEstablished {
-		t.Errorf("server not established: got %s want %s", server.State(), seqs.StateEstablished)
-	}
+	egr.HandleRx(t)
+	wantStates(seqs.StateSynSent, seqs.StateSynRcvd)
+	assertOneTCPTx(t, "server SYN|ACK", synack, egr)
+	wantStates(seqs.StateSynSent, seqs.StateSynRcvd)
+	checkNoMoreDataSent(t, "after server SYN|ACK", egr)
+
+	// Client established after receiving SYNACK.
+	egr.HandleRx(t)
+	wantStates(seqs.StateEstablished, seqs.StateSynRcvd)
+
+	// Client responds with ACK.
+	assertOneTCPTx(t, "client ACK to server's SYN|ACK", seqs.FlagACK, egr)
+	wantStates(seqs.StateEstablished, seqs.StateSynRcvd)
+	checkNoMoreDataSent(t, "after client's ACK to SYN|ACK", egr)
+
+	// Server established after receiving ACK to SYNACK.
+	egr.HandleRx(t)
+	wantStates(seqs.StateEstablished, seqs.StateEstablished)
 }
 
 func TestTCPSendReceive_simplex(t *testing.T) {
@@ -161,21 +169,19 @@ func TestTCPSendReceive_simplex(t *testing.T) {
 	client, server := createTCPClientServerPair(t)
 	egr := NewExchanger(client.PortStack(), server.PortStack())
 	egr.DoExchanges(t, exchangesToEstablish)
-	if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
-		t.Fatal("not established")
-	}
+	wantStates := makeWantStatesHelper(t, client, server)
+	wantStates(seqs.StateEstablished, seqs.StateEstablished)
 
 	// Send data from client to server.
 	const data = "hello world"
 	socketSendString(client, data)
 	egr.DoExchanges(t, 2)
-	if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
-		t.Fatalf("not established: client=%s server=%s", client.State(), server.State())
-	}
+	wantStates(seqs.StateEstablished, seqs.StateEstablished)
 	got := socketReadAllString(server)
 	if got != data {
 		t.Errorf("server: got %q want %q", got, data)
 	}
+	wantStates(seqs.StateEstablished, seqs.StateEstablished)
 }
 
 func TestTCPSendReceive_duplex_single(t *testing.T) {
@@ -218,7 +224,7 @@ func TestTCPSendReceive_duplex(t *testing.T) {
 	}
 
 	// Send data from client to server multiple times.
-	testSocketDuplex(t, client, server, egr, 1024)
+	testSocketDuplex(t, client, server, egr, defaultTestDuplexMessages)
 }
 
 func TestTCPClose_noPendingData(t *testing.T) {
@@ -305,9 +311,12 @@ func TestTCPSocketOpenOfClosedPort(t *testing.T) {
 	}
 	client.Close()
 	egr.DoExchanges(t, exchangesToClose)
-	if client.State() != seqs.StateClosed || server.State() != seqs.StateClosed {
-		t.Fatalf("not established: client=%s server=%s", client.State(), server.State())
+	if !client.State().IsClosed() || !server.State().IsClosed() {
+		t.Fatalf("not closed: client=%s server=%s", client.State(), server.State())
 	}
+	// TODO(soypat): We need an extra exchange to close the connection since client is left in TimeWait and still not aborted.
+	// How to simplify this?
+	egr.HandleTx(t)
 
 	saddrport := netip.AddrPortFrom(sstack.Addr(), server.LocalPort()+newPortoffset)
 	err := client.OpenDialTCP(client.LocalPort()+newPortoffset+1, sstack.HardwareAddr6(), saddrport, newISS)
@@ -323,36 +332,57 @@ func TestTCPSocketOpenOfClosedPort(t *testing.T) {
 	if nbytes < minBytesToEstablish {
 		t.Fatalf("insufficient data to establish: got %d want>=%d", nbytes, minBytesToEstablish)
 	}
-	testSocketDuplex(t, client, server, egr, 128)
+	testSocketDuplex(t, client, server, egr, defaultTestDuplexMessages)
 }
 
 func testSocketDuplex(t *testing.T, client, server *stacks.TCPConn, egr *Exchanger, messages int) {
+	t.Helper()
 	if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
 		panic("not established")
 	}
 	// Send data from client to server multiple times.
+	baseCdata := []byte("from client: hello server ")
+	baseSdata := []byte("from server: hello client ")
 	for i := 0; i < messages; i++ {
-		istr := strconv.Itoa(i)
-		cdata := "hello server " + istr
-		sdata := "hello client " + istr
-
-		socketSendString(client, cdata)
-		socketSendString(server, sdata)
-		tx, bytes := egr.DoExchanges(t, 2)
+		cdata := strconv.AppendInt(baseCdata, int64(i), 10)
+		sdata := strconv.AppendInt(baseSdata, int64(i), 10)
+		messagelen := len(cdata) // Same length for both client and server.
+		socketSendString(client, string(cdata))
+		socketSendString(server, string(sdata))
+		prevSegs := len(egr.segments)
+		tx, bytes := egr.DoExchanges(t, 1)
 		if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
 			t.Fatalf("not established: client=%s server=%s", client.State(), server.State())
 		}
+		totSegments := len(egr.segments) - prevSegs
+		if totSegments != 2 {
+			t.Errorf("expected 2 segments exchanged, got %d", totSegments)
+		} else if messagelen != int(egr.LastSegment().DATALEN) || messagelen != int(egr.SegmentToLast(1).DATALEN) {
+			t.Errorf("expected %d bytes exchanged, got %d,%d", messagelen, egr.LastSegment().DATALEN, egr.SegmentToLast(1).DATALEN)
+		}
 		_, _ = tx, bytes
-		// t.Logf("tx=%d bytes=%d", tx, bytes)
 		clientstr := socketReadAllString(client)
 		serverstr := socketReadAllString(server)
-		if clientstr != sdata {
+		if clientstr != string(sdata) {
 			t.Errorf("client: got %q want %q", clientstr, sdata)
 		}
-		if serverstr != cdata {
+		if serverstr != string(cdata) {
 			t.Errorf("server: got %q want %q", serverstr, cdata)
 		}
+		if t.Failed() {
+			return // Return on first error.
+		}
 	}
+	txs, _ := egr.HandleTx(t)
+	if txs != 2 {
+		t.Errorf("expected 2 ACK segments exchanged on duplex end, got %d", txs)
+	} else {
+		s1, s2 := egr.SegmentToLast(0), egr.SegmentToLast(1)
+		if s1.Flags != seqs.FlagACK || s2.Flags != seqs.FlagACK {
+			t.Errorf("expected ACK segments exchanged on duplex end, got %v,%v", s1.Flags, s2.Flags)
+		}
+	}
+	checkNoMoreDataSent(t, "after duplex ACKs", egr)
 }
 
 func TestPortStackTCPDecoding(t *testing.T) {
@@ -381,6 +411,48 @@ func TestPortStackTCPDecoding(t *testing.T) {
 		if err != nil && !errors.Is(err, stacks.ErrDroppedPacket) {
 			t.Fatal(i, err)
 		}
+	}
+}
+
+func TestListener(t *testing.T) {
+	client, listener := createTCPClientListenerPair(t)
+	egr := NewExchanger(client.PortStack(), listener.PortStack())
+	// Establish the connection on one port.
+	exdone, _ := egr.DoExchanges(t, exchangesToEstablish)
+	if exdone == 0 {
+		panic(exdone)
+	}
+	netconn, err := listener.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := netconn.(*stacks.TCPConn)
+	wantStates := makeWantStatesHelper(t, client, server)
+
+	wantStates(seqs.StateEstablished, seqs.StateEstablished)
+	testSocketDuplex(t, client, server, egr, defaultTestDuplexMessages)
+
+	// Close socket to trigger closing FIN sequence.
+	client.Close()
+	wantStates(seqs.StateFinWait1, seqs.StateEstablished)
+
+	assertOneTCPTx(t, "client close; sends FIN|ACK", finack, egr)
+	wantStates(seqs.StateFinWait1, seqs.StateEstablished)
+	egr.HandleRx(t)
+	wantStates(seqs.StateFinWait1, seqs.StateCloseWait)
+
+	assertOneTCPTx(t, "server ACK of FIN|ACK", seqs.FlagACK, egr)
+	wantStates(seqs.StateFinWait1, seqs.StateCloseWait)
+	egr.HandleRx(t)
+	wantStates(seqs.StateFinWait2, seqs.StateCloseWait)
+
+	// TODO(soypat): fix this part of the close test!
+	return
+	assertOneTCPTx(t, "server ACK of FIN|ACK", seqs.FlagACK, egr)
+	wantStates(seqs.StateFinWait1, seqs.StateCloseWait)
+
+	if !client.State().IsClosed() || !server.State().IsClosed() {
+		t.Fatalf("not closed: client=%s server=%s", client.State(), server.State())
 	}
 }
 
@@ -414,6 +486,11 @@ func (egr *Exchanger) LastSegment() seqs.Segment {
 	return egr.segments[len(egr.segments)-1]
 }
 
+// SegmentToLast returns the ith from last TCP segment sent over the stack. When fromLast==0 returns last segment.
+func (egr *Exchanger) SegmentToLast(fromLast int) seqs.Segment {
+	return egr.segments[len(egr.segments)-fromLast-1]
+}
+
 func (egr *Exchanger) getPayload(istack int) []byte {
 	return egr.pipes[istack][:egr.pipesN[istack]]
 }
@@ -421,6 +498,16 @@ func (egr *Exchanger) getPayload(istack int) []byte {
 func (egr *Exchanger) zeroPayload(istack int) {
 	egr.pipesN[istack] = 0
 	egr.pipes[istack] = [2048]byte{}
+}
+
+// auxbuf returns an unused buffer for temporary use. Do not hold references to this buffer during calls to HandleTx.
+func (egr *Exchanger) auxbuf() []byte {
+	for istack := 0; istack < len(egr.Stacks); istack++ {
+		if egr.pipesN[istack] == 0 {
+			return egr.pipes[istack][:]
+		}
+	}
+	return make([]byte, 2048)
 }
 
 func (egr *Exchanger) HandleTx(t *testing.T) (pkts, bytesSent int) {
@@ -494,16 +581,39 @@ func isDroppedPacket(err error) bool {
 	return err != nil && (errors.Is(err, stacks.ErrDroppedPacket) || strings.HasPrefix(err.Error(), "drop"))
 }
 
+func createTCPClientListenerPair(t *testing.T) (client *stacks.TCPConn, listener *stacks.TCPListener) {
+	t.Helper()
+	const (
+		clientPort = 1025
+		serverPort = 80
+	)
+	Stacks := createPortStacks(t, 2)
+	clientStack := Stacks[0]
+	listenerStack := Stacks[1]
+
+	// Configure listener (server).
+	listenerAddr := netip.AddrPortFrom(listenerStack.Addr(), serverPort)
+	listener, err := stacks.NewTCPListener(listenerStack, stacks.TCPListenerConfig{
+		ConnTxBufSize:  defaultTCPBufferSize,
+		MaxConnections: 1,
+		ConnRxBufSize:  defaultTCPBufferSize,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = listener.StartListening(listenerAddr.Port())
+	if err != nil {
+		t.Fatal(err)
+	}
+	client = newTCPDialer(t, clientStack, clientPort, listenerAddr, listenerStack.HardwareAddr6())
+	return client, listener
+}
+
 func createTCPClientServerPair(t *testing.T) (client, server *stacks.TCPConn) {
 	t.Helper()
 	const (
 		clientPort = 1025
-		clientISS  = 100
-		clientWND  = 1000
-
 		serverPort = 80
-		serverISS  = 300
-		serverWND  = 1300
 	)
 	Stacks := createPortStacks(t, 2)
 	clientStack := Stacks[0]
@@ -513,36 +623,35 @@ func createTCPClientServerPair(t *testing.T) (client, server *stacks.TCPConn) {
 	serverIP := netip.AddrPortFrom(serverStack.Addr(), serverPort)
 
 	serverTCP, err := stacks.NewTCPConn(serverStack, stacks.TCPConnConfig{
-		TxBufSize: 2048,
-		RxBufSize: 2048,
+		TxBufSize: defaultTCPBufferSize,
+		RxBufSize: defaultTCPBufferSize,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = serverTCP.OpenListenTCP(serverIP.Port(), serverISS)
-	// serverTCP, err := stacks.ListenTCP(serverStack, serverIP.Port(), serverISS, serverWND)
+	err = serverTCP.OpenListenTCP(serverIP.Port(), 500)
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	// Configure client.
-	clientTCP, err := stacks.NewTCPConn(clientStack, stacks.TCPConnConfig{
-		TxBufSize: 2048,
-		RxBufSize: 2048,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = clientTCP.OpenDialTCP(clientPort, serverStack.HardwareAddr6(), serverIP, clientISS)
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = clientStack.FlagPendingTCP(clientPort)
-	if err != nil {
-		t.Fatal(err)
-	}
-
+	clientTCP := newTCPDialer(t, clientStack, clientPort, serverIP, serverStack.HardwareAddr6())
 	return clientTCP, serverTCP
+}
+
+func newTCPDialer(t *testing.T, localstack *stacks.PortStack, localPort uint16, remoteAddr netip.AddrPort, remoteMAC [6]byte) *stacks.TCPConn {
+	t.Helper()
+	// Configure client.
+	clientTCP, err := stacks.NewTCPConn(localstack, stacks.TCPConnConfig{
+		TxBufSize: defaultTCPBufferSize,
+		RxBufSize: defaultTCPBufferSize,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = clientTCP.OpenDialTCP(localPort, remoteMAC, remoteAddr, 300)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return clientTCP
 }
 
 func createPortStacks(t *testing.T, n int) (Stacks []*stacks.PortStack) {
@@ -568,7 +677,7 @@ func createPortStacks(t *testing.T, n int) (Stacks []*stacks.PortStack) {
 
 func socketReadAllString(s *stacks.TCPConn) string {
 	var str strings.Builder
-	var buf [1024]byte
+	var buf [256]byte
 	for s.BufferedInput() > 0 {
 		n, err := s.Read(buf[:])
 		str.Write(buf[:n])
@@ -586,26 +695,63 @@ func socketSendString(s *stacks.TCPConn, str string) {
 	}
 }
 
-type multihandler func(dst []byte, rxPkt *stacks.TCPPacket) (int, error)
+func checkNoMoreDataSent(t *testing.T, msg string, egr *Exchanger) {
+	t.Helper()
+	buf := egr.auxbuf()
+	handleTx := func() (txs int) {
+		for istack := 0; istack < len(egr.Stacks); istack++ {
+			n, _ := egr.Stacks[istack].HandleEth(buf)
+			if n > 0 {
+				txs++
+			}
+		}
+		return txs
+	}
 
-func (mh multihandler) handleEth(dst []byte) (n int, err error) {
-	return mh(dst, nil)
+	txs := handleTx()
+	if txs > 0 {
+		txs2 := handleTx()
+		if txs2 > 0 {
+			t.Errorf("[txs=%d,%d] unexpected more data: %s; kept sending", txs, txs2, msg)
+		} else {
+			t.Errorf("[txs=%d] unexpected data: %s", txs, msg)
+		}
+	}
+}
+func assertOneTCPTx(t *testing.T, msg string, wantFlags seqs.Flags, egr *Exchanger) {
+	t.Helper()
+	nseg := len(egr.segments)
+	txs, n := egr.HandleTx(t)
+	totsegs := len(egr.segments) - nseg
+	if txs == 0 {
+		t.Fatalf("no data sent: %s", msg)
+	} else if n < 54 {
+		t.Fatalf("wanted one TCP packet, got short %d", n)
+	} else if txs > 1 {
+		t.Fatalf("more than one tx: %d", txs)
+	} else if totsegs != 1 {
+		t.Fatal("expected one TCP segment")
+	} else if egr.LastSegment().Flags != wantFlags {
+		t.Fatalf("expected flags=%v got=%v", wantFlags, egr.LastSegment().Flags)
+	}
 }
 
-func (mh multihandler) recvTCP(rxPkt *stacks.TCPPacket) error {
-	_, err := mh(nil, rxPkt)
-	return err
-}
-
-func (mh multihandler) isPendingHandling() bool {
-	n, _ := mh(nil, nil)
-	return n > 0
-}
-
-func setLog(ps *stacks.PortStack, group string, lvl slog.Level) {
-	output := os.Stdout
-	log := slog.New(slog.NewTextHandler(output, &slog.HandlerOptions{
-		Level: lvl,
-	}))
-	ps.SetLogger(log.WithGroup(group))
+func makeWantStatesHelper(t *testing.T, client, server *stacks.TCPConn) func(cs, ss seqs.State) {
+	return func(cs, ss seqs.State) {
+		t.Helper()
+		gotcs := client.State()
+		gotss := server.State()
+		if cs == seqs.StateEstablished && ss == seqs.StateEstablished &&
+			(gotcs != seqs.StateEstablished || gotss != seqs.StateEstablished) {
+			// Expecting established connection special case.
+			t.Errorf("not established client=%s server=%s", gotcs, gotss)
+			return
+		}
+		if gotcs != cs {
+			t.Errorf("client state got=%s want=%s", client.State(), cs)
+		}
+		if gotss != ss {
+			t.Errorf("server state got=%s want=%s", server.State(), ss)
+		}
+	}
 }

@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"math/bits"
 	"net"
 
 	"github.com/soypat/seqs/internal"
@@ -112,9 +113,13 @@ func (seg *Segment) Last() Value {
 // PendingSegment calculates a suitable next segment to send from a payload length.
 // It does not modify the ControlBlock state or pending segment queue.
 func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
+	if tcb.challengeAck {
+		tcb.challengeAck = false
+		return Segment{SEQ: tcb.snd.NXT, ACK: tcb.rcv.NXT, Flags: FlagACK, WND: tcb.rcv.WND}, true
+	}
 	pending := tcb.pending[0]
 	established := tcb.state == StateEstablished
-	if !established {
+	if !established && tcb.state != StateCloseWait {
 		payloadLen = 0 // Can't send data if not established.
 	}
 	if pending == 0 && payloadLen == 0 {
@@ -138,13 +143,6 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 	var seq Value = tcb.snd.NXT
 	if pending.HasAny(FlagRST) {
 		seq = tcb.rstPtr
-	}
-
-	if tcb.challengeAck {
-		tcb.challengeAck = false
-		seq = tcb.snd.NXT
-		ack = tcb.rcv.NXT
-		pending = FlagACK
 	}
 
 	seg := Segment{
@@ -243,11 +241,12 @@ func (tcb *ControlBlock) rcvFinWait1(seg Segment) (pending Flags, err error) {
 		return 0, errFinwaitExpectedACK
 	} else if flags.HasAny(FlagFIN) {
 		tcb.state = StateClosing // Simultaneous close. See figure 13 of RFC 9293.
+		pending = FlagACK
 	} else {
 		tcb.state = StateFinWait2
+		pending = FlagACK
 	}
-
-	return FlagACK, nil
+	return pending, nil
 }
 
 func (tcb *ControlBlock) rcvFinWait2(seg Segment) (pending Flags, err error) {
@@ -358,7 +357,8 @@ func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
 
 	case checkSeq && !InWindow(seg.SEQ, tcb.snd.NXT, tcb.snd.WND):
 		err = errSeqNotInWindow
-
+	case seg.DATALEN > 0 && (tcb.state == StateFinWait1 || tcb.state == StateFinWait2):
+		err = errConnectionClosing // Case 1: No further SENDs from the user will be accepted by the TCP implementation.
 	case checkSeq && !InWindow(seglast, tcb.snd.NXT, tcb.snd.WND):
 		err = errLastNotInWindow
 	}
@@ -485,32 +485,50 @@ func (flags Flags) HasAny(mask Flags) bool { return flags&mask != 0 }
 // All flags are printed with length of 3, so a NS flag will
 // end with a space i.e. [ACK,NS ]
 func (flags Flags) String() string {
-	if flags == 0 {
+	// Cover main cases.
+	switch flags {
+	case 0:
 		return "[]"
+	case synack:
+		return "[SYN,ACK]"
+	case finack:
+		return "[FIN,ACK]"
+	case pshack:
+		return "[PSH,ACK]"
+	case FlagACK:
+		return "[ACK]"
+	case FlagSYN:
+		return "[SYN]"
+	case FlagFIN:
+		return "[FIN]"
+	}
+	buf := make([]byte, 0, 2+3*bits.OnesCount16(uint16(flags)))
+	buf = append(buf, '[')
+	buf = flags.AppendFormat(buf)
+	buf = append(buf, ']')
+	return string(buf)
+}
+
+// AppendFormat appends a human readable flag string to b returning the extended buffer.
+func (flags Flags) AppendFormat(b []byte) []byte {
+	if flags == 0 {
+		return b
 	}
 	// String Flag const
 	const flaglen = 3
-	var flagbuff [2 + (flaglen+1)*9]byte
 	const strflags = "FINSYNRSTPSHACKURGECECWRNS "
-	n := 0
-	for i := 0; i*3 < len(strflags)-flaglen; i++ {
-		if flags&(1<<i) != 0 {
-			if n == 0 {
-				flagbuff[0] = '['
-				n++
-			} else {
-				flagbuff[n] = ','
-				n++
-			}
-			copy(flagbuff[n:n+3], []byte(strflags[i*flaglen:i*flaglen+flaglen]))
-			n += 3
+	var addcommas bool
+	for flags != 0 { // written by Github Copilot- looks OK.
+		i := bits.TrailingZeros16(uint16(flags))
+		if addcommas {
+			b = append(b, ',')
+		} else {
+			addcommas = true
 		}
+		b = append(b, strflags[i*flaglen:i*flaglen+flaglen]...)
+		flags &= ^(1 << i)
 	}
-	if n > 0 {
-		flagbuff[n] = ']'
-		n++
-	}
-	return string(flagbuff[:n])
+	return b
 }
 
 // State enumerates states a TCP connection progresses through during its lifetime.
@@ -569,4 +587,9 @@ func (s State) IsClosing() bool {
 // all state related to the remote connection. It returns true if Closed or in TimeWait.
 func (s State) IsClosed() bool {
 	return s == StateClosed || s == StateTimeWait
+}
+
+// IsSynchronized returns true if the connection has gone through the Established state.
+func (s State) IsSynchronized() bool {
+	return s >= StateEstablished
 }
