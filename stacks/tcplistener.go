@@ -149,10 +149,7 @@ func (l *TCPListener) recv(pkt *TCPPacket) error {
 		return err
 	}
 	if freeconn == nil {
-		l.trace("lst:noconn2recv",
-			slog.Uint64("sport", uint64(pkt.TCP.SourcePort)),
-			slog.String("saddr", net.IP(pkt.IP.Source[:]).String()),
-		)
+		l.trace("lst:noconn2recv")
 		return ErrDroppedPacket // No available connection to receive packet.
 	}
 	err := freeconn.recv(pkt)
