@@ -236,7 +236,7 @@ func TestExchange_rfc9293_figure12(t *testing.T) {
 			WantState:     seqs.StateFinWait2,
 			WantPeerState: seqs.StateCloseWait,
 			//	 TODO(soypat): WantPending should be nil here? Perhaps fix test by modifying rcvFinWait1 pending result.
-			// WantPending: &seqs.Segment{SEQ: issA + 1, ACK: issB, Flags: seqs.FlagACK, WND: windowA},
+			WantPending: &seqs.Segment{SEQ: issA + 1, ACK: issB, Flags: seqs.FlagACK, WND: windowA},
 		},
 		2: { // A receives FIN|ACK from B.
 			Incoming:      &seqs.Segment{SEQ: issB, ACK: issA + 1, Flags: FINACK, WND: windowB},

@@ -65,7 +65,6 @@ type ControlBlock struct {
 	pending      [2]Flags
 	state        State
 	challengeAck bool
-	islistener   bool
 	log          *slog.Logger
 }
 
@@ -114,6 +113,10 @@ func (seg *Segment) Last() Value {
 // PendingSegment calculates a suitable next segment to send from a payload length.
 // It does not modify the ControlBlock state or pending segment queue.
 func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
+	if tcb.challengeAck {
+		tcb.challengeAck = false
+		return Segment{SEQ: tcb.snd.NXT, ACK: tcb.rcv.NXT, Flags: FlagACK, WND: tcb.rcv.WND}, true
+	}
 	pending := tcb.pending[0]
 	established := tcb.state == StateEstablished
 	if !established && tcb.state != StateCloseWait {
@@ -140,13 +143,6 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 	var seq Value = tcb.snd.NXT
 	if pending.HasAny(FlagRST) {
 		seq = tcb.rstPtr
-	}
-
-	if tcb.challengeAck {
-		tcb.challengeAck = false
-		seq = tcb.snd.NXT
-		ack = tcb.rcv.NXT
-		pending = FlagACK
 	}
 
 	seg := Segment{
@@ -361,7 +357,8 @@ func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
 
 	case checkSeq && !InWindow(seg.SEQ, tcb.snd.NXT, tcb.snd.WND):
 		err = errSeqNotInWindow
-
+	case seg.DATALEN > 0 && (tcb.state == StateFinWait1 || tcb.state == StateFinWait2):
+		err = errConnectionClosing // Case 1: No further SENDs from the user will be accepted by the TCP implementation.
 	case checkSeq && !InWindow(seglast, tcb.snd.NXT, tcb.snd.WND):
 		err = errLastNotInWindow
 	}
@@ -488,8 +485,22 @@ func (flags Flags) HasAny(mask Flags) bool { return flags&mask != 0 }
 // All flags are printed with length of 3, so a NS flag will
 // end with a space i.e. [ACK,NS ]
 func (flags Flags) String() string {
-	if flags == 0 {
+	// Cover main cases.
+	switch flags {
+	case 0:
 		return "[]"
+	case synack:
+		return "[SYN,ACK]"
+	case finack:
+		return "[FIN,ACK]"
+	case pshack:
+		return "[PSH,ACK]"
+	case FlagACK:
+		return "[ACK]"
+	case FlagSYN:
+		return "[SYN]"
+	case FlagFIN:
+		return "[FIN]"
 	}
 	buf := make([]byte, 0, 2+3*bits.OnesCount16(uint16(flags)))
 	buf = append(buf, '[')
@@ -578,7 +589,7 @@ func (s State) IsClosed() bool {
 	return s == StateClosed || s == StateTimeWait
 }
 
-// IsSynchronized returns true
+// IsSynchronized returns true if the connection has gone through the Established state.
 func (s State) IsSynchronized() bool {
 	return s >= StateEstablished
 }

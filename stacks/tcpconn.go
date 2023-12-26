@@ -112,7 +112,7 @@ func (sock *TCPConn) FlushOutputBuffer() error {
 
 // Write writes argument data to the socket's output buffer which is queued to be sent.
 func (sock *TCPConn) Write(b []byte) (n int, _ error) {
-	err := sock.checkEstablished()
+	err := sock.checkPipeOpen()
 	if err != nil {
 		return 0, err
 	}
@@ -155,7 +155,7 @@ func (sock *TCPConn) Write(b []byte) (n int, _ error) {
 // Read reads data from the socket's input buffer. If the buffer is empty,
 // Read will block until data is available.
 func (sock *TCPConn) Read(b []byte) (int, error) {
-	err := sock.checkEstablished()
+	err := sock.checkPipeOpen()
 	if err != nil {
 		return 0, err
 	}
@@ -212,7 +212,7 @@ func (sock *TCPConn) SetDeadline(t time.Time) error {
 // and any currently-blocked Read call. A zero value for t means Read will not time out.
 func (sock *TCPConn) SetReadDeadline(t time.Time) error {
 	sock.trace("TCPConn.SetReadDeadline:start")
-	err := sock.checkEstablished()
+	err := sock.checkPipeOpen()
 	if err == nil {
 		sock.rdead = t
 	}
@@ -226,7 +226,7 @@ func (sock *TCPConn) SetReadDeadline(t time.Time) error {
 // A zero value for t means Write will not time out.
 func (sock *TCPConn) SetWriteDeadline(t time.Time) error {
 	sock.trace("TCPConn.SetWriteDeadline:start")
-	err := sock.checkEstablished()
+	err := sock.checkPipeOpen()
 	if err == nil {
 		sock.wdead = t
 	}
@@ -291,27 +291,28 @@ func (sock *TCPConn) open(state seqs.State, localPortNum uint16, iss seqs.Value,
 
 func (sock *TCPConn) Close() error {
 	toSend := sock.tx.Buffered()
+	sock.closing = true
 	if toSend == 0 {
 		err := sock.scb.Close()
 		if err != nil {
 			return err
 		}
 	}
-	sock.closing = true
 	sock.stack.FlagPendingTCP(sock.localPort)
 	return nil
 }
 
 func (sock *TCPConn) isPendingHandling() bool {
-	return sock.mustSendSyn() || sock.scb.HasPending() || sock.tx.Buffered() > 0 || sock.closing
+	return sock.scb.HasPending() || sock.mustSendSyn() || sock.tx.Buffered() > 0 || sock.closing
 }
 
-func (sock *TCPConn) checkEstablished() error {
+// checkPipeOpen checks if user data can be sent over the socket.
+func (sock *TCPConn) checkPipeOpen() error {
 	if sock.abortErr != nil {
 		return sock.abortErr
 	}
 	state := sock.State()
-	if state.IsClosed() || state.IsClosing() {
+	if sock.closing || state.IsClosed() || state.IsClosing() {
 		return net.ErrClosed
 	}
 	return nil
@@ -379,7 +380,7 @@ func (sock *TCPConn) send(response []byte) (n int, err error) {
 	seg, ok := sock.scb.PendingSegment(available)
 	if !ok {
 		// No pending control segment or data to send. Yield to handleUser.
-		return 0, nil
+		return 0, sock.stateCheck()
 	}
 
 	prevState := sock.scb.State()
@@ -464,10 +465,19 @@ func (sock *TCPConn) stateCheck() (portStackErr error) {
 	state := sock.State()
 	txEmpty := sock.tx.Buffered() == 0
 	// Close checks:
-	if sock.closing && txEmpty && sock.scb.State() == seqs.StateEstablished { // Get RAW state of SCB.
-		sock.scb.Close()
-		sock.debug("TCP:delayed-close", slog.Uint64("port", uint64(sock.localPort)))
+	if sock.closing {
+		if txEmpty && sock.scb.State() == seqs.StateEstablished { // Get RAW state of SCB.
+			sock.scb.Close()
+			sock.debug("TCP:delayed-close", slog.Uint64("port", uint64(sock.localPort)))
+		} else {
+			now := sock.stack.now()
+			if now.Sub(sock.lastTx) > 3*time.Second {
+				sock.logerr("TCP:idleabort")
+				return io.EOF // Abort connection- no response from remote.
+			}
+		}
 	}
+
 	if sock.scb.HasPending() {
 		sock.trace("TCPConn.stateCheck:hasPending")
 		portStackErr = ErrFlagPending // Flag to PortStack that we have pending data to send.
@@ -495,4 +505,8 @@ func (sock *TCPConn) debug(msg string, attrs ...slog.Attr) {
 
 func (sock *TCPConn) info(msg string, attrs ...slog.Attr) {
 	internal.LogAttrs(sock.stack.logger, slog.LevelInfo, msg, attrs...)
+}
+
+func (sock *TCPConn) logerr(msg string, attrs ...slog.Attr) {
+	internal.LogAttrs(sock.stack.logger, slog.LevelError, msg, attrs...)
 }

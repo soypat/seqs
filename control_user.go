@@ -53,6 +53,7 @@ func (tcb *ControlBlock) Open(iss Value, wnd Size, state State) (err error) {
 		err = errWindowTooLarge
 	}
 	if err != nil {
+		tcb.logerr("tcb:open", slog.String("err", err.Error()))
 		return err
 	}
 	tcb.state = state
@@ -62,6 +63,7 @@ func (tcb *ControlBlock) Open(iss Value, wnd Size, state State) (err error) {
 	if state == StateSynSent {
 		tcb.pending[0] = FlagSYN
 	}
+	tcb.trace("tcb:open", slog.String("state", tcb.state.String()))
 	return nil
 }
 
@@ -81,6 +83,11 @@ func (tcb *ControlBlock) Close() (err error) {
 		tcb.pending[0] = (tcb.pending[0] & FlagACK) | FlagFIN
 	case StateFinWait2, StateTimeWait:
 		err = errConnectionClosing
+	}
+	if err == nil {
+		tcb.trace("tcb:close", slog.String("state", tcb.state.String()))
+	} else {
+		tcb.logerr("tcb:close", slog.String("err", err.Error()))
 	}
 	return err
 }

@@ -21,12 +21,13 @@ var (
 )
 
 type DHCPClient struct {
-	stack      *PortStack
-	currentXid uint32
-	port       uint16
-	aux        UDPPacket // Avoid heap allocation.
-	aborted    bool
-	state      uint8
+	stack           *PortStack
+	currentXid      uint32
+	port            uint16
+	requestHostname string
+	aux             UDPPacket // Avoid heap allocation.
+	aborted         bool
+	state           uint8
 	// The result IP of the DHCP transaction (our new IP).
 	offer [4]byte
 	// DHCP server IP
@@ -64,6 +65,8 @@ func NewDHCPClient(stack *PortStack, lport uint16) *DHCPClient {
 type DHCPRequestConfig struct {
 	RequestedAddr netip.Addr
 	Xid           uint32
+	// Optional hostname to request.
+	Hostname string
 }
 
 func (d *DHCPClient) BeginRequest(cfg DHCPRequestConfig) error {
@@ -71,10 +74,13 @@ func (d *DHCPClient) BeginRequest(cfg DHCPRequestConfig) error {
 		return errors.New("xid must be non-zero")
 	} else if !cfg.RequestedAddr.Is4() {
 		return errors.New("requested addr must be IPv4")
+	} else if len(cfg.Hostname) > 30 {
+		return errors.New("hostname too long")
 	}
 	d.currentXid = cfg.Xid
 	d.requestedIP = cfg.RequestedAddr.As4()
 	d.state = dhcpStateNone
+	d.requestHostname = cfg.Hostname
 	err := d.stack.OpenUDP(d.port, d)
 	if err != nil {
 		return err
@@ -145,6 +151,9 @@ func (d *DHCPClient) send(dst []byte) (n int, err error) {
 			{Num: dhcp.OptRequestedIPaddress, Data: d.offer[:]},
 			{Num: dhcp.OptServerIdentification, Data: d.svip[:]},
 		}...)
+		if d.requestHostname != "" {
+			Options = append(Options, dhcp.Option{Num: dhcp.OptHostName, Data: unsafe.Slice(unsafe.StringData(d.requestHostname), len(d.requestHostname))})
+		}
 		nextstate = dhcpStateWaitAck
 
 	default:

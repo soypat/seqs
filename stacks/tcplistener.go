@@ -32,7 +32,8 @@ type TCPListener struct {
 }
 
 func NewTCPListener(stack *PortStack, cfg TCPListenerConfig) (*TCPListener, error) {
-	if cfg.MaxConnections == 0 || (cfg.ConnRxBufSize < 64 && cfg.ConnTxBufSize < 64) {
+	const minBufSize = 10
+	if cfg.MaxConnections == 0 || (cfg.ConnRxBufSize < minBufSize && cfg.ConnTxBufSize < minBufSize) {
 		return nil, errors.New("bad TCPListenerConfig")
 	}
 	l := &TCPListener{
@@ -118,6 +119,7 @@ func (l *TCPListener) send(dst []byte) (n int, err error) {
 			return n, err
 		}
 	}
+	l.trace("lst:noconn2snd")
 	return 0, nil
 }
 
@@ -147,6 +149,10 @@ func (l *TCPListener) recv(pkt *TCPPacket) error {
 		return err
 	}
 	if freeconn == nil {
+		l.trace("lst:noconn2recv",
+			slog.Uint64("sport", uint64(pkt.TCP.SourcePort)),
+			slog.String("saddr", net.IP(pkt.IP.Source[:]).String()),
+		)
 		return ErrDroppedPacket // No available connection to receive packet.
 	}
 	err := freeconn.recv(pkt)
