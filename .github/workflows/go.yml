@@ -41,6 +41,7 @@ jobs:
         # Options are `alpine`, `linux`, `macos`, `windows`
         # You will need to setup the environment variables below in github
         # and the project in codecov.io
+        go test -v -coverprofile=coverage.txt -covermode=atomic ./...
         curl -Os https://uploader.codecov.io/latest/linux/codecov
         chmod +x codecov
         CODECOV_TOKEN=$CODECOV_TOKEN ./codecov
