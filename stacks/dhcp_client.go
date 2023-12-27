@@ -222,6 +222,12 @@ func (d *DHCPClient) recv(pkt *UDPPacket) (err error) {
 			if len(opt.Data) == 1 {
 				msgType = dhcp.MessageType(opt.Data[0])
 			}
+		// The DHCP server information does not have to be in the header, but can
+		// be in the options. Copy into the decoded header for simplicity.
+		case dhcp.OptServerIdentification:
+			if len(opt.Data) == 4 {
+				copy(rcvHdr.SIAddr[:], opt.Data)
+			}
 		}
 		if debugEnabled && !internal.HeapAllocDebugging {
 			d.stack.debug("DHCP:rx", slog.String("opt", opt.Num.String()), slog.String("data", stringNumList(opt.Data)))
