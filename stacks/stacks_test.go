@@ -70,7 +70,7 @@ func TestDHCP(t *testing.T) {
 	if n < minDHCPSize {
 		t.Errorf("ex[%d] sent=%d want>=%d", ex, n, minDHCPSize)
 	}
-	t.Logf("\nclient=%+v\nserver=%+v\n", client, server)
+
 	// Client performs REQUEST.
 	ex, n = egr.DoExchanges(t, 1)
 	if n < minDHCPSize {
@@ -88,7 +88,6 @@ func TestDHCP(t *testing.T) {
 	if !client.Done() {
 		t.Fatal("client not processed ACK yet")
 	}
-
 }
 
 func TestARP(t *testing.T) {
