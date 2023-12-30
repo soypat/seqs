@@ -8,6 +8,10 @@ import (
 	"strings"
 )
 
+type RequestHeader struct {
+	header
+}
+
 type header struct {
 	statusCode           int
 	contentLength        int
