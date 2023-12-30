@@ -1,6 +1,7 @@
 package stacks_test
 
 import (
+	"cmp"
 	"encoding/hex"
 	"errors"
 	"log/slog"
@@ -19,7 +20,7 @@ const (
 	testingLargeNetworkSize = 2 // Minimum=2
 	exchangesToEstablish    = 3
 	exchangesToClose        = 3
-	defaultTCPBufferSize    = 2048
+	defaultMTU              = 2048
 
 	defaultTestDuplexMessages = 128
 
@@ -32,7 +33,7 @@ func TestDHCP(t *testing.T) {
 	const networkSize = testingLargeNetworkSize // How many distinct IP/MAC addresses on network.
 	requestedIP := netip.AddrFrom4([4]byte{192, 168, 1, 69})
 	siaddr := netip.AddrFrom4([4]byte{192, 168, 1, 1})
-	Stacks := createPortStacks(t, networkSize)
+	Stacks := createPortStacks(t, networkSize, defaultMTU)
 
 	clientStack := Stacks[0]
 	serverStack := Stacks[1]
@@ -92,7 +93,7 @@ func TestDHCP(t *testing.T) {
 
 func TestARP(t *testing.T) {
 	const networkSize = testingLargeNetworkSize // How many distinct IP/MAC addresses on network.
-	stacks := createPortStacks(t, networkSize)
+	stacks := createPortStacks(t, networkSize, 512)
 
 	sender := stacks[0]
 	target := stacks[1]
@@ -132,7 +133,8 @@ func TestARP(t *testing.T) {
 }
 
 func TestTCPEstablish(t *testing.T) {
-	client, server := createTCPClientServerPair(t)
+	const bufSizes = 32
+	client, server := createTCPClientServerPair(t, bufSizes, bufSizes)
 	// 3 way handshake needs 3 exchanges to complete.
 	egr := NewExchanger(client.PortStack(), server.PortStack())
 	wantStates := makeWantStatesHelper(t, client, server)
@@ -164,8 +166,9 @@ func TestTCPEstablish(t *testing.T) {
 }
 
 func TestTCPSendReceive_simplex(t *testing.T) {
+	const bufSizes = 32
 	// Create Client+Server and establish TCP connection between them.
-	client, server := createTCPClientServerPair(t)
+	client, server := createTCPClientServerPair(t, bufSizes, bufSizes)
 	egr := NewExchanger(client.PortStack(), server.PortStack())
 	egr.DoExchanges(t, exchangesToEstablish)
 	wantStates := makeWantStatesHelper(t, client, server)
@@ -184,8 +187,9 @@ func TestTCPSendReceive_simplex(t *testing.T) {
 }
 
 func TestTCPSendReceive_duplex_single(t *testing.T) {
+	const bufSizes = 32
 	// Create Client+Server and establish TCP connection between them.
-	client, server := createTCPClientServerPair(t)
+	client, server := createTCPClientServerPair(t, bufSizes, bufSizes)
 	cstack, sstack := client.PortStack(), server.PortStack()
 	egr := NewExchanger(cstack, sstack)
 	egr.DoExchanges(t, exchangesToEstablish)
@@ -215,7 +219,7 @@ func TestTCPSendReceive_duplex_single(t *testing.T) {
 
 func TestTCPSendReceive_duplex(t *testing.T) {
 	// Create Client+Server and establish TCP connection between them.
-	client, server := createTCPClientServerPair(t)
+	client, server := createTCPClientServerPair(t, 32, 32)
 	egr := NewExchanger(client.PortStack(), server.PortStack())
 	egr.DoExchanges(t, exchangesToEstablish)
 	if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
@@ -227,8 +231,9 @@ func TestTCPSendReceive_duplex(t *testing.T) {
 }
 
 func TestTCPClose_noPendingData(t *testing.T) {
+	const bufSizes = 32
 	// Create Client+Server and establish TCP connection between them.
-	client, server := createTCPClientServerPair(t)
+	client, server := createTCPClientServerPair(t, bufSizes, bufSizes)
 	egr := NewExchanger(client.PortStack(), server.PortStack())
 	egr.DoExchanges(t, exchangesToEstablish)
 	if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
@@ -300,7 +305,8 @@ func TestTCPSocketOpenOfClosedPort(t *testing.T) {
 	// Create Client+Server and establish TCP connection between them.
 	const newPortoffset = 1
 	const newISS = 1337
-	client, server := createTCPClientServerPair(t)
+	const bufSizes = 512
+	client, server := createTCPClientServerPair(t, bufSizes, bufSizes)
 	cstack, sstack := client.PortStack(), server.PortStack()
 
 	egr := NewExchanger(cstack, sstack)
@@ -395,7 +401,7 @@ func TestPortStackTCPDecoding(t *testing.T) {
 		ehdr := eth.DecodeEthernetHeader(data)
 		ps := stacks.NewPortStack(stacks.PortStackConfig{
 			MaxOpenPortsTCP: 1,
-			MTU:             2048,
+			MTU:             defaultMTU,
 			MAC:             ehdr.Destination,
 		})
 		sock, err := stacks.NewTCPConn(ps, stacks.TCPConnConfig{})
@@ -414,7 +420,8 @@ func TestPortStackTCPDecoding(t *testing.T) {
 }
 
 func TestListener(t *testing.T) {
-	client, listener := createTCPClientListenerPair(t)
+	const bufSizes = 2048
+	client, listener := createTCPClientListenerPair(t, bufSizes, bufSizes, 1)
 	egr := NewExchanger(client.PortStack(), listener.PortStack())
 	// Establish the connection on one port.
 	exdone, _ := egr.DoExchanges(t, exchangesToEstablish)
@@ -458,7 +465,7 @@ func TestListener(t *testing.T) {
 type Exchanger struct {
 	Stacks   []*stacks.PortStack
 	pipesN   []int
-	pipes    [][2048]byte
+	pipes    [][]byte
 	segments []seqs.Segment
 	ex       int
 	loglevel slog.Level
@@ -468,8 +475,19 @@ func NewExchanger(stacks ...*stacks.PortStack) *Exchanger {
 	egr := &Exchanger{
 		Stacks: stacks,
 		pipesN: make([]int, len(stacks)),
-		pipes:  make([][2048]byte, len(stacks)),
+		pipes:  make([][]byte, len(stacks)),
 		ex:     -1,
+	}
+	n := 0
+	for i := range stacks {
+		n += int(stacks[i].MTU())
+	}
+	buf := make([]byte, n)
+	n = 0
+	for i := range stacks {
+		end := n + int(stacks[i].MTU())
+		egr.pipes[i] = buf[n:end]
+		n = end
 	}
 	return egr
 }
@@ -496,7 +514,6 @@ func (egr *Exchanger) getPayload(istack int) []byte {
 
 func (egr *Exchanger) zeroPayload(istack int) {
 	egr.pipesN[istack] = 0
-	egr.pipes[istack] = [2048]byte{}
 }
 
 // auxbuf returns an unused buffer for temporary use. Do not hold references to this buffer during calls to HandleTx.
@@ -506,7 +523,7 @@ func (egr *Exchanger) auxbuf() []byte {
 			return egr.pipes[istack][:]
 		}
 	}
-	return make([]byte, 2048)
+	return make([]byte, defaultMTU)
 }
 
 func (egr *Exchanger) HandleTx(t *testing.T) (pkts, bytesSent int) {
@@ -580,22 +597,22 @@ func isDroppedPacket(err error) bool {
 	return err != nil && (errors.Is(err, stacks.ErrDroppedPacket) || strings.HasPrefix(err.Error(), "drop"))
 }
 
-func createTCPClientListenerPair(t *testing.T) (client *stacks.TCPConn, listener *stacks.TCPListener) {
+func createTCPClientListenerPair(t *testing.T, clientSizes, listenerSizes, maxListenerConns uint16) (client *stacks.TCPConn, listener *stacks.TCPListener) {
 	t.Helper()
 	const (
 		clientPort = 1025
 		serverPort = 80
 	)
-	Stacks := createPortStacks(t, 2)
+	Stacks := createPortStacks(t, 2, defaultMTU)
 	clientStack := Stacks[0]
 	listenerStack := Stacks[1]
 
 	// Configure listener (server).
 	listenerAddr := netip.AddrPortFrom(listenerStack.Addr(), serverPort)
 	listener, err := stacks.NewTCPListener(listenerStack, stacks.TCPListenerConfig{
-		ConnTxBufSize:  defaultTCPBufferSize,
-		MaxConnections: 1,
-		ConnRxBufSize:  defaultTCPBufferSize,
+		ConnTxBufSize:  listenerSizes,
+		MaxConnections: maxListenerConns,
+		ConnRxBufSize:  listenerSizes,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -604,17 +621,17 @@ func createTCPClientListenerPair(t *testing.T) (client *stacks.TCPConn, listener
 	if err != nil {
 		t.Fatal(err)
 	}
-	client = newTCPDialer(t, clientStack, clientPort, listenerAddr, listenerStack.HardwareAddr6())
+	client = newTCPDialer(t, clientStack, clientPort, clientSizes, listenerAddr, listenerStack.HardwareAddr6())
 	return client, listener
 }
 
-func createTCPClientServerPair(t *testing.T) (client, server *stacks.TCPConn) {
+func createTCPClientServerPair(t *testing.T, clientSizes, serverSizes uint16) (client, server *stacks.TCPConn) {
 	t.Helper()
 	const (
 		clientPort = 1025
 		serverPort = 80
 	)
-	Stacks := createPortStacks(t, 2)
+	Stacks := createPortStacks(t, 2, defaultMTU)
 	clientStack := Stacks[0]
 	serverStack := Stacks[1]
 
@@ -622,8 +639,8 @@ func createTCPClientServerPair(t *testing.T) (client, server *stacks.TCPConn) {
 	serverIP := netip.AddrPortFrom(serverStack.Addr(), serverPort)
 
 	serverTCP, err := stacks.NewTCPConn(serverStack, stacks.TCPConnConfig{
-		TxBufSize: defaultTCPBufferSize,
-		RxBufSize: defaultTCPBufferSize,
+		TxBufSize: serverSizes,
+		RxBufSize: serverSizes,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -632,16 +649,16 @@ func createTCPClientServerPair(t *testing.T) (client, server *stacks.TCPConn) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	clientTCP := newTCPDialer(t, clientStack, clientPort, serverIP, serverStack.HardwareAddr6())
+	clientTCP := newTCPDialer(t, clientStack, clientPort, clientSizes, serverIP, serverStack.HardwareAddr6())
 	return clientTCP, serverTCP
 }
 
-func newTCPDialer(t *testing.T, localstack *stacks.PortStack, localPort uint16, remoteAddr netip.AddrPort, remoteMAC [6]byte) *stacks.TCPConn {
+func newTCPDialer(t *testing.T, localstack *stacks.PortStack, localPort, bufSizes uint16, remoteAddr netip.AddrPort, remoteMAC [6]byte) *stacks.TCPConn {
 	t.Helper()
 	// Configure client.
 	clientTCP, err := stacks.NewTCPConn(localstack, stacks.TCPConnConfig{
-		TxBufSize: defaultTCPBufferSize,
-		RxBufSize: defaultTCPBufferSize,
+		TxBufSize: bufSizes,
+		RxBufSize: bufSizes,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -653,7 +670,7 @@ func newTCPDialer(t *testing.T, localstack *stacks.PortStack, localPort uint16, 
 	return clientTCP
 }
 
-func createPortStacks(t *testing.T, n int) (Stacks []*stacks.PortStack) {
+func createPortStacks(t *testing.T, n int, mtu uint16) (Stacks []*stacks.PortStack) {
 	t.Helper()
 	if n > math.MaxUint16 {
 		t.Fatal("too many stacks")
@@ -666,7 +683,7 @@ func createPortStacks(t *testing.T, n int) (Stacks []*stacks.PortStack) {
 			MAC:             MAC,
 			MaxOpenPortsTCP: 1,
 			MaxOpenPortsUDP: 1,
-			MTU:             2048,
+			MTU:             mtu,
 		})
 		Stack.SetAddr(ip)
 		Stacks = append(Stacks, Stack)
@@ -753,4 +770,11 @@ func makeWantStatesHelper(t *testing.T, client, server *stacks.TCPConn) func(cs,
 			t.Errorf("server state got=%s want=%s", server.State(), ss)
 		}
 	}
+}
+
+func max[T cmp.Ordered](a, b T) T {
+	if a > b {
+		return a
+	}
+	return b
 }

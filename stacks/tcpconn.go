@@ -62,16 +62,17 @@ func NewTCPConn(stack *PortStack, cfg TCPConnConfig) (*TCPConn, error) {
 	if cfg.TxBufSize == 0 {
 		cfg.TxBufSize = defaultSocketSize
 	}
-	sock := makeTCPConn(stack, cfg)
+	buf := make([]byte, cfg.RxBufSize+cfg.TxBufSize)
+	sock := makeTCPConn(stack, buf[:cfg.TxBufSize], buf[cfg.TxBufSize:cfg.TxBufSize+cfg.RxBufSize])
 	sock.trace("NewTCPConn:end")
 	return &sock, nil
 }
 
-func makeTCPConn(stack *PortStack, cfg TCPConnConfig) TCPConn {
+func makeTCPConn(stack *PortStack, tx, rx []byte) TCPConn {
 	return TCPConn{
 		stack: stack,
-		tx:    ring{buf: make([]byte, cfg.TxBufSize)},
-		rx:    ring{buf: make([]byte, cfg.RxBufSize)},
+		tx:    ring{buf: tx},
+		rx:    ring{buf: rx},
 	}
 }
 
@@ -129,6 +130,7 @@ func (sock *TCPConn) Write(b []byte) (n int, _ error) {
 		return 0, err
 	}
 	plen := len(b)
+	backoff := internal.NewBackoff(internal.BackoffHasPriority)
 	for {
 		if sock.abortErr != nil {
 			return n, sock.abortErr
@@ -140,7 +142,14 @@ func (sock *TCPConn) Write(b []byte) (n int, _ error) {
 		b = b[ngot:]
 		if n == plen {
 			return n, nil
+		} else if ngot > 0 {
+			backoff.Hit()
+			runtime.Gosched()
+		} else {
+			backoff.Miss()
 		}
+
+		sock.trace("TCPConn.Write:insuf-buf", slog.Int("missing", plen-n))
 		if sock.deadlineExceeded(sock.wdead) {
 			return n, os.ErrDeadlineExceeded
 		}
@@ -148,7 +157,6 @@ func (sock *TCPConn) Write(b []byte) (n int, _ error) {
 		if err != nil {
 			return n, err
 		}
-		runtime.Gosched()
 	}
 }
 
@@ -161,6 +169,7 @@ func (sock *TCPConn) Read(b []byte) (int, error) {
 	}
 	sock.trace("TCPConn.Read:start")
 	connid := sock.connid
+	backoff := internal.NewBackoff(internal.BackoffHasPriority)
 	for sock.rx.Buffered() == 0 && sock.State() == seqs.StateEstablished {
 		if sock.abortErr != nil {
 			return 0, sock.abortErr
@@ -170,7 +179,7 @@ func (sock *TCPConn) Read(b []byte) (int, error) {
 		if sock.deadlineExceeded(sock.rdead) {
 			return 0, os.ErrDeadlineExceeded
 		}
-		runtime.Gosched()
+		backoff.Miss()
 	}
 	n, err := sock.rx.Read(b)
 	return n, err
