@@ -202,6 +202,15 @@ func prand16(seed uint16) uint16 {
 	return seed
 }
 
+// prand32 generates a pseudo random number from a seed.
+func prand32[T ~uint32](seed T) T {
+	/* Algorithm "xor" from p. 4 of Marsaglia, "Xorshift RNGs" */
+	seed ^= seed << 13
+	seed ^= seed >> 17
+	seed ^= seed << 5
+	return seed
+}
+
 // ParseTCPPacket is a convenience function for generating a pkt TCP packet
 //
 // Deprecated: This function is guaranteed to disappear in the future. Used only in tests.
