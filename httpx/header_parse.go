@@ -130,8 +130,8 @@ func readRawHeaders(dst, buf []byte) ([]byte, int, error) {
 
 func (h *header) parseHeaders(buf []byte) (int, error) {
 	h.contentLength = -2
-
-	var s headerScanner
+	h.scanner = headerScanner{}
+	s := &h.scanner
 	s.b = buf
 	s.disableNormalizing = h.disableNormalizing
 	var err error

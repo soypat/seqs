@@ -8,23 +8,27 @@ import (
 	"strings"
 )
 
+type ResponseHeader struct {
+	hdr header
+}
+
 type RequestHeader struct {
 	header
 }
 
 type header struct {
-	statusCode           int
-	contentLength        int
-	host                 []byte
-	contentLengthBytes   []byte
-	contentType          []byte
-	userAgent            []byte
-	method               []byte
-	proto                []byte
-	requestURI           []byte
-	rawHeaders           []byte
-	mulHeader            []byte
-	cookies              []argsKV
+	statusCode         int
+	contentLength      int
+	host               []byte
+	contentLengthBytes []byte
+	contentType        []byte
+	userAgent          []byte
+	method             []byte
+	proto              []byte
+	requestURI         []byte
+	rawHeaders         []byte
+	mulHeader          []byte
+
 	disableNormalizing   bool
 	disableSpecialHeader bool
 	noDefaultContentType bool
@@ -34,7 +38,9 @@ type header struct {
 	// Reusable buffer for building strings.
 	bufKV   argsKV
 	h       []argsKV
+	cookies []argsKV
 	trailer []argsKV
+	scanner headerScanner
 }
 
 func (h *header) SetContentRange(startPos, endPos, contentLength int) {

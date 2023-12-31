@@ -15,7 +15,7 @@ func TestRequestHeaderEmptyValueFromString(t *testing.T) {
 		"Host: foobar\r\n" +
 		"EmptyValue2: \r\n" +
 		"\r\n"
-	var h header
+	var h RequestHeader
 	br := bufio.NewReader(bytes.NewBufferString(s))
 	if err := h.Read(br); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -42,7 +42,7 @@ func TestRequestRawHeaders(t *testing.T) {
 	t.Run("normalized", func(t *testing.T) {
 		s := "GET / HTTP/1.1\r\n" + kvs
 		exp := kvs
-		var h header
+		var h RequestHeader
 		br := bufio.NewReader(bytes.NewBufferString(s))
 		if err := h.Read(br); err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -88,7 +88,7 @@ func TestRequestRawHeaders(t *testing.T) {
 	t.Run("http10", func(t *testing.T) {
 		s := "GET / HTTP/1.0\r\n" + kvs
 		exp := kvs
-		var h header
+		var h RequestHeader
 		br := bufio.NewReader(bytes.NewBufferString(s))
 		if err := h.Read(br); err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -107,7 +107,7 @@ func TestRequestRawHeaders(t *testing.T) {
 	t.Run("no-kvs", func(t *testing.T) {
 		s := "GET / HTTP/1.1\r\n\r\n"
 		exp := ""
-		var h header
+		var h RequestHeader
 		h.DisableNormalizing()
 		br := bufio.NewReader(bytes.NewBufferString(s))
 		if err := h.Read(br); err != nil {
@@ -134,7 +134,7 @@ func TestRequestDisableSpecialHeaders(t *testing.T) {
 		"Non-Special: val\r\n" +
 		"\r\n"
 
-	var h header
+	var h RequestHeader
 	h.DisableSpecialHeader()
 
 	s := "GET / HTTP/1.0\r\n" + kvs
