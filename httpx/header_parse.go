@@ -49,7 +49,7 @@ func (h *header) parse(buf []byte) (int, error) {
 		return 0, err
 	}
 
-	h.rawHeaders, _, err = readRawHeaders(h.rawHeaders[:0], buf[m:])
+	h.rawHeaders, _, err = readRawHeaders(h.rawHeaders[:0], b2s(buf[m:]))
 	if err != nil {
 		return 0, err
 	}
@@ -72,7 +72,7 @@ func (h *header) parseFirstLine(buf []byte) (int, error) {
 	}
 
 	// parse method
-	n := bytes.IndexByte(b, ' ')
+	n := strings.IndexByte(b2s(b), ' ')
 	if n <= 0 {
 		return 0, errors.New("cannot find http request method")
 	}
@@ -81,7 +81,7 @@ func (h *header) parseFirstLine(buf []byte) (int, error) {
 
 	protoStr := strHTTP11
 	// parse requestURI
-	n = bytes.LastIndexByte(b, ' ')
+	n = strings.LastIndexByte(b2s(b), ' ')
 	switch {
 	case n < 0:
 		h.noHTTP11 = true
@@ -100,8 +100,8 @@ func (h *header) parseFirstLine(buf []byte) (int, error) {
 	return len(buf) - len(bNext), nil
 }
 
-func readRawHeaders(dst, buf []byte) ([]byte, int, error) {
-	n := bytes.IndexByte(buf, nChar)
+func readRawHeaders(dst []byte, buf string) ([]byte, int, error) {
+	n := strings.IndexByte(buf, nChar)
 	if n < 0 {
 		return dst[:0], 0, errNeedMore
 	}
@@ -115,7 +115,7 @@ func readRawHeaders(dst, buf []byte) ([]byte, int, error) {
 	m := n
 	for {
 		b = b[m:]
-		m = bytes.IndexByte(b, nChar)
+		m = strings.IndexByte(b, nChar)
 		if m < 0 {
 			return dst, 0, errNeedMore
 		}
@@ -171,7 +171,7 @@ func (h *header) parseHeaders(buf []byte) (int, error) {
 				if caseInsensitiveCompare(key, strContentLength) {
 					if h.contentLength != -1 {
 						var nerr error
-						if h.contentLength, nerr = parseContentLength(s.value); nerr != nil {
+						if h.contentLength, nerr = parseContentLength(b2s(s.value)); nerr != nil {
 							if err == nil {
 								err = nerr
 							}
@@ -411,21 +411,7 @@ func normalizeHeaderValue(ov, ob []byte, headerLength int) (nv, nb []byte, nhl i
 	return
 }
 
-// caseInsensitiveCompare does a case insensitive equality comparison of
-// two []byte. Assumes only letters need to be matched.
-func caseInsensitiveCompare(a, b string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := 0; i < len(a); i++ {
-		if a[i]|0x20 != b[i]|0x20 {
-			return false
-		}
-	}
-	return true
-}
-
-func parseContentLength(b []byte) (int, error) {
+func parseContentLength(b string) (int, error) {
 	v, n, err := parseUintBuf(b)
 	if err != nil {
 		return -1, fmt.Errorf("cannot parse Content-Length: %w", err)
@@ -492,7 +478,7 @@ var (
 	errTooLongInt             = errors.New("too long int")
 )
 
-func parseUintBuf(b []byte) (int, int, error) {
+func parseUintBuf(b string) (int, int, error) {
 	n := len(b)
 	if n == 0 {
 		return -1, 0, errEmptyInt
@@ -731,14 +717,6 @@ func (h *header) peek(key string) []byte {
 	}
 }
 
-// ContentType returns Content-Type header value.
-func (h *header) ContentType() []byte {
-	if h.disableSpecialHeader {
-		return peekArg(h.h, HeaderContentType)
-	}
-	return h.contentType
-}
-
 // ConnectionClose returns true if 'Connection: close' header is set.
 func (h *header) ConnectionClose() bool {
 	return h.connectionClose
@@ -750,21 +728,6 @@ func (h *header) UserAgent() []byte {
 		return peekArg(h.h, HeaderUserAgent)
 	}
 	return h.userAgent
-}
-
-func appendRequestCookieBytes(dst []byte, cookies []argsKV) []byte {
-	for i, n := 0, len(cookies); i < n; i++ {
-		kv := &cookies[i]
-		if len(kv.key) > 0 {
-			dst = append(dst, kv.key...)
-			dst = append(dst, '=')
-		}
-		dst = append(dst, kv.value...)
-		if i+1 < n {
-			dst = append(dst, ';', ' ')
-		}
-	}
-	return dst
 }
 
 func appendArgsKey(dst []byte, args []argsKV, sep string) []byte {

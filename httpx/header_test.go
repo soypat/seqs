@@ -4,8 +4,31 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"strings"
 	"testing"
 )
+
+func TestResponseHeaderAddContentType(t *testing.T) {
+	t.Parallel()
+
+	var h ResponseHeader
+	h.Add("Content-Type", "test")
+
+	got := string(h.Peek("Content-Type"))
+	expected := "test"
+	if got != expected {
+		t.Errorf("expected %q got %q", expected, got)
+	}
+
+	var buf bytes.Buffer
+	if _, err := h.WriteTo(&buf); err != nil {
+		t.Fatalf("unexpected error when writing header: %v", err)
+	}
+
+	if n := strings.Count(buf.String(), "Content-Type: "); n != 1 {
+		t.Errorf("Content-Type occurred %d times", n)
+	}
+}
 
 func TestRequestHeaderEmptyValueFromString(t *testing.T) {
 	t.Parallel()
@@ -144,7 +167,7 @@ func TestRequestDisableSpecialHeaders(t *testing.T) {
 	}
 	// assert order of all headers preserved
 	if h.String() != s {
-		t.Fatalf("Headers not equal: %q. Expecting %q", h.String(), s)
+		t.Fatalf("Headers not equal:\n%q\nExpecting:\n%q\n", h.String(), s)
 	}
 	// h.SetCanonical([]byte("host"), []byte("notfoobar"))
 	// if string(h.Host()) != "foobar" {

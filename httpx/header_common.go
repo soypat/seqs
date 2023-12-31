@@ -1,23 +1,15 @@
 package httpx
 
 import (
-	"bytes"
 	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 )
 
-type ResponseHeader struct {
-	hdr header
-}
-
-type RequestHeader struct {
-	header
-}
-
+// header implements logic shared by RequestHeader and ResponseHeader.
 type header struct {
-	statusCode         int
+	noCopy             noCopy
 	contentLength      int
 	host               []byte
 	contentLengthBytes []byte
@@ -43,6 +35,133 @@ type header struct {
 	scanner headerScanner
 }
 
+func (h *header) Set(key, value string) {
+	h.bufKV.key = append(h.bufKV.key[:0], key...)
+	normalizeHeaderKey(h.bufKV.key, h.disableNormalizing)
+	h.SetCanonical(b2s(h.bufKV.key), value)
+}
+
+func (h *header) Add(key, value string) {
+	if h.setSpecialHeader(key, value) {
+		return
+	}
+	k := getHeaderKeyBytes(&h.bufKV, key, h.disableNormalizing)
+	h.h = appendArg(h.h, b2s(k), value, argsHasValue)
+}
+
+// ContentEncoding returns Content-Encoding header value.
+func (h *header) ContentEncoding() []byte {
+	return peekArg(h.h, strContentEncoding)
+}
+
+// SetContentEncoding sets Content-Encoding header value.
+func (h *header) SetContentEncoding(contentEncoding string) {
+	h.Set(strContentEncoding, contentEncoding)
+}
+
+// SetContentType sets Content-Type header value.
+func (h *header) SetContentType(contentType string) {
+	h.contentType = append(h.contentType[:0], contentType...)
+}
+
+// ContentType returns Content-Type header value.
+func (h *header) ContentType() []byte {
+	contentType := h.contentType
+	if !h.noDefaultContentType && len(h.contentType) == 0 {
+		contentType = append(contentType, defaultContentType...)
+	}
+	return contentType
+}
+
+// SetCanonical sets the given 'key: value' header assuming that
+// key is in canonical form.
+//
+// If the header is set as a Trailer (forbidden trailers will not be set, see SetTrailer for more details),
+// it will be sent after the chunked request body.
+func (h *header) SetCanonical(key, value string) {
+	if h.setSpecialHeader(key, value) {
+		return
+	}
+	h.setNonSpecial(key, value)
+}
+
+// setSpecialHeader handles special headers and return true when a header is processed.
+func (h *header) setSpecialHeader(key, value string) bool {
+	if len(key) == 0 || h.disableSpecialHeader {
+		return false
+	}
+
+	switch key[0] | 0x20 {
+	case 'c':
+		switch {
+		case caseInsensitiveCompare(strContentType, key):
+			h.SetContentType(value)
+			return true
+		case caseInsensitiveCompare(strContentLength, key):
+			if contentLength, err := parseContentLength(value); err == nil {
+				h.contentLength = contentLength
+				h.contentLengthBytes = append(h.contentLengthBytes[:0], value...)
+			}
+			return true
+		case caseInsensitiveCompare(strConnection, key):
+			if strClose == value {
+				h.SetConnectionClose()
+			} else {
+				h.ResetConnectionClose()
+				h.setNonSpecial(key, value)
+			}
+			return true
+		case caseInsensitiveCompare(strCookie, key):
+			h.collectCookies()
+			h.cookies = parseRequestCookies(h.cookies, value)
+			return true
+		}
+	case 't': // OK
+		if caseInsensitiveCompare(strTransferEncoding, key) {
+			// Transfer-Encoding is managed automatically.
+			return true
+		} else if caseInsensitiveCompare(strTrailer, key) {
+			_ = h.SetTrailer(value)
+			return true
+		}
+	case 'h':
+		if caseInsensitiveCompare(strHost, key) {
+			h.SetHost(value)
+			return true
+		}
+	case 'u':
+		if caseInsensitiveCompare(strUserAgent, key) {
+			h.SetUserAgent(value)
+			return true
+		}
+	}
+
+	return false
+}
+
+// SetHost sets Host header value.
+func (h *header) SetHost(host string) {
+	h.host = append(h.host[:0], host...)
+}
+
+// SetUserAgent sets User-Agent header value.
+func (h *header) SetUserAgent(userAgent string) {
+	h.userAgent = append(h.userAgent[:0], userAgent...)
+}
+
+// SetConnectionClose sets 'Connection: close' header.
+func (h *header) SetConnectionClose() {
+	h.connectionClose = true
+}
+
+// ResetConnectionClose clears 'Connection: close' header if it exists.
+func (h *header) ResetConnectionClose() {
+	if h.connectionClose {
+		h.connectionClose = false
+		h.h = delAllArgs(h.h, strConnection)
+	}
+}
+
 func (h *header) SetContentRange(startPos, endPos, contentLength int) {
 	b := h.bufKV.value[:0]
 	b = append(b, strBytes...)
@@ -60,14 +179,6 @@ func (h *header) SetContentRange(startPos, endPos, contentLength int) {
 // setNonSpecial directly put into map i.e. not a basic header.
 func (h *header) setNonSpecial(key string, value string) {
 	h.h = setArg(h.h, key, value, argsHasValue)
-}
-
-// StatusCode returns response status code.
-func (h *header) StatusCode() int {
-	if h.statusCode == 0 {
-		return http.StatusOK
-	}
-	return h.statusCode
 }
 
 func AppendUint(b []byte, v int) []byte {
@@ -249,23 +360,6 @@ func (h *header) DisableSpecialHeader() {
 	h.disableSpecialHeader = true
 }
 
-// String returns request header representation.
-func (h *header) String() string {
-	return string(h.Header())
-}
-
-// Header returns request header representation.
-//
-// Headers that set as Trailer will not represent. Use TrailerHeader for trailers.
-//
-// The returned value is valid until the request is released,
-// either though ReleaseRequest or your request handler returning.
-// Do not store references to returned value. Make copies instead.
-func (h *header) Header() []byte {
-	h.bufKV.value = h.AppendBytes(h.bufKV.value[:0])
-	return h.bufKV.value
-}
-
 // Method returns HTTP request method.
 func (h *header) Method() []byte {
 	if len(h.method) == 0 {
@@ -291,43 +385,14 @@ func (h *header) Protocol() []byte {
 	return h.proto
 }
 
-// AppendBytes appends request header representation to dst and returns
-// the extended dst.
-func (h *header) AppendBytes(dst []byte) []byte {
-	dst = append(dst, h.Method()...)
-	dst = append(dst, ' ')
-	dst = append(dst, h.RequestURI()...)
-	dst = append(dst, ' ')
-	dst = append(dst, h.Protocol()...)
-	dst = append(dst, strCRLF...)
-
-	userAgent := h.UserAgent()
-	if len(userAgent) > 0 && !h.disableSpecialHeader {
-		dst = appendHeaderLine(dst, strUserAgent, b2s(userAgent))
-	}
-
-	host := h.Host()
-	if len(host) > 0 && !h.disableSpecialHeader {
-		dst = appendHeaderLine(dst, strHost, b2s(host))
-	}
-
-	contentType := h.ContentType()
-	if !h.noDefaultContentType && len(contentType) == 0 && !h.ignoreBody() {
-		contentType = append(contentType, strDefaultContentType...)
-	}
-	if len(contentType) > 0 && !h.disableSpecialHeader {
-		dst = appendHeaderLine(dst, strContentType, b2s(contentType))
-	}
-	if len(h.contentLengthBytes) > 0 && !h.disableSpecialHeader {
-		dst = appendHeaderLine(dst, strContentLength, b2s(h.contentLengthBytes))
-	}
-
+// AppendReqRespCommon appends request/response common header representation to dst and returns the extended buffer.
+func (h *header) AppendReqRespCommon(dst []byte) []byte {
 	for i, n := 0, len(h.h); i < n; i++ {
 		kv := &h.h[i]
 		// Exclude trailer from header
 		exclude := false
 		for _, t := range h.trailer {
-			if bytes.Equal(kv.key, t.key) {
+			if b2s(kv.key) == b2s(t.key) {
 				exclude = true
 				break
 			}
@@ -370,6 +435,26 @@ func (h *header) ignoreBody() bool {
 	return h.IsGet() || h.IsHead()
 }
 
+func (h *header) collectCookies() {
+	if h.cookiesCollected {
+		return
+	}
+
+	for i, n := 0, len(h.h); i < n; i++ {
+		kv := &h.h[i]
+		if caseInsensitiveCompare(b2s(kv.key), strCookie) {
+			h.cookies = parseRequestCookies(h.cookies, b2s(kv.value))
+			tmp := *kv
+			copy(h.h[i:], h.h[i+1:])
+			n--
+			i--
+			h.h[n] = tmp
+			h.h = h.h[:n]
+		}
+	}
+	h.cookiesCollected = true
+}
+
 func (h *header) MethodIs(method string) bool {
 	return b2s(h.method) == method
 }
@@ -403,3 +488,13 @@ func (h *header) IsPatch() bool { return h.MethodIs(http.MethodPatch) }
 
 // IsHTTP11 returns true if the request is HTTP/1.1.
 func (h *header) IsHTTP11() bool { return !h.noHTTP11 }
+
+// Embed this type into a struct, which mustn't be copied,
+// so `go vet` gives a warning if this struct is copied.
+//
+// See https://github.com/golang/go/issues/8005#issuecomment-190753527 for details.
+// and also: https://stackoverflow.com/questions/52494458/nocopy-minimal-example
+type noCopy struct{}
+
+func (*noCopy) Lock()   {}
+func (*noCopy) Unlock() {}
