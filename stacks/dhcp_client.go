@@ -34,7 +34,8 @@ type DHCPClient struct {
 	svip        [4]byte
 	requestedIP [4]byte
 	optionbuf   [4]dhcp.Option
-	msgbug      [1]byte
+	// This field is for avoiding heap allocations.
+	msgbug [2]byte
 }
 
 // State transition table:
@@ -214,13 +215,18 @@ func (d *DHCPClient) recv(pkt *UDPPacket) (err error) {
 	}
 
 	// Parse DHCP options looking for message type field.
-	var msgType dhcp.MessageType
-	debugEnabled := d.stack.isLogEnabled(slog.LevelDebug)
+	// var mt dhcp.MessageType
+	mt := &d.msgbug[0]
+	db := &d.msgbug[1]
+	*db = 0
+	if d.stack.isLogEnabled(slog.LevelDebug) {
+		*db = 1
+	}
 	err = dhcp.ForEachOption(incpayload, func(opt dhcp.Option) error {
 		switch opt.Num {
 		case dhcp.OptMessageType:
 			if len(opt.Data) == 1 {
-				msgType = dhcp.MessageType(opt.Data[0])
+				*mt = opt.Data[0]
 			}
 		// The DHCP server information does not have to be in the header, but can
 		// be in the options. Copy into the decoded header for simplicity.
@@ -229,11 +235,13 @@ func (d *DHCPClient) recv(pkt *UDPPacket) (err error) {
 				copy(rcvHdr.SIAddr[:], opt.Data)
 			}
 		}
-		if debugEnabled && !internal.HeapAllocDebugging {
+		if *db != 0 && !internal.HeapAllocDebugging {
 			d.stack.debug("DHCP:rx", slog.String("opt", opt.Num.String()), slog.String("data", stringNumList(opt.Data)))
 		}
 		return nil
 	})
+
+	msgType := dhcp.MessageType(*mt)
 	if d.stack.isLogEnabled(slog.LevelInfo) {
 		d.stack.info("DHCP:rx", slog.String("msg", msgType.String()))
 	}

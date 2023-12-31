@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
-	"runtime"
 
 	"github.com/soypat/seqs"
 	"github.com/soypat/seqs/internal"
@@ -41,12 +40,14 @@ func NewTCPListener(stack *PortStack, cfg TCPListenerConfig) (*TCPListener, erro
 		conns: make([]TCPConn, cfg.MaxConnections),
 		used:  make([]bool, cfg.MaxConnections),
 	}
-	cfgconn := TCPConnConfig{
-		TxBufSize: cfg.ConnTxBufSize,
-		RxBufSize: cfg.ConnRxBufSize,
-	}
+	txlen := int(cfg.ConnTxBufSize)
+	rxlen := int(cfg.ConnRxBufSize)
+	buf := make([]byte, int(cfg.MaxConnections)*(txlen+rxlen))
 	for i := range l.conns {
-		l.conns[i] = makeTCPConn(stack, cfgconn)
+		offset := i * (txlen + rxlen)
+		tx := buf[offset : offset+txlen]
+		rx := buf[offset+txlen : offset+txlen+rxlen]
+		l.conns[i] = makeTCPConn(stack, tx, rx)
 	}
 	return l, nil
 }
@@ -55,6 +56,7 @@ func NewTCPListener(stack *PortStack, cfg TCPListenerConfig) (*TCPListener, erro
 // It implements the [net.Listener] interface.
 func (l *TCPListener) Accept() (net.Conn, error) {
 	connid := l.connid
+	backoff := internal.NewBackoff(internal.BackoffCriticalPath)
 	for l.isOpen() && connid == l.connid {
 		for i := range l.conns {
 			conn := &l.conns[i]
@@ -64,7 +66,7 @@ func (l *TCPListener) Accept() (net.Conn, error) {
 			l.used[i] = true
 			return conn, nil
 		}
-		runtime.Gosched()
+		backoff.Miss()
 	}
 	return nil, net.ErrClosed
 }
@@ -174,11 +176,11 @@ func (l *TCPListener) abort() {
 }
 
 func (l *TCPListener) freeConnForReuse(idx int) {
+	l.iss = prand32(l.iss)
 	conn := &l.conns[idx]
 	l.info("lst:freeConnForReuse", slog.Uint64("lport", uint64(conn.localPort)), slog.Uint64("rport", uint64(conn.remote.Port())))
 	conn.abort()
 	conn.open(seqs.StateListen, l.port, l.iss, [6]byte{}, netip.AddrPort{})
-	l.iss += 3237
 	l.used[idx] = false
 }
 
