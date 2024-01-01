@@ -119,7 +119,7 @@ var (
 	errZeroPort         = errors.New("zero port in TCP/UDP")
 	errBadTCPOffset     = errors.New("invalid TCP offset")
 	errNilHandler       = errors.New("nil handler")
-	errChecksumTCPorUDP = errors.New("invalid TCP/UDP checksum")
+	ErrChecksumTCPorUDP = errors.New("invalid TCP/UDP checksum")
 	errBadUDPLength     = errors.New("invalid UDP length")
 	errInvalidIHL       = errors.New("invalid IP IHL")
 	errIPVersion        = errors.New("IP version not supported")
@@ -229,7 +229,7 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 		payload = payload[eth.SizeUDPHeader:]
 		gotsum := uhdr.CalculateChecksumIPv4(&ihdr, payload)
 		if gotsum != uhdr.Checksum {
-			err = errChecksumTCPorUDP
+			err = ErrChecksumTCPorUDP
 			break
 		}
 
@@ -293,7 +293,7 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 		gotsum := thdr.CalculateChecksumIPv4(&ihdr, tcpOptions, payload)
 
 		if gotsum != thdr.Checksum {
-			err = errChecksumTCPorUDP
+			err = ErrChecksumTCPorUDP
 			break
 		}
 		port := findPort(ps.portsTCP, thdr.DestinationPort)
