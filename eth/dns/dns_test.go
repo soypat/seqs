@@ -1,6 +1,7 @@
 package dns
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -79,5 +80,86 @@ func TestNameAppendDecode(t *testing.T) {
 }
 
 func TestMessageAppendEncode(t *testing.T) {
+	var tests = []struct {
+		Message Message
+		error   error
+	}{
+		{
+			Message: Message{
+				Questions: []Question{
+					{
+						Name:  MustNewName("."),
+						Type:  TypeA,
+						Class: ClassINET,
+					},
+				},
+				Answers: []Resource{
+					{
+						Header: ResourceHeader{
+							Name:   MustNewName("."),
+							Type:   TypeA,
+							Class:  ClassINET,
+							TTL:    256,
+							Length: 3,
+						},
+						data: []byte{1, 2, 3},
+					},
+				},
+			},
+		},
+	}
+	var buf [512]byte
+	for _, tt := range tests {
+		b, err := tt.Message.AppendTo(buf[:0])
+		if err != nil {
+			t.Fatal(err)
+		}
 
+		var msg Message
+		msg.SetMaxResources(tt.Message.QDCount, tt.Message.ANCount, tt.Message.NSCount, tt.Message.ARCount)
+		_, err = msg.Decode(b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if msg.String() != tt.Message.String() {
+			t.Errorf("mismatch message strings after append/decode:\n%s\n%s", tt.Message.String(), msg.String())
+		}
+	}
+}
+
+func MustNewName(s string) Name {
+	name, err := NewName(s)
+	if err != nil {
+		panic(err)
+	}
+	return *name
+}
+
+func (m *Message) String() string {
+	s := fmt.Sprintf("Message: %#v\n", &m.Header)
+	if len(m.Questions) > 0 {
+		s += "-- Questions\n"
+		for _, q := range m.Questions {
+			s += fmt.Sprintf("%#v\n", q)
+		}
+	}
+	if len(m.Answers) > 0 {
+		s += "-- Answers\n"
+		for _, a := range m.Answers {
+			s += fmt.Sprintf("%#v\n", a)
+		}
+	}
+	if len(m.Authorities) > 0 {
+		s += "-- Authorities\n"
+		for _, ns := range m.Authorities {
+			s += fmt.Sprintf("%#v\n", ns)
+		}
+	}
+	if len(m.Additionals) > 0 {
+		s += "-- Additionals\n"
+		for _, e := range m.Additionals {
+			s += fmt.Sprintf("%#v\n", e)
+		}
+	}
+	return s
 }

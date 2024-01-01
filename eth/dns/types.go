@@ -137,10 +137,6 @@ func (m *Message) Decode(msg []byte) (uint16, error) {
 	if err != nil {
 		return off, err
 	}
-	off, err = decodeToCapResources(&m.Answers, msg, m.ANCount, off)
-	if err != nil {
-		return off, err
-	}
 	off, err = decodeToCapResources(&m.Authorities, msg, m.NSCount, off)
 	if err != nil {
 		return off, err
@@ -166,6 +162,11 @@ func decodeToCapResources(dst *[]Resource, msg []byte, nrec, off uint16) (uint16
 }
 
 func (m *Message) AppendTo(buf []byte) (_ []byte, err error) {
+	m.QDCount = uint16(len(m.Questions))
+	m.ANCount = uint16(len(m.Answers))
+	m.NSCount = uint16(len(m.Authorities))
+	m.ARCount = uint16(len(m.Additionals))
+
 	buf = slices.Grow(buf, int(m.Len()))
 	m.Header.Put(buf[len(buf) : len(buf)+SizeHeader])
 	buf = buf[:len(buf)+SizeHeader]
@@ -292,14 +293,15 @@ func (r *Resource) Decode(b []byte) (uint16, error) {
 	if err != nil {
 		return off, err
 	}
-	if off+r.Header.Length > uint16(len(b)) {
+	if r.Header.Length > uint16(len(b[off:])) {
 		return off, errResourceLen
 	}
-	r.data = append(r.data, b[off:off+uint16(r.Header.Length)]...)
-	return off + uint16(r.Header.Length), nil
+	r.data = append(r.data[:0], b[off:off+r.Header.Length]...)
+	return off + r.Header.Length, nil
 }
 
 func (r *Resource) appendTo(buf []byte) (_ []byte, err error) {
+	r.Header.Length = uint16(len(r.data))
 	buf, err = r.Header.appendTo(buf)
 	if err != nil {
 		return buf, err
@@ -337,6 +339,9 @@ func (rhdr *ResourceHeader) appendTo(buf []byte) (_ []byte, err error) {
 
 // NewName parses a domain name and returns a new Name.
 func NewName(domain string) (*Name, error) {
+	if len(domain) == 1 && domain[0] == '.' {
+		return &Name{data: []byte{0}}, nil
+	}
 	var name Name
 	for len(domain) > 0 {
 		idx := strings.IndexByte(domain, '.')
