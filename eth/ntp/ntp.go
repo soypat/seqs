@@ -92,6 +92,11 @@ func DecodeHeader(b []byte) (nhdr Header) {
 	return nhdr
 }
 
+// SetFlags sets the header's Version, Mode, and LeapIndicator fields. Version is automatically set to 4.
+func (nhdr *Header) SetFlags(mode Mode, leap LeapIndicator) {
+	nhdr.flags = uint8(leap)<<6 | Version4<<3 | uint8(mode&0b111)
+}
+
 // Mode  3-bit integer representing the mode.
 func (nhdr *Header) Mode() Mode { return Mode(nhdr.flags & 0b111) }
 
