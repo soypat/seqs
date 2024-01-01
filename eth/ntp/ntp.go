@@ -5,19 +5,22 @@ import (
 	"errors"
 	"math"
 	"math/bits"
+	"sync"
 	"time"
 )
 
 // NTP Global Parameters.
 const (
-	ServerPort = 123 // NTP server port number
-	Version4   = 4   // Current NTP Version Number
-	MinPoll    = 4   // Minimum poll exponent (16s)
-	MaxPoll    = 17  // Maximum poll exponent (~36h)
-	MaxDisp    = 16  // Maximum dispersion (16s)
-	MaxDist    = 1   // Distance threshold (1s)
-	MaxStratum = 16  // Maximum stratum
-	MinDispDiv = 200 // Minimum dispersion divisor 1/(200) == 0.005
+	SizeHeader = 48
+	ClientPort = 1023 // Typical Client port number.
+	ServerPort = 123  // NTP server port number
+	Version4   = 4    // Current NTP Version Number
+	MinPoll    = 4    // Minimum poll exponent (16s)
+	MaxPoll    = 17   // Maximum poll exponent (~36h)
+	MaxDisp    = 16   // Maximum dispersion (16s)
+	MaxDist    = 1    // Distance threshold (1s)
+	MaxStratum = 16   // Maximum stratum
+	MinDispDiv = 200  // Minimum dispersion divisor 1/(200) == 0.005
 )
 
 type Header struct {
@@ -57,8 +60,23 @@ type Header struct {
 	TransmitTime Timestamp // 40:48
 }
 
+func (nhdr *Header) Put(b []byte) {
+	_ = b[SizeHeader-1] // bounds check hint to compiler; see golang.org/issue/14808
+	b[0] = nhdr.flags
+	b[1] = nhdr.Stratum
+	b[2] = uint8(nhdr.Poll)
+	b[3] = uint8(nhdr.Precision)
+	binary.BigEndian.PutUint32(b[4:8], uint32(nhdr.RootDelay))
+	binary.BigEndian.PutUint32(b[8:12], uint32(nhdr.RootDispersion))
+	copy(b[12:16], nhdr.ReferenceID[:])
+	nhdr.ReferenceTime.Put(b[16:24])
+	nhdr.OriginTime.Put(b[24:32])
+	nhdr.ReceiveTime.Put(b[32:40])
+	nhdr.TransmitTime.Put(b[40:48])
+}
+
 func DecodeHeader(b []byte) (nhdr Header) {
-	_ = b[47] // bounds check hint to compiler; see golang.org/issue/14808
+	_ = b[SizeHeader-1] // bounds check hint to compiler; see golang.org/issue/14808
 	nhdr.flags = b[0]
 	nhdr.Stratum = b[1]
 	nhdr.Poll = int8(b[2])
@@ -147,11 +165,37 @@ type Timestamp struct {
 	fra uint32
 }
 
+func (t Timestamp) Put(b []byte) {
+	_ = b[7] // bounds check hint to compiler; see golang.org/issue/14808
+	binary.BigEndian.PutUint32(b[:4], t.sec)
+	binary.BigEndian.PutUint32(b[4:], t.fra)
+}
+
+// IsZero reports whether t represents the zero time instant.
+func (t Timestamp) IsZero() bool { return t.sec == 0 && t.fra == 0 }
+
 func TimestampFromUint64(ts uint64) Timestamp {
 	return Timestamp{
 		sec: uint32(ts >> 32),
 		fra: uint32(ts),
 	}
+}
+
+func TimestampFromTime(t time.Time) (Timestamp, error) {
+	if t.Before(baseTime) {
+		return Timestamp{}, errors.New("ntp.TimestampFromTime: time is before baseTime")
+
+	}
+	off := t.Sub(baseTime)
+	sec := uint64(off / time.Second)
+	if sec > math.MaxUint32 {
+		return Timestamp{}, errors.New("ntp.TimestampFromTime: time is too large")
+	}
+	fra := uint64(off%time.Second) * math.MaxUint32 / uint64(time.Second)
+	return Timestamp{
+		sec: uint32(sec),
+		fra: uint32(fra),
+	}, nil
 }
 
 // The 128-bit date format is used where sufficient storage and word
@@ -163,21 +207,33 @@ type Date struct {
 	frac uint64
 }
 
-func (t *Timestamp) Seconds() uint32 { return t.sec }
+func (t Timestamp) Seconds() uint32 { return t.sec }
 
-func (t *Timestamp) Fractions() uint32 { return t.fra }
+func (t Timestamp) Fractions() uint32 { return t.fra }
 
 func (t Short) Seconds() uint16   { return uint16(t >> 16) }
 func (t Short) Fractions() uint16 { return uint16(t) }
 
 var baseTime = time.Date(1900, 1, 1, 0, 0, 0, 0, time.UTC)
 
-func (t *Timestamp) Time() time.Time {
+func (t Timestamp) Time() time.Time {
 	off := time.Second*time.Duration(t.Seconds()) + time.Second*time.Duration(t.Fractions())/math.MaxUint32
 	return baseTime.Add(off)
 }
 
-func (d *Date) Time() (time.Time, error) {
+func (t Timestamp) Sub(v Timestamp) time.Duration {
+	dsec := time.Duration(t.sec) - time.Duration(v.sec)
+	dfra := time.Duration(t.fra) - time.Duration(v.fra)
+	return dsec*time.Second + dfra*math.MaxUint32/time.Second
+}
+
+func (t Timestamp) Add(d time.Duration) Timestamp {
+	t.sec += uint32(d / time.Second)
+	t.fra += uint32(d%time.Second) * math.MaxUint32 / uint32(time.Second)
+	return t
+}
+
+func (d Date) Time() (time.Time, error) {
 	const year = 365 * 24 * time.Hour
 	sec := d.sec
 	neg := sec < 0
@@ -194,4 +250,29 @@ func (d *Date) Time() (time.Time, error) {
 		off = -off
 	}
 	return baseTime.Add(off), nil
+}
+
+var (
+	ntpOnceSystemClock sync.Once
+	sysPrec            int8
+)
+
+// SystemPrecision calculates the Precision field value for the NTP header once
+// and reuses it for all future calls.
+func SystemPrecision() int8 {
+	ntpOnceSystemClock.Do(recalculateSystemPrecision)
+	return sysPrec
+}
+
+func recalculateSystemPrecision() {
+	const maxIter = 16
+	last := time.Now()
+	var sum time.Duration
+	for i := 0; i < maxIter; i++ {
+		now := time.Now()
+		sum += now.Sub(last)
+		last = now
+	}
+	avg := sum / maxIter
+	sysPrec = int8(math.Log2(avg.Seconds()))
 }
