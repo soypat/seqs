@@ -186,7 +186,18 @@ func (d *DHCPClient) send(dst []byte) (n int, err error) {
 	// Set Ethernet+IP+UDP headers.
 	payload := dst[dhcpOffset : dhcpOffset+dhcp.SizeDatagram]
 	pkt := &d.aux
-	d.setResponseUDP(pkt, payload)
+
+	// TODO(soypat): Document why disabling ToS used by DHCP server may cause Request to fail.
+	// Apparently server sets ToS=192. Uncommenting this line causes DHCP to fail on my setup.
+	// If left fixed at 192, DHCP does not work.
+	// If left fixed at 0, DHCP does not work.
+	// Apparently ToS is a function of which state of DHCP one is in. Not sure why code below works.
+	var ToS uint8
+	if d.state > dhcpStateWaitOffer {
+		ToS = 192
+	}
+	broadcast := eth.BroadcastHW6()
+	setUDP(pkt, d.stack.mac, broadcast, [4]byte(broadcast[:4]), [4]byte(broadcast[:4]), ToS, payload, 68, 67)
 	pkt.PutHeaders(dst)
 	d.state = nextstate
 	if d.stack.isLogEnabled(slog.LevelInfo) {
@@ -281,40 +292,33 @@ func (d *DHCPClient) abort() {
 	}
 }
 
-func (d *DHCPClient) setResponseUDP(packet *UDPPacket, payload []byte) {
+func setUDP(packet *UDPPacket, srcHW, dstHW [6]byte, srcAddr, dstAddr [4]byte, ipTOS uint8, payload []byte, lport, rport uint16) {
 	const ipLenInWords = 5
 	// Ethernet frame.
-	broadcast := eth.BroadcastHW6()
-	packet.Eth.Destination = broadcast
-	packet.Eth.Source = d.stack.HardwareAddr6()
-	packet.Eth.SizeOrEtherType = uint16(eth.EtherTypeIPv4)
+	packet.Eth = eth.EthernetHeader{
+		Destination:     dstHW,
+		Source:          srcHW,
+		SizeOrEtherType: uint16(eth.EtherTypeIPv4),
+	}
 
 	// IPv4 frame.
-	packet.IP.Destination = [4]byte(broadcast[:4])
-	packet.IP.Source = packet.IP.Destination
-
-	packet.IP.Source = [4]byte{} // Source IP is always zeroed when client sends.
-	packet.IP.Protocol = 17      // UDP
-	packet.IP.TTL = 64
-	packet.IP.ID = prand16(packet.IP.ID)
-	packet.IP.VersionAndIHL = ipLenInWords // Sets IHL: No IP options. Version set automatically.
-	packet.IP.TotalLength = 4*ipLenInWords + eth.SizeUDPHeader + uint16(len(payload))
-	// TODO(soypat): Document why disabling ToS used by DHCP server may cause Request to fail.
-	// Apparently server sets ToS=192. Uncommenting this line causes DHCP to fail on my setup.
-	// If left fixed at 192, DHCP does not work.
-	// If left fixed at 0, DHCP does not work.
-	// Apparently ToS is a function of which state of DHCP one is in. Not sure why code below works.
-	if d.state <= dhcpStateWaitOffer {
-		packet.IP.ToS = 0
-	} else {
-		packet.IP.ToS = 192
+	packet.IP = eth.IPv4Header{
+		Source:        srcAddr,
+		Destination:   dstAddr,
+		VersionAndIHL: ipLenInWords, // Sets IHL: No IP options. Version set automatically.
+		TotalLength:   4*ipLenInWords + eth.SizeUDPHeader + uint16(len(payload)),
+		Protocol:      17, // UDP
+		TTL:           64,
+		ID:            prand16(packet.IP.ID),
+		ToS:           ipTOS,
 	}
-	packet.IP.Flags = 0
 	packet.IP.Checksum = packet.IP.CalculateChecksum()
 	// UDP frame.
-	packet.UDP.DestinationPort = 67
-	packet.UDP.SourcePort = 68
-	packet.UDP.Length = packet.IP.TotalLength - 4*ipLenInWords
+	packet.UDP = eth.UDPHeader{
+		SourcePort:      lport,
+		DestinationPort: rport,
+		Length:          packet.IP.TotalLength - 4*ipLenInWords,
+	}
 	packet.UDP.Checksum = packet.UDP.CalculateChecksumIPv4(&packet.IP, payload)
 }
 
