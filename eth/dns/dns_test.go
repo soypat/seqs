@@ -117,10 +117,73 @@ func TestMessageAppendEncode(t *testing.T) {
 
 		var msg Message
 		msg.SetMaxResources(tt.Message.QDCount, tt.Message.ANCount, tt.Message.NSCount, tt.Message.ARCount)
-		_, err = msg.Decode(b)
+		_, incomplete, err := msg.Decode(b)
+		if err != nil {
+			t.Fatal(err)
+		} else if incomplete {
+			t.Fatal("incomplete parse")
+		}
+		if msg.String() != tt.Message.String() {
+			t.Errorf("mismatch message strings after append/decode:\n%s\n%s", tt.Message.String(), msg.String())
+		}
+	}
+}
+
+func TestMessageAppendEncodeIncompleteOK(t *testing.T) {
+	var tests = []struct {
+		Message Message
+		error   error
+	}{
+		{
+			Message: Message{
+				Questions: []Question{
+					{
+						Name:  MustNewName("."),
+						Type:  TypeA,
+						Class: ClassINET,
+					},
+				},
+				Answers: []Resource{
+					{
+						Header: ResourceHeader{
+							Name:   MustNewName("."),
+							Type:   TypeA,
+							Class:  ClassINET,
+							TTL:    256,
+							Length: 3,
+						},
+						data: []byte{1, 2, 3},
+					},
+					{
+						Header: ResourceHeader{
+							Name:   MustNewName("."),
+							Type:   TypeA,
+							Class:  ClassINET,
+							TTL:    256,
+							Length: 3,
+						},
+						data: []byte{1, 2, 3},
+					},
+				},
+			},
+		},
+	}
+	var buf [512]byte
+	for _, tt := range tests {
+		b, err := tt.Message.AppendTo(buf[:0])
 		if err != nil {
 			t.Fatal(err)
 		}
+
+		var msg Message
+		msg.SetMaxResources(tt.Message.QDCount, tt.Message.ANCount-1, tt.Message.NSCount, tt.Message.ARCount)
+		_, incomplete, err := msg.Decode(b)
+		if err != nil && !incomplete {
+			t.Fatal(err)
+		} else if !incomplete {
+			t.Fatal("expected incomplete parse")
+		}
+		tt.Message.Answers = tt.Message.Answers[:1] // Trim off the last answer that was not parsed.
 		if msg.String() != tt.Message.String() {
 			t.Errorf("mismatch message strings after append/decode:\n%s\n%s", tt.Message.String(), msg.String())
 		}

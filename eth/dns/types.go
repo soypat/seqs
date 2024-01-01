@@ -102,53 +102,70 @@ type Name struct {
 	data []byte
 }
 
-func (m *Message) Decode(msg []byte) (uint16, error) {
+func (m *Message) Decode(msg []byte) (_ uint16, incompleteButOK bool, _ error) {
 	if len(msg) < SizeHeader {
-		return 0, errBaseLen
+		return 0, false, errBaseLen
 	} else if len(msg) > math.MaxUint16 {
-		return 0, errResTooLong
+		return 0, false, errResTooLong
 	}
 	m.Reset()
 	m.Header = DecodeHeader(msg)
 	off := uint16(SizeHeader)
+	// Return tooManyErr if found to flag to the caller that the message was
+	// decoded but contained too many resources to decode completely.
+	var tooManyErr error
 	switch {
 	case m.Header.QDCount > uint16(cap(m.Questions)):
-		return off, errTooManyQuestions
+		tooManyErr = errTooManyQuestions
 	case m.Header.ANCount > uint16(cap(m.Answers)):
-		return off, errTooManyAnswers
+		tooManyErr = errTooManyAnswers
 	case m.Header.NSCount > uint16(cap(m.Authorities)):
-		return off, errTooManyAuthorities
+		tooManyErr = errTooManyAuthorities
 	case m.Header.ARCount > uint16(cap(m.Additionals)):
-		return off, errTooManyAdditionals
+		tooManyErr = errTooManyAdditionals
 	}
-
-	m.Questions = m.Questions[:m.QDCount]
-	for i := uint16(0); i < m.QDCount; i++ {
+	nq := m.QDCount
+	if nq > uint16(cap(m.Questions)) {
+		nq = uint16(cap(m.Questions))
+	}
+	m.Questions = m.Questions[:nq]
+	for i := uint16(0); i < nq; i++ {
 		decoded, err := m.Questions[i].Decode(msg[off:])
 		off += decoded
 		if err != nil {
 			m.Questions = m.Questions[:i] // Trim non-decoded/failed questions.
-			return off, err
+			return off, false, err
 		}
-
+	}
+	// Skip undecoded questions.
+	for i := uint16(0); i < m.QDCount-nq; i++ {
+		decoded, err := nextQuestionLen(msg[off:])
+		off += decoded
+		if err != nil {
+			return off, false, err
+		}
 	}
 
 	off, err := decodeToCapResources(&m.Answers, msg, m.ANCount, off)
 	if err != nil {
-		return off, err
+		return off, false, err
 	}
 	off, err = decodeToCapResources(&m.Authorities, msg, m.NSCount, off)
 	if err != nil {
-		return off, err
+		return off, false, err
 	}
 	off, err = decodeToCapResources(&m.Additionals, msg, m.ARCount, off)
 	if err != nil {
-		return off, err
+		return off, false, err
 	}
-	return off, nil
+	return off, tooManyErr != nil, tooManyErr
 }
 
 func decodeToCapResources(dst *[]Resource, msg []byte, nrec, off uint16) (uint16, error) {
+	originalRec := nrec
+	if nrec > uint16(cap(*dst)) {
+		nrec = uint16(cap(*dst)) // Decode up to cap. Caller will return an error flag.
+	}
 	*dst = (*dst)[:nrec]
 	for i := uint16(0); i < nrec; i++ {
 		decoded, err := (*dst)[i].Decode(msg[off:])
@@ -158,7 +175,44 @@ func decodeToCapResources(dst *[]Resource, msg []byte, nrec, off uint16) (uint16
 			return off, err
 		}
 	}
+	// Parse undecoded resources, effectively skipping them.
+	for i := uint16(0); i < originalRec-nrec; i++ {
+		rlen, err := nextResourceLen(msg[off:])
+		off += rlen
+		if err != nil {
+			return off, err
+		}
+	}
 	return off, nil
+}
+
+func nextQuestionLen(msg []byte) (uint16, error) {
+	off, err := countNameOffset(msg)
+	if err != nil {
+		return off, err
+	}
+	if off+4 > uint16(len(msg)) {
+		return off, errBaseLen
+	}
+	return off + 4, nil
+}
+
+func nextResourceLen(msg []byte) (uint16, error) {
+	off, err := countNameOffset(msg)
+	if err != nil {
+		return off, err
+	}
+	// | Name... | Type16 | Class16 | TTL32 | Length16 | Data... |
+	datalen := binary.BigEndian.Uint16(msg[off+8:])
+	rlen := datalen + off + 10
+	if rlen > uint16(len(msg)) {
+		return off, errBaseLen
+	}
+	return rlen, nil
+}
+
+func countNameOffset(name []byte) (uint16, error) {
+	return visitAllLabels(name, 0, func(b []byte) {})
 }
 
 func (m *Message) AppendTo(buf []byte) (_ []byte, err error) {
@@ -245,6 +299,14 @@ func (r *Resource) Reset() {
 
 func (r *Resource) Len() uint16 {
 	return r.Header.Name.Len() + 10 + uint16(len(r.data))
+}
+
+func (r *Resource) RawData() []byte {
+	length := r.Header.Length
+	if int(length) > len(r.data) {
+		length = uint16(len(r.data))
+	}
+	return r.data[:length]
 }
 
 func (q *Question) Reset() {
