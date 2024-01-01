@@ -126,7 +126,7 @@ LOOP:
 		switch c & 0xc0 {
 		case 0x00: // String label (segment).
 			if c == 0x00 {
-				break LOOP
+				break LOOP // Nominal end of name, always ends with null terminator.
 			}
 			endOff := currOff + c
 			if endOff > uint16(len(msg)) {
