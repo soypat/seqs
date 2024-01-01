@@ -20,6 +20,7 @@ func FuzzTCPEstablished(f *testing.F) {
 	const mtu = 2000
 	const tcptxbuf = 1000
 	const ipwords = 5
+	const tcpoff = 5
 	const tcpFlagmask uint16 = 0x01ff
 	f.Fuzz(func(t *testing.T, flags, wnd, crc, size, iplen uint16) {
 		rng := flags ^ wnd ^ crc ^ size ^ iplen
@@ -56,13 +57,13 @@ func FuzzTCPEstablished(f *testing.F) {
 		}
 		ihdr.Checksum = ihdr.CalculateChecksum()
 		flags &= tcpFlagmask
-		offset := size / 4
+
 		thdr := eth.TCPHeader{
 			SourcePort:      client.LocalPort(),
 			DestinationPort: server.LocalPort(),
 			Seq:             seg.SEQ,
 			Ack:             seg.ACK,
-			OffsetAndFlags:  [1]uint16{flags | offset<<12},
+			OffsetAndFlags:  [1]uint16{flags | tcpoff<<12},
 			WindowSizeRaw:   wnd,
 			Checksum:        crc,
 		}
@@ -82,6 +83,9 @@ func FuzzTCPEstablished(f *testing.F) {
 		err := svstack.RecvEth(buf[:])
 		if correctCRC && errors.Is(err, stacks.ErrChecksumTCPorUDP) {
 			panic("expected correct CRC calculation")
+		} else if !correctCRC && err == nil &&
+			thdr.Checksum != thdr.CalculateChecksumIPv4(&ihdr, tcpOptions, payload) {
+			panic("expected incorrect CRC calculation")
 		}
 	})
 }
