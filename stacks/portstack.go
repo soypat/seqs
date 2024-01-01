@@ -125,6 +125,7 @@ var (
 	errTooShortTCPOrUDP = errors.New("packet too short to be TCP/UDP")
 	errTooShortNTP      = errors.New("packet too shrot to be NTP")
 	errBogusNTP         = errors.New("bogus NTP packet")
+	errBadAddr          = errors.New("bad/invalid address")
 	errZeroPort         = errors.New("zero port in TCP/UDP")
 	errBadTCPOffset     = errors.New("invalid TCP offset")
 	errNilHandler       = errors.New("nil handler")

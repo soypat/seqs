@@ -1,3 +1,4 @@
+// package ntp implements the NTP protocol as described in RFC 5905.
 package ntp
 
 import (
@@ -137,6 +138,8 @@ const (
 
 type Short uint32
 
+var baseTime = time.Date(1900, 1, 1, 0, 0, 0, 0, time.UTC)
+
 // BaseTime returns the time that corresponds to the NTP base time.
 // The zero value for [Timestamp] and [Date] types corresponds to this time.
 func BaseTime() time.Time {
@@ -214,8 +217,6 @@ func (t Timestamp) Fractions() uint32 { return t.fra }
 func (t Short) Seconds() uint16   { return uint16(t >> 16) }
 func (t Short) Fractions() uint16 { return uint16(t) }
 
-var baseTime = time.Date(1900, 1, 1, 0, 0, 0, 0, time.UTC)
-
 func (t Timestamp) Time() time.Time {
 	off := time.Second*time.Duration(t.Seconds()) + time.Second*time.Duration(t.Fractions())/math.MaxUint32
 	return baseTime.Add(off)
@@ -224,17 +225,26 @@ func (t Timestamp) Time() time.Time {
 func (t Timestamp) Sub(v Timestamp) time.Duration {
 	dsec := time.Duration(t.sec) - time.Duration(v.sec)
 	dfra := time.Duration(t.fra) - time.Duration(v.fra)
-	return dsec*time.Second + dfra*math.MaxUint32/time.Second
+	// Work in uint64 to avoid overflow since fra is possibly MaxUint32-1
+	// which means the result of dfra*MaxUint32 would be MaxUint64-MaxUint32, overflowing time.Duration's
+	// underlying int64 representation by *a lot*.
+	dfraneg := dfra < 0
+	dfra = time.Duration(uint64(dfra.Abs()) * math.MaxUint32 / uint64(time.Second))
+	if dfraneg {
+		dfra = -dfra
+	}
+	return dsec*time.Second + dfra
 }
 
 func (t Timestamp) Add(d time.Duration) Timestamp {
-	t.sec += uint32(d / time.Second)
-	t.fra += uint32(d%time.Second) * math.MaxUint32 / uint32(time.Second)
+	add := uint32(uint64(d%time.Second) * math.MaxUint32 / uint64(time.Second))
+	add, carry := bits.Add32(t.fra, add, 0)
+	t.sec += uint32(d/time.Second) + carry
+	t.fra = add
 	return t
 }
 
 func (d Date) Time() (time.Time, error) {
-	const year = 365 * 24 * time.Hour
 	sec := d.sec
 	neg := sec < 0
 	if neg {

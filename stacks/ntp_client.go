@@ -25,10 +25,11 @@ type NTPClient struct {
 	org   ntp.Timestamp
 	rec   ntp.Timestamp
 	xmt   ntp.Timestamp
+	pkt   UDPPacket
 	// The local port to use for sending/receiving NTP packets.
 	lport      uint16
+	svip       netip.Addr
 	notAborted bool
-	pkt        UDPPacket
 	state      uint8
 }
 
@@ -43,6 +44,9 @@ func NewNTPClient(stack *PortStack, lport uint16) *NTPClient {
 }
 
 func (nc *NTPClient) BeginDefaultRequest(raddr netip.Addr) error {
+	if !raddr.IsValid() {
+		return errBadAddr
+	}
 	err := nc.stack.OpenUDP(nc.lport, nc)
 	if err != nil {
 		return err
@@ -51,18 +55,10 @@ func (nc *NTPClient) BeginDefaultRequest(raddr netip.Addr) error {
 	if err != nil {
 		return err
 	}
+	nc.svip = raddr
 	nc.notAborted = true
 	nc.state = ntpSend1
 	return nil
-}
-
-func (nc *NTPClient) countNonzero() (s uint8) {
-	for i := range nc.t {
-		if !nc.t[i].IsZero() {
-			s++
-		}
-	}
-	return s
 }
 
 func (nc *NTPClient) send(dst []byte) (n int, err error) {
@@ -99,7 +95,7 @@ func (nc *NTPClient) send(dst []byte) (n int, err error) {
 	)
 	hdr.Put(payload)
 	broadcast := eth.BroadcastHW6()
-	setUDP(&nc.pkt, nc.stack.mac, broadcast, nc.stack.ip, [4]byte(broadcast[:4]), ToS, payload, nc.lport, ntp.ServerPort)
+	setUDP(&nc.pkt, nc.stack.mac, broadcast, nc.stack.ip, nc.svip.As4(), ToS, payload, nc.lport, ntp.ServerPort)
 	nc.pkt.PutHeaders(dst)
 	return payloadoffset + ntp.SizeHeader, nil
 }
@@ -123,17 +119,15 @@ func (nc *NTPClient) recv(pkt *UDPPacket) (err error) {
 	t := &nc.t
 	switch nc.state {
 	case ntpAwait1: // First packet.
+		if nhdr.TransmitTime == nc.org || nhdr.OriginTime != nc.xmt {
+			return errBogusNTP
+		}
 		t[0] = nhdr.OriginTime
 		t[1] = nhdr.ReceiveTime
 		t[2] = nhdr.TransmitTime
 		t[3] = now
-		if nhdr.TransmitTime == nc.org || nhdr.OriginTime != nc.xmt {
-			return errBogusNTP
-		}
-		nc.state = ntpDone
-
+		nc.state = ntpDone // Finish on first response for now, enough to get good enough estimation.
 	case ntpAwait2:
-
 		nc.state = ntpAwait2
 	}
 	return nil
@@ -147,7 +141,7 @@ func (nc *NTPClient) abort() {
 }
 
 func (nc *NTPClient) isPendingHandling() bool {
-	return !nc.isAborted() && (nc.state == ntpSend1 || nc.state == ntpSend2)
+	return (nc.isAborted() && nc.state != 0) || (nc.state == ntpSend1 || nc.state == ntpSend2)
 }
 
 func (d *NTPClient) Abort() {
