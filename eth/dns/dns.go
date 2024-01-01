@@ -24,10 +24,10 @@ var (
 	errSegTooLong         = errors.New("segment length too long")
 	errZeroSegLen         = errors.New("zero length segment")
 	errResTooLong         = errors.New("resource length too long")
-	errTooManyQuestions   = errors.New("too many Questions to pack (>65535)")
-	errTooManyAnswers     = errors.New("too many Answers to pack (>65535)")
-	errTooManyAuthorities = errors.New("too many Authorities to pack (>65535)")
-	errTooManyAdditionals = errors.New("too many Additionals to pack (>65535)")
+	errTooManyQuestions   = errors.New("too many Questions")
+	errTooManyAnswers     = errors.New("too many Answers")
+	errTooManyAuthorities = errors.New("too many Authorities")
+	errTooManyAdditionals = errors.New("too many Additionals")
 	errNonCanonicalName   = errors.New("name is not in canonical format (it must end with a .)")
 	errStringTooLong      = errors.New("character string exceeds maximum length (255)")
 	errCompressedSRV      = errors.New("compressed name in SRV resource data")
@@ -52,10 +52,14 @@ type Header struct {
 	// match up replies to outstanding queries.
 	TransactionID uint16      // 0:2
 	Flags         HeaderFlags // 2:4
-	QDCount       uint16      // 4:6
-	ANCount       uint16      // 6:8
-	NSCount       uint16      // 8:10
-	ARCount       uint16      // 10:12
+	// number of entries in the question section.
+	QDCount uint16 // 4:6
+	// number of resource records in the answer section.
+	ANCount uint16 // 6:8
+	// number of name server resource records in the authority records section.
+	NSCount uint16 // 8:10
+	// number of resource records in the additional records section.
+	ARCount uint16 // 10:12
 }
 
 // HeaderFlags gathers the flags in bits 16..31 of the header.

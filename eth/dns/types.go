@@ -102,6 +102,10 @@ type Name struct {
 	data []byte
 }
 
+// Decode decodes the DNS message in b into m. It returns the number of bytes
+// consumed from b (0 if no bytes were consumed) and any error encountered.
+// If the message was not completely parsed due to LimitResourceDecoding,
+// incompleteButOK is true and an error is returned, though the message is still usable.
 func (m *Message) Decode(msg []byte) (_ uint16, incompleteButOK bool, _ error) {
 	if len(msg) < SizeHeader {
 		return 0, false, errBaseLen
@@ -271,7 +275,20 @@ func (m *Message) lenResources() (l uint16) {
 	return l
 }
 
-func (m *Message) SetMaxResources(maxQ, maxAns, maxAuth, maxAdd uint16) {
+func (m *Message) AddQuestions(questions []Question) {
+	// This question slice handling here is done in spirit of DNSClient being owner of its own buffer.
+	// If this is not done we risk the Questions being edited by user and interfering with the DNS request.
+	qoff := len(m.Questions)
+	m.Questions = slices.Grow(m.Questions, len(questions))
+	m.Questions = m.Questions[:qoff+len(questions)]
+	for i := range questions {
+		m.Questions[qoff+i].Name.CloneFrom(questions[i].Name)
+		m.Questions[qoff+i].Type = questions[i].Type
+		m.Questions[qoff+i].Class = questions[i].Class
+	}
+}
+
+func (m *Message) LimitResourceDecoding(maxQ, maxAns, maxAuth, maxAdd uint16) {
 	m.Questions = slices.Grow(m.Questions, int(maxQ))
 	m.Answers = slices.Grow(m.Answers, int(maxQ))
 	m.Authorities = slices.Grow(m.Authorities, int(maxQ))
@@ -399,10 +416,18 @@ func (rhdr *ResourceHeader) appendTo(buf []byte) (_ []byte, err error) {
 	return buf, nil
 }
 
+func MustNewName(s string) Name {
+	name, err := NewName(s)
+	if err != nil {
+		panic(err)
+	}
+	return name
+}
+
 // NewName parses a domain name and returns a new Name.
-func NewName(domain string) (*Name, error) {
+func NewName(domain string) (Name, error) {
 	if len(domain) == 1 && domain[0] == '.' {
-		return &Name{data: []byte{0}}, nil
+		return Name{data: []byte{0}}, nil
 	}
 	var name Name
 	for len(domain) > 0 {
@@ -412,7 +437,7 @@ func NewName(domain string) (*Name, error) {
 			idx = len(domain)
 		}
 		if !name.CanAddLabel(domain[:idx]) {
-			return nil, errCantAddLabel
+			return Name{}, errCantAddLabel
 		}
 		name.AddLabel(domain[:idx])
 		if done {
@@ -420,12 +445,16 @@ func NewName(domain string) (*Name, error) {
 		}
 		domain = domain[idx+1:]
 	}
-	return &name, nil
+	return name, nil
 }
 
 // Len returns the length over-the-wire of the encoded Name.
 func (n *Name) Len() uint16 {
 	return uint16(len(n.data))
+}
+
+func (n *Name) CloneFrom(ex Name) {
+	n.data = append(n.data[:0], ex.data...)
 }
 
 // AppendTo appends the Name to b in wire format and returns the resulting slice.

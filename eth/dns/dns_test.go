@@ -116,7 +116,7 @@ func TestMessageAppendEncode(t *testing.T) {
 		}
 
 		var msg Message
-		msg.SetMaxResources(tt.Message.QDCount, tt.Message.ANCount, tt.Message.NSCount, tt.Message.ARCount)
+		msg.LimitResourceDecoding(tt.Message.QDCount, tt.Message.ANCount, tt.Message.NSCount, tt.Message.ARCount)
 		_, incomplete, err := msg.Decode(b)
 		if err != nil {
 			t.Fatal(err)
@@ -176,7 +176,7 @@ func TestMessageAppendEncodeIncompleteOK(t *testing.T) {
 		}
 
 		var msg Message
-		msg.SetMaxResources(tt.Message.QDCount, tt.Message.ANCount-1, tt.Message.NSCount, tt.Message.ARCount)
+		msg.LimitResourceDecoding(tt.Message.QDCount, tt.Message.ANCount-1, tt.Message.NSCount, tt.Message.ARCount)
 		_, incomplete, err := msg.Decode(b)
 		if err != nil && !incomplete {
 			t.Fatal(err)
@@ -188,14 +188,6 @@ func TestMessageAppendEncodeIncompleteOK(t *testing.T) {
 			t.Errorf("mismatch message strings after append/decode:\n%s\n%s", tt.Message.String(), msg.String())
 		}
 	}
-}
-
-func MustNewName(s string) Name {
-	name, err := NewName(s)
-	if err != nil {
-		panic(err)
-	}
-	return *name
 }
 
 func (m *Message) String() string {
