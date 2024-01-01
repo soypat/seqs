@@ -117,8 +117,7 @@ const (
 	// If the Stratum field is 0, which implies unspecified or invalid, the
 	// Reference Identifier field can be used to convey messages useful for
 	// status reporting and access control.  These are called Kiss-o'-Death
-	// (KoD) packets and the ASCII messages they convey are called kiss
-	// codes.
+	// (KoD) packets and the ASCII messages they convey are called kiss codes.
 	StratumUnspecified = 0
 	StratumPrimary     = 1
 	StratumUnsync      = 16

@@ -1,6 +1,7 @@
 package ntp
 
 import (
+	"encoding/binary"
 	"testing"
 	"time"
 )
@@ -25,5 +26,13 @@ func TestTimestamp(t *testing.T) {
 	d = t1.Sub(t2)
 	if d != -time.Second {
 		t.Fatalf("expected -1s, got %s", d)
+	}
+
+	var b [8]byte
+	t1.Put(b[:])
+	readback := binary.BigEndian.Uint64(b[:])
+	t1got := TimestampFromUint64(readback)
+	if t1got != t1 {
+		t.Fatalf("got %v, want %v", t1got, t1)
 	}
 }

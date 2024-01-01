@@ -75,12 +75,6 @@ func (nc *NTPClient) send(dst []byte) (n int, err error) {
 	if err != nil {
 		return 0, err
 	}
-	hdr := ntp.Header{
-		Stratum:    ntp.StratumUnsync,
-		Poll:       6,
-		Precision:  sysprec,
-		OriginTime: now,
-	}
 	switch nc.state {
 	case ntpSend1:
 		nc.xmt = now
@@ -90,9 +84,16 @@ func (nc *NTPClient) send(dst []byte) (n int, err error) {
 	default:
 		return 0, nil // Nothing to handle.
 	}
-	nc.stack.info("ntp:recv",
+	nc.stack.info("ntp:send",
 		slog.Time("origin", now.Time()),
 	)
+	hdr := ntp.Header{
+		Stratum:    ntp.StratumUnsync,
+		Poll:       6,
+		Precision:  sysprec,
+		OriginTime: now,
+	}
+	hdr.SetFlags(ntp.ModeClient, ntp.LeapNoWarning)
 	hdr.Put(payload)
 	broadcast := eth.BroadcastHW6()
 	setUDP(&nc.pkt, nc.stack.mac, broadcast, nc.stack.ip, nc.svip.As4(), ToS, payload, nc.lport, ntp.ServerPort)
