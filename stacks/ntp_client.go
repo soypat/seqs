@@ -71,8 +71,7 @@ func (nc *NTPClient) send(dst []byte) (n int, err error) {
 		ToS           = 192
 	)
 	payload := dst[payloadoffset : payloadoffset+ntp.SizeHeader]
-	nz := nc.countNonzero()
-	if nc.isAborted() || nz == 4 {
+	if nc.isAborted() || nc.IsDone() {
 		return 0, io.EOF
 	}
 	sysprec := ntp.SystemPrecision()
@@ -92,8 +91,12 @@ func (nc *NTPClient) send(dst []byte) (n int, err error) {
 		nc.state = ntpAwait1
 	case ntpSend2:
 		nc.state = ntpDone
+	default:
+		return 0, nil // Nothing to handle.
 	}
-
+	nc.stack.info("ntp:recv",
+		slog.Time("origin", now.Time()),
+	)
 	hdr.Put(payload)
 	broadcast := eth.BroadcastHW6()
 	setUDP(&nc.pkt, nc.stack.mac, broadcast, nc.stack.ip, [4]byte(broadcast[:4]), ToS, payload, nc.lport, ntp.ServerPort)
@@ -102,6 +105,9 @@ func (nc *NTPClient) send(dst []byte) (n int, err error) {
 }
 
 func (nc *NTPClient) recv(pkt *UDPPacket) (err error) {
+	if nc.isAborted() || nc.IsDone() {
+		return io.EOF
+	}
 	payload := pkt.Payload()
 	if len(payload) < ntp.SizeHeader {
 		return errTooShortNTP
@@ -141,7 +147,7 @@ func (nc *NTPClient) abort() {
 }
 
 func (nc *NTPClient) isPendingHandling() bool {
-	return !nc.isAborted()
+	return !nc.isAborted() && (nc.state == ntpSend1 || nc.state == ntpSend2)
 }
 
 func (d *NTPClient) Abort() {
@@ -152,9 +158,9 @@ func (d *NTPClient) isAborted() bool { return !d.notAborted }
 
 func (d *NTPClient) IsDone() bool { return d.state == ntpDone }
 
-// Theta returns the estimated time offset between the local clock and the
+// Offset returns the estimated time offset between the local clock and the
 // server's clock.
-func (d *NTPClient) Theta() time.Duration {
+func (d *NTPClient) Offset() time.Duration {
 	t := &d.t
-	return d.stack.timeadd + (t[1].Sub(t[0])+t[2].Sub(t[3]))/2
+	return d.stack.timeadd + t[1].Sub(t[0])/2 + t[2].Sub(t[3])/2
 }
