@@ -62,7 +62,7 @@ func TestDHCP(t *testing.T) {
 	if n < minDHCPSize {
 		t.Errorf("ex[%d] sent=%d want>=%d", ex, n, minDHCPSize)
 	}
-	if client.Done() {
+	if client.IsDone() {
 		t.Fatal("client done on first exchange?!")
 	}
 
@@ -77,7 +77,7 @@ func TestDHCP(t *testing.T) {
 	if n < minDHCPSize {
 		t.Errorf("ex[%d] sent=%d want>=%d", ex, n, minDHCPSize)
 	}
-	if client.Done() {
+	if client.IsDone() {
 		t.Fatal("client done on request?!")
 	}
 
@@ -86,7 +86,7 @@ func TestDHCP(t *testing.T) {
 	if n < minDHCPSize {
 		t.Errorf("ex[%d] sent=%d want>=%d", ex, n, minDHCPSize)
 	}
-	if !client.Done() {
+	if !client.IsDone() {
 		t.Fatal("client not processed ACK yet")
 	}
 }

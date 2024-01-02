@@ -61,6 +61,6 @@ func (v *Value) UpdateForward(s Size) {
 
 // DefaultNewISS returns a new initial send sequence number.
 // It's implementation is suggested by RFC9293.
-func DefaultNewISS() Value {
-	return Value(time.Now().UnixMicro() / 4)
+func DefaultNewISS(t time.Time) Value {
+	return Value(t.UnixMicro() / 4)
 }

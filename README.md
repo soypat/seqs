@@ -12,17 +12,27 @@
     * UDP packet handling
     * DHCP client requests and DHCP server
     * TCP connections over IP with support for multiple listeners on same port. These implement [net.Conn](https://pkg.go.dev/net#Conn) and [net.Listener](https://pkg.go.dev/net#Listener) interfaces. See [`stacks/tcpconn.go`](./stacks/tcpconn.go)
+    * HTTP: Algorithm to reuse heap memory between requests and avoid allocations. See `httpx` package
+    * NTP client for resolving time offset to a NTP server
+
 
 
 ### Example of use
 
 ```go
+// stack works by having access to Ethernet packet sending
+// and processing. NIC is our physical link to the internet.
+var NIC NetworkInterfaceCard = getNIC()
+
 stack := stacks.NewPortStack(stacks.PortStackConfig{
     MAC:             MAC,
     MaxOpenPortsTCP: 1,
     MaxOpenPortsUDP: 1,
     MTU:             2048,
 })
+// stack.RecvEth should be called on receiving an ethernet packet. It should NOT block.
+NIC.SetRecvEthHandle(stack.RecvEth)
+
 // Static IP setting.
 ip := netip.AddrFrom4([4]byte{192, 168, 1, 45}) 
 stack.SetAddr(ip)
@@ -34,9 +44,14 @@ err = dhcpClient.BeginRequest(stacks.DHCPRequestConfig{
     Xid:           0x12345678,
     Hostname:      "tinygo-pico",
 })
+if err != nil {
+    panic(err)
+}
 
+fmt.Println("Start DHCP...")
 for !dhcpClient.Done() {
-    time.Sleep(time.Second / 2)
+    doNICPoll(NIC)
+    time.Sleep(time.Second / 10)
 }
 
 offeredIP := dhcpClient.Offer()

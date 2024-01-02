@@ -18,6 +18,8 @@ const (
 	arpOpWait  = 0xffff
 )
 
+var modernAge = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
 type ethernethandler = func(ehdr *eth.EthernetHeader, ethPayload []byte) error
 
 type PortStackConfig struct {
@@ -45,6 +47,10 @@ func NewPortStack(cfg PortStackConfig) *PortStack {
 		panic("please use a smaller MTU. max=" + strconv.Itoa(defaultMTU))
 	}
 	s.mtu = cfg.MTU
+	now := time.Now()
+	if now.Before(modernAge) {
+		s.timeadd = modernAge.Sub(now)
+	}
 	return s
 }
 
@@ -100,13 +106,14 @@ type PortStack struct {
 	// ARP state. See arp.go for detailed information on the ARP state machine.
 	arpClient arpClient
 	// Auxiliary struct to avoid allocations passed to global handler.
-	auxEth eth.EthernetHeader
-	mac    [6]byte
-	ip     [4]byte
-	mtu    uint16
-	auxUDP UDPPacket
-	auxTCP TCPPacket
-	auxARP eth.ARPv4Header
+	auxEth  eth.EthernetHeader
+	mac     [6]byte
+	ip      [4]byte
+	mtu     uint16
+	auxUDP  UDPPacket
+	auxTCP  TCPPacket
+	auxARP  eth.ARPv4Header
+	timeadd time.Duration
 }
 
 // Common errors.
@@ -116,6 +123,9 @@ var (
 	// errNotIPv4          = errors.New("require IPv4")
 	errPacketSmol       = errors.New("packet too small")
 	errTooShortTCPOrUDP = errors.New("packet too short to be TCP/UDP")
+	errTooShortNTP      = errors.New("packet too shrot to be NTP")
+	errBogusNTP         = errors.New("bogus NTP packet")
+	errBadAddr          = errors.New("bad/invalid address")
 	errZeroPort         = errors.New("zero port in TCP/UDP")
 	errBadTCPOffset     = errors.New("invalid TCP offset")
 	errNilHandler       = errors.New("nil handler")
@@ -560,7 +570,8 @@ func (ps *PortStack) CloseTCP(portNum uint16) error {
 }
 
 func (ps *PortStack) now() time.Time {
-	return time.Now()
+	now := time.Now()
+	return now.Add(ps.timeadd)
 }
 
 func (ps *PortStack) info(msg string, attrs ...slog.Attr) {
