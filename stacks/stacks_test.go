@@ -134,7 +134,7 @@ func TestARP(t *testing.T) {
 
 func TestTCPEstablish(t *testing.T) {
 	const bufSizes = 32
-	client, server := createTCPClientServerPair(t, bufSizes, bufSizes)
+	client, server := createTCPClientServerPair(t, bufSizes, bufSizes, defaultMTU)
 	// 3 way handshake needs 3 exchanges to complete.
 	egr := NewExchanger(client.PortStack(), server.PortStack())
 	wantStates := makeWantStatesHelper(t, client, server)
@@ -168,7 +168,7 @@ func TestTCPEstablish(t *testing.T) {
 func TestTCPSendReceive_simplex(t *testing.T) {
 	const bufSizes = 32
 	// Create Client+Server and establish TCP connection between them.
-	client, server := createTCPClientServerPair(t, bufSizes, bufSizes)
+	client, server := createTCPClientServerPair(t, bufSizes, bufSizes, defaultMTU)
 	egr := NewExchanger(client.PortStack(), server.PortStack())
 	egr.DoExchanges(t, exchangesToEstablish)
 	wantStates := makeWantStatesHelper(t, client, server)
@@ -189,7 +189,7 @@ func TestTCPSendReceive_simplex(t *testing.T) {
 func TestTCPSendReceive_duplex_single(t *testing.T) {
 	const bufSizes = 32
 	// Create Client+Server and establish TCP connection between them.
-	client, server := createTCPClientServerPair(t, bufSizes, bufSizes)
+	client, server := createTCPClientServerPair(t, bufSizes, bufSizes, defaultMTU)
 	cstack, sstack := client.PortStack(), server.PortStack()
 	egr := NewExchanger(cstack, sstack)
 	egr.DoExchanges(t, exchangesToEstablish)
@@ -219,7 +219,7 @@ func TestTCPSendReceive_duplex_single(t *testing.T) {
 
 func TestTCPSendReceive_duplex(t *testing.T) {
 	// Create Client+Server and establish TCP connection between them.
-	client, server := createTCPClientServerPair(t, 32, 32)
+	client, server := createTCPClientServerPair(t, 32, 32, defaultMTU)
 	egr := NewExchanger(client.PortStack(), server.PortStack())
 	egr.DoExchanges(t, exchangesToEstablish)
 	if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
@@ -233,7 +233,7 @@ func TestTCPSendReceive_duplex(t *testing.T) {
 func TestTCPClose_noPendingData(t *testing.T) {
 	const bufSizes = 32
 	// Create Client+Server and establish TCP connection between them.
-	client, server := createTCPClientServerPair(t, bufSizes, bufSizes)
+	client, server := createTCPClientServerPair(t, bufSizes, bufSizes, defaultMTU)
 	egr := NewExchanger(client.PortStack(), server.PortStack())
 	egr.DoExchanges(t, exchangesToEstablish)
 	if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
@@ -306,7 +306,7 @@ func TestTCPSocketOpenOfClosedPort(t *testing.T) {
 	const newPortoffset = 1
 	const newISS = 1337
 	const bufSizes = 512
-	client, server := createTCPClientServerPair(t, bufSizes, bufSizes)
+	client, server := createTCPClientServerPair(t, bufSizes, bufSizes, defaultMTU)
 	cstack, sstack := client.PortStack(), server.PortStack()
 
 	egr := NewExchanger(cstack, sstack)
@@ -625,13 +625,13 @@ func createTCPClientListenerPair(t *testing.T, clientSizes, listenerSizes, maxLi
 	return client, listener
 }
 
-func createTCPClientServerPair(t *testing.T, clientSizes, serverSizes uint16) (client, server *stacks.TCPConn) {
+func createTCPClientServerPair(t *testing.T, clientSizes, serverSizes, mtu uint16) (client, server *stacks.TCPConn) {
 	t.Helper()
 	const (
 		clientPort = 1025
 		serverPort = 80
 	)
-	Stacks := createPortStacks(t, 2, defaultMTU)
+	Stacks := createPortStacks(t, 2, mtu)
 	clientStack := Stacks[0]
 	serverStack := Stacks[1]
 
