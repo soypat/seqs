@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"math/bits"
 	"net/netip"
 	"strconv"
 	"unsafe"
@@ -26,14 +27,19 @@ type DHCPClient struct {
 	port            uint16
 	requestHostname string
 	aux             UDPPacket // Avoid heap allocation.
-	aborted         bool
-	state           uint8
+	// aborted         bool
+	state uint8
 	// The result IP of the DHCP transaction (our new IP).
 	offer [4]byte
 	// DHCP server IP
 	svip        [4]byte
 	requestedIP [4]byte
+	dns         [4]byte
+	router      [4]byte
+	subnet      [4]byte
+	broadcast   [4]byte
 	optionbuf   [4]dhcp.Option
+	hostname    []byte
 	// This field is for avoiding heap allocations.
 	msgbug [2]byte
 }
@@ -50,6 +56,8 @@ const (
 	dhcpStateGotOffer
 	dhcpStateWaitAck
 	dhcpStateDone
+	dhcpStateAborted
+	dhcpStateNaked
 )
 
 func NewDHCPClient(stack *PortStack, lport uint16) *DHCPClient {
@@ -90,12 +98,44 @@ func (d *DHCPClient) BeginRequest(cfg DHCPRequestConfig) error {
 }
 
 func (d *DHCPClient) Done() bool {
-	return d.state == dhcpStateDone
+	return d.state == dhcpStateDone || d.state == dhcpStateNaked
+}
+
+func (d *DHCPClient) DHCPServer() netip.Addr {
+	return ipv4OrInvalid(d.svip)
+}
+
+func (d *DHCPClient) DNSServer() netip.Addr {
+	return ipv4OrInvalid(d.dns)
 }
 
 func (d *DHCPClient) Offer() netip.Addr {
-	return netip.AddrFrom4(d.offer)
+	return ipv4OrInvalid(d.offer)
 }
+
+func (d *DHCPClient) Hostname() []byte {
+	return d.hostname
+}
+
+func (d *DHCPClient) Router() netip.Addr {
+	return ipv4OrInvalid(d.router)
+}
+
+func (d *DHCPClient) BroadcastAddr() netip.Addr {
+	return ipv4OrInvalid(d.broadcast)
+}
+
+func (d *DHCPClient) CIDRBits() uint8 {
+	if d.subnet == [4]byte{} {
+		return 0
+	}
+	v := binary.BigEndian.Uint32(d.subnet[:])
+	return 32 - uint8(bits.TrailingZeros32(v))
+}
+
+// func (d *DHCPClient) SubnetMask() netip.Prefix {
+// 	return netip.PrefixFrom4(d.subnet)
+// }
 
 func (d *DHCPClient) ourHeader() dhcp.HeaderV4 {
 	hdr := dhcp.HeaderV4{
@@ -113,13 +153,15 @@ func (d *DHCPClient) ourHeader() dhcp.HeaderV4 {
 	return hdr
 }
 
-func (d *DHCPClient) isAborted() bool { return d.currentXid == 0 || d.aborted }
+func (d *DHCPClient) isAborted() bool { return d.state == dhcpStateAborted }
 
 var dhcpDefaultParamReqList = []byte{1, 3, 15, 6}
 
 func (d *DHCPClient) send(dst []byte) (n int, err error) {
-	if !d.isPendingHandling() {
-		return 0, io.EOF // Signal to close socket.
+	if d.isAborted() {
+		return 0, io.EOF
+	} else if !d.isPendingHandling() {
+		return 0, nil
 	}
 	const dhcpOffset = eth.SizeEthernetHeader + eth.SizeIPv4Header + eth.SizeUDPHeader
 	switch {
@@ -207,8 +249,8 @@ func (d *DHCPClient) send(dst []byte) (n int, err error) {
 }
 
 func (d *DHCPClient) recv(pkt *UDPPacket) (err error) {
-	if !d.isPendingHandling() {
-		return io.EOF // Signal to close socket.
+	if d.isAborted() {
+		return io.EOF
 	}
 	incpayload := pkt.Payload()
 	if len(incpayload) < dhcp.SizeHeader {
@@ -243,8 +285,26 @@ func (d *DHCPClient) recv(pkt *UDPPacket) (err error) {
 		// be in the options. Copy into the decoded header for simplicity.
 		case dhcp.OptServerIdentification:
 			if len(opt.Data) == 4 {
-				copy(rcvHdr.SIAddr[:], opt.Data)
+				copy(d.svip[:], opt.Data)
 			}
+		case dhcp.OptDNSServers:
+			if len(opt.Data) == 4 {
+				copy(d.dns[:], opt.Data)
+			}
+		case dhcp.OptRouter:
+			if len(opt.Data) == 4 {
+				copy(d.router[:], opt.Data)
+			}
+		case dhcp.OptSubnetMask:
+			if len(opt.Data) == 4 {
+				copy(d.subnet[:], opt.Data)
+			}
+		case dhcp.OptBroadcastAddress:
+			if len(opt.Data) == 4 {
+				copy(d.broadcast[:], opt.Data)
+			}
+		case dhcp.OptHostName:
+			d.hostname = append(d.hostname[:0], opt.Data...)
 		}
 		if *db != 0 && !internal.HeapAllocDebugging {
 			d.stack.debug("DHCP:rx", slog.String("opt", opt.Num.String()), slog.String("data", stringNumList(opt.Data)))
@@ -259,12 +319,16 @@ func (d *DHCPClient) recv(pkt *UDPPacket) (err error) {
 	switch d.state { // Receive.
 	case dhcpStateWaitOffer:
 		// Accept this server's offer.
-		d.svip = rcvHdr.SIAddr
+		if d.svip == [4]byte{} {
+			d.svip = rcvHdr.SIAddr // If DHCP server info not in options, use header.
+		}
 		d.offer = rcvHdr.YIAddr
 		d.state = dhcpStateGotOffer
 	case dhcpStateWaitAck:
 		if msgType == dhcp.MsgAck {
 			d.state = dhcpStateDone
+		} else if msgType == dhcp.MsgNak {
+			d.state = dhcpStateNaked
 		}
 	case dhcpStateDone:
 		err = io.EOF // We got a valid response, close socket.
@@ -278,11 +342,11 @@ func (d *DHCPClient) recv(pkt *UDPPacket) (err error) {
 }
 
 func (d *DHCPClient) isPendingHandling() bool {
-	return !d.isAborted() && d.state != dhcpStateDone
+	return d.isAborted() || d.state == dhcpStateNone || d.state == dhcpStateGotOffer
 }
 
 func (d *DHCPClient) Abort() {
-	d.aborted = true
+	d.state = dhcpStateAborted
 }
 
 func (d *DHCPClient) abort() {
@@ -343,4 +407,11 @@ func stringNumList(data []byte) string {
 		buf = strconv.AppendUint(buf, uint64(b), 10)
 	}
 	return unsafe.String(&buf[0], len(buf))
+}
+
+func ipv4OrInvalid(ipv4 [4]byte) netip.Addr {
+	if ipv4 == [4]byte{} {
+		return netip.Addr{}
+	}
+	return netip.AddrFrom4(ipv4)
 }

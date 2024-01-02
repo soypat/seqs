@@ -41,6 +41,7 @@ const (
 	// The Internet supports name server access using TCP [RFC-793] on server
 	// port 53 (decimal) as well as datagram access using UDP [RFC-768] on UDP port 53 (decimal).
 	ServerPort = 53
+	ClientPort = 53
 	// Messages carried by UDP are restricted to 512 bytes (not counting the IP
 	// or UDP headers).  Longer messages are truncated and the TC bit is set in the header.
 	MaxSizeUDP = 512
