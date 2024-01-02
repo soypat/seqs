@@ -81,13 +81,15 @@ type DHCPRequestConfig struct {
 func (d *DHCPClient) BeginRequest(cfg DHCPRequestConfig) error {
 	if cfg.Xid == 0 {
 		return errors.New("xid must be non-zero")
-	} else if !cfg.RequestedAddr.Is4() {
+	} else if cfg.RequestedAddr.IsValid() && !cfg.RequestedAddr.Is4() {
 		return errors.New("requested addr must be IPv4")
 	} else if len(cfg.Hostname) > 30 {
 		return errors.New("hostname too long")
 	}
 	d.currentXid = cfg.Xid
-	d.requestedIP = cfg.RequestedAddr.As4()
+	if cfg.RequestedAddr.IsValid() {
+		d.requestedIP = cfg.RequestedAddr.As4()
+	}
 	d.state = dhcpStateNone
 	d.requestHostname = cfg.Hostname
 	err := d.stack.OpenUDP(d.port, d)
@@ -97,7 +99,7 @@ func (d *DHCPClient) BeginRequest(cfg DHCPRequestConfig) error {
 	return d.stack.FlagPendingUDP(d.port)
 }
 
-func (d *DHCPClient) Done() bool {
+func (d *DHCPClient) IsDone() bool {
 	return d.state == dhcpStateDone || d.state == dhcpStateNaked
 }
 
