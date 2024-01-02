@@ -1,7 +1,9 @@
 package stacks
 
 import (
+	"errors"
 	"io"
+	"log/slog"
 	"net/netip"
 
 	"github.com/soypat/seqs/eth"
@@ -84,12 +86,18 @@ func (dnsc *DNSClient) send(dst []byte) (n int, err error) {
 		Flags:         dns.NewClientHeaderFlags(dns.OpCodeQuery, dnsc.enableRecursion),
 		TransactionID: dnsc.txid,
 	}
-
+	payload, err = msg.AppendTo(dst[payloadOffset:payloadOffset])
+	if err != nil {
+		return 0, err
+	} else if len(payload) != int(msgLen) {
+		dnsc.stack.error("dns:unexpectedwrite", slog.Int("plen", len(payload)), slog.Uint64("msgLen", uint64(msgLen)))
+		return 0, errors.New("dns: unexpected write")
+	}
 	const ipv4ToS = 0
 	setUDP(&dnsc.pkt, dnsc.stack.mac, dnsc.rhw, dnsc.stack.ip, dnsc.raddr.As4(), ipv4ToS, payload, dnsc.lport, dns.ServerPort)
 	dnsc.pkt.PutHeaders(dst)
 
-	return 0, nil
+	return payloadOffset + int(msgLen), nil
 }
 
 func (dnsc *DNSClient) recv(pkt *UDPPacket) error {
@@ -99,7 +107,20 @@ func (dnsc *DNSClient) recv(pkt *UDPPacket) error {
 		return nil
 	}
 	dnsc.stack.info("dns recv!")
-
+	payload := pkt.Payload()
+	if len(payload) < dns.SizeHeader {
+		return io.ErrShortBuffer
+	}
+	dhdr := dns.DecodeHeader(payload)
+	if dhdr.TransactionID != dnsc.txid || !dhdr.Flags.IsResponse() {
+		return nil // Does not correspond to our transaction or is not expected server response.
+	}
+	msg := &dnsc.msg
+	_, incompleteButOK, err := msg.Decode(payload)
+	if err != nil && !incompleteButOK {
+		return err
+	}
+	dnsc.state = dnsDone
 	return nil
 }
 
@@ -107,8 +128,20 @@ func (dnsc *DNSClient) isPendingHandling() bool {
 	return dnsc.state == dnsSendQuery || dnsc.state == dnsAborted
 }
 
+func (dnsc *DNSClient) IsDone() bool { return dnsc.state == dnsDone }
+
+func (dnsc *DNSClient) Answers() []dns.Resource {
+	if dnsc.state != dnsDone {
+		return nil
+	}
+	return dnsc.msg.Answers
+}
+
 func (dnsc *DNSClient) Abort() {
-	dnsc.state = dnsAborted
+	if dnsc.state != dnsClosed {
+		dnsc.state = dnsAborted
+		dnsc.stack.FlagPendingUDP(dnsc.lport)
+	}
 }
 
 func (dnsc *DNSClient) abort() {
