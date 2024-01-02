@@ -325,6 +325,11 @@ func (iphdr *IPv4Header) PutPseudo(buf []byte) {
 	binary.BigEndian.PutUint16(buf[10:12], iphdr.TotalLength)
 }
 
+// OffsetInBytes returns the total header length in bytes.
+func (iphdr *IPv4Header) HeaderLength() int {
+	return int(iphdr.IHL()) * 4
+}
+
 func (iphdr *IPv4Header) CalculateChecksum() uint16 {
 	crc := CRC791{}
 	var buf [SizeIPv4Header]byte
