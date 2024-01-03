@@ -113,6 +113,29 @@ func (flags HeaderFlags) IsRecursionAvailable() bool { return flags&(1<<7) != 0 
 // ResponseCode returns the 4-bit response code set as part of responses.
 func (flags HeaderFlags) ResponseCode() RCode { return RCode(flags & 0b1111) }
 
+func (flags HeaderFlags) String() string {
+	buf := make([]byte, 0, 16)
+	return string(flags.appendF(buf))
+}
+
+func (flags HeaderFlags) appendF(buf []byte) []byte {
+	writeBit := func(b bool, s string) {
+		if b {
+			buf = append(buf, s...)
+			buf = append(buf, ' ')
+		}
+	}
+	writeBit(flags.IsResponse(), "QR")
+	writeBit(flags.IsAuthorativeAnswer(), "AA")
+	writeBit(flags.IsTruncated(), "TC")
+	writeBit(flags.IsRecursionDesired(), "RD")
+	writeBit(flags.IsRecursionAvailable(), "RA")
+	buf = append(buf, flags.OpCode().String()...)
+	buf = append(buf, ' ')
+	buf = append(buf, flags.ResponseCode().String()...)
+	return buf
+}
+
 func visitAllLabels(msg []byte, off uint16, fn func(b []byte)) (uint16, error) {
 	currOff := off
 	if len(msg) > math.MaxUint16 {

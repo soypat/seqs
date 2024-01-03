@@ -60,7 +60,7 @@ func TestDNS(t *testing.T) {
 	const minDNSSize = eth.SizeEthernetHeader + eth.SizeIPv4Header + eth.SizeUDPHeader + dns.SizeHeader
 	if n < minDNSSize {
 		t.Errorf("ex[%d] sent=%d want>=%d", ex, n, minDNSSize)
-	} else if client.IsDone() {
+	} else if done, _ := client.IsDone(); done {
 		t.Fatal("client done on first exchange?!")
 	}
 	checkNoMoreDataSent(t, "after client DNS query before server receipt", egr)

@@ -120,3 +120,26 @@ func (i OpCode) String() string {
 	}
 	return _OpCode_name[_OpCode_index[i]:_OpCode_index[i+1]]
 }
+
+func _() {
+	// An "invalid array index" compiler error signifies that the constant values have changed.
+	// Re-run the stringer command to generate them again.
+	var x [1]struct{}
+	_ = x[RCodeSuccess-0]
+	_ = x[RCodeFormatError-1]
+	_ = x[RCodeServerFailure-2]
+	_ = x[RCodeNameError-3]
+	_ = x[RCodeNotImplemented-4]
+	_ = x[RCodeRefused-5]
+}
+
+const _RCode_name = "SuccessFormatErrorServerFailureNameErrorNotImplementedRefused"
+
+var _RCode_index = [...]uint8{0, 7, 18, 31, 40, 54, 61}
+
+func (i RCode) String() string {
+	if i >= RCode(len(_RCode_index)-1) {
+		return "<unknown dns.RCode>"
+	}
+	return _RCode_name[_RCode_index[i]:_RCode_index[i+1]]
+}
