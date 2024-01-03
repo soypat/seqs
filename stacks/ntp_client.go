@@ -29,6 +29,7 @@ type NTPClient struct {
 	// The local port to use for sending/receiving NTP packets.
 	lport      uint16
 	svip       netip.Addr
+	svhw       [6]byte
 	notAborted bool
 	state      uint8
 }
@@ -43,7 +44,7 @@ func NewNTPClient(stack *PortStack, lport uint16) *NTPClient {
 	}
 }
 
-func (nc *NTPClient) BeginDefaultRequest(raddr netip.Addr) error {
+func (nc *NTPClient) BeginDefaultRequest(hwaddr [6]byte, raddr netip.Addr) error {
 	if !raddr.IsValid() {
 		return errBadAddr
 	}
@@ -55,6 +56,7 @@ func (nc *NTPClient) BeginDefaultRequest(raddr netip.Addr) error {
 	if err != nil {
 		return err
 	}
+	nc.svhw = hwaddr
 	nc.svip = raddr
 	nc.notAborted = true
 	nc.state = ntpSend1
@@ -95,8 +97,7 @@ func (nc *NTPClient) send(dst []byte) (n int, err error) {
 	}
 	hdr.SetFlags(ntp.ModeClient, ntp.LeapNoWarning)
 	hdr.Put(payload)
-	broadcast := eth.BroadcastHW6()
-	setUDP(&nc.pkt, nc.stack.mac, broadcast, nc.stack.ip, nc.svip.As4(), ToS, payload, nc.lport, ntp.ServerPort)
+	setUDP(&nc.pkt, nc.stack.mac, nc.svhw, nc.stack.ip, nc.svip.As4(), ToS, payload, nc.lport, ntp.ServerPort)
 	nc.pkt.PutHeaders(dst)
 	return payloadoffset + ntp.SizeHeader, nil
 }

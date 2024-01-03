@@ -13,6 +13,7 @@ import (
 
 	"github.com/soypat/seqs"
 	"github.com/soypat/seqs/eth"
+	"github.com/soypat/seqs/eth/dns"
 	"github.com/soypat/seqs/stacks"
 )
 
@@ -28,6 +29,42 @@ const (
 	pshack = seqs.FlagPSH | seqs.FlagACK
 	synack = seqs.FlagSYN | seqs.FlagACK
 )
+
+func TestDNS(t *testing.T) {
+	const networkSize = testingLargeNetworkSize // How many distinct IP/MAC addresses on network.
+	const questionHost = "www.go.dev"
+	siaddr := netip.AddrFrom4([4]byte{192, 168, 1, 1})
+	Stacks := createPortStacks(t, networkSize, defaultMTU)
+
+	clientStack := Stacks[0]
+	serverStack := Stacks[1]
+
+	clientStack.SetAddr(netip.AddrFrom4([4]byte{}))
+	serverStack.SetAddr(netip.AddrFrom4([4]byte{}))
+
+	client := stacks.NewDNSClient(clientStack, dns.ClientPort)
+	err := client.StartResolve(stacks.DNSResolveConfig{
+		Questions: []dns.Question{
+			{Name: dns.MustNewName(questionHost), Type: dns.TypeA, Class: dns.ClassINET},
+		},
+		DNSAddr:   siaddr,
+		DNSHWAddr: serverStack.HardwareAddr6(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	egr := NewExchanger(clientStack, serverStack)
+
+	ex, n := egr.HandleTx(t)
+	const minDNSSize = eth.SizeEthernetHeader + eth.SizeIPv4Header + eth.SizeUDPHeader + dns.SizeHeader
+	if n < minDNSSize {
+		t.Errorf("ex[%d] sent=%d want>=%d", ex, n, minDNSSize)
+	} else if client.IsDone() {
+		t.Fatal("client done on first exchange?!")
+	}
+	checkNoMoreDataSent(t, "after client DNS query before server receipt", egr)
+}
 
 func TestDHCP(t *testing.T) {
 	const networkSize = testingLargeNetworkSize // How many distinct IP/MAC addresses on network.
@@ -97,19 +134,51 @@ func TestARP(t *testing.T) {
 
 	sender := stacks[0]
 	target := stacks[1]
-	const expectedARP = eth.SizeEthernetHeader + eth.SizeARPv4Header
+	if sender.ARP().IsDone() || target.ARP().IsDone() {
+		t.Fatal("sender/target is done before any exchange?!")
+	}
+	testARP(t, sender, target)
+	testARP(t, target, sender)
+	testARP(t, sender, target)
+	sender.ARP().Abort()
+	testARP(t, sender, target)
+}
+
+func testARP(t *testing.T, sender, target *stacks.PortStack) {
 	// Send ARP request from sender to target.
-	sender.ARP().BeginResolve(target.Addr())
-	egr := NewExchanger(stacks...)
-	ex, n := egr.DoExchanges(t, 1)
+	const expectedARP = eth.SizeEthernetHeader + eth.SizeARPv4Header
+	checkSenderNotDone := func(msg string) {
+		t.Helper()
+		if sender.ARP().IsDone() {
+			t.Fatalf("unexpected IsDone=true: %s", msg)
+		} else if _, _, err := sender.ARP().ResultAs6(); err == nil {
+			t.Fatalf("expected an error on querying result: %s", msg)
+		}
+	}
+	err := sender.ARP().BeginResolve(target.Addr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkSenderNotDone("right after BeginResolve")
+
+	egr := NewExchanger(sender, target)
+	ex, n := egr.HandleTx(t)
 	if n != expectedARP {
 		t.Errorf("ex[%d] sent=%d want=%d", ex, n, expectedARP)
 	}
+	checkNoMoreDataSent(t, "after first ARP sent", egr)
+
+	egr.HandleRx(t) // Target receives ARP request.
+
 	// Target responds to sender.
-	ex, n = egr.DoExchanges(t, 1)
+	ex, n = egr.HandleTx(t)
 	if n != expectedARP {
 		t.Errorf("ex[%d] sent=%d want=%d", ex, n, expectedARP)
 	}
+	checkNoMoreDataSent(t, "after target ARP response", egr)
+
+	egr.HandleRx(t) // Sender receives ARP response.
+	checkNoMoreDataSent(t, "after ARP exchange finish", egr)
 
 	ip, mac, err := sender.ARP().ResultAs6()
 	if err != nil {
@@ -123,12 +192,6 @@ func TestARP(t *testing.T) {
 	}
 	if ip.As4() != target.Addr().As4() {
 		t.Errorf("result.ProtoSender=%s want=%s", ip, target.Addr().As4())
-	}
-
-	// No more data to exchange.
-	ex, n = egr.DoExchanges(t, 1)
-	if n != 0 {
-		t.Fatalf("ex[%d] sent=%d want=0", ex, n)
 	}
 }
 
@@ -726,12 +789,14 @@ func checkNoMoreDataSent(t *testing.T, msg string, egr *Exchanger) {
 
 	txs := handleTx()
 	if txs > 0 {
-		txs2 := handleTx()
-		if txs2 > 0 {
-			t.Errorf("[txs=%d,%d] unexpected more data: %s; kept sending", txs, txs2, msg)
-		} else {
-			t.Errorf("[txs=%d] unexpected data: %s", txs, msg)
+		retriesBeforeInfLoop := 1000
+		for handleTx() > 0 {
+			retriesBeforeInfLoop--
+			if retriesBeforeInfLoop == 0 {
+				t.Fatal("likely infinite send loop detected")
+			}
 		}
+		t.Errorf("[txs=%d] unexpected data: %s", txs, msg)
 	}
 }
 func assertOneTCPTx(t *testing.T, msg string, wantFlags seqs.Flags, egr *Exchanger) {

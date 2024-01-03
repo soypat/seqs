@@ -18,6 +18,7 @@ var (
 	errARPUnsupported     = errors.New("unsupported ARP request")
 	errNoARPInProgress    = errors.New("no ARP in progress")
 	errARPResponsePending = errors.New("ARP response pending")
+	errARPRequestPending  = errors.New("ARP request not yet sent")
 )
 
 /*
@@ -49,6 +50,8 @@ func (c *arpClient) ResultAs6() (netip.Addr, [6]byte, error) {
 	case 0:
 		return netip.Addr{}, [6]byte{}, errNoARPInProgress
 	case 1:
+		return netip.Addr{}, [6]byte{}, errARPRequestPending
+	case arpOpWait:
 		return netip.Addr{}, [6]byte{}, errARPResponsePending
 	}
 	return netip.AddrFrom4(c.result.ProtoSender), c.result.HardwareSender, nil
@@ -72,22 +75,30 @@ func (c *arpClient) BeginResolve(addr netip.Addr) error {
 	return nil
 }
 
+func (c *arpClient) Abort() {
+	c.result = eth.ARPv4Header{}
+}
+
+func (c *arpClient) IsDone() bool {
+	return c.result.Operation == 2
+}
+
 func (c *arpClient) isPending() bool {
-	return c.pendingReplyToARP() || c.pendingResolveARPv4()
+	return c.pendingReplyToARP() || c.pendingOutReqARPv4()
 }
 
 func (c *arpClient) pendingReplyToARP() bool {
 	return c.pendingResponse.Operation == 2 // 2 means reply.
 }
 
-func (c *arpClient) pendingResolveARPv4() bool {
+func (c *arpClient) pendingOutReqARPv4() bool {
 	return c.result.Operation == 1 // User asked for a ARP request.
 }
 
 func (c *arpClient) handle(dst []byte) (n int) {
-	pendingResolve := c.pendingResolveARPv4()
+	pendingOutReq := c.pendingOutReqARPv4()
 	switch {
-	case pendingResolve:
+	case pendingOutReq:
 		// We have a pending request from user to perform ARP.
 		ehdr := eth.EthernetHeader{
 			Destination:     eth.BroadcastHW6(),
@@ -115,7 +126,7 @@ func (c *arpClient) handle(dst []byte) (n int) {
 		// return 0 // Nothing to do, n=0.
 	}
 	if n > 0 && c.stack.isLogEnabled(slog.LevelDebug) {
-		c.stack.debug("ARP:send", slog.Bool("isReply", !pendingResolve))
+		c.stack.debug("ARP:send", slog.Bool("isReply", !pendingOutReq))
 	}
 	return n
 }

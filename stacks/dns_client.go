@@ -96,7 +96,7 @@ func (dnsc *DNSClient) send(dst []byte) (n int, err error) {
 	const ipv4ToS = 0
 	setUDP(&dnsc.pkt, dnsc.stack.mac, dnsc.rhw, dnsc.stack.ip, dnsc.raddr.As4(), ipv4ToS, payload, dnsc.lport, dns.ServerPort)
 	dnsc.pkt.PutHeaders(dst)
-
+	dnsc.state = dnsAwaitResponse
 	return payloadOffset + int(msgLen), nil
 }
 
