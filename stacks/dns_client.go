@@ -21,13 +21,13 @@ const (
 type DNSClient struct {
 	stack *PortStack
 	pkt   UDPPacket
+	msg   dns.Message
+	raddr netip.Addr
 	rhw   [6]byte
 	txid  uint16
-	raddr netip.Addr
 	lport uint16
 	state uint8
-	msg   dns.Message
-
+	// enables server side recursion.
 	enableRecursion bool
 }
 
@@ -64,6 +64,7 @@ func (dnsc *DNSClient) StartResolve(cfg DNSResolveConfig) error {
 	dnsc.state = dnsSendQuery
 	dnsc.txid += 37
 	dnsc.enableRecursion = cfg.EnableRecursion
+	dnsc.rhw = cfg.DNSHWAddr
 	return nil
 }
 
@@ -106,21 +107,33 @@ func (dnsc *DNSClient) recv(pkt *UDPPacket) error {
 	} else if dnsc.state != dnsAwaitResponse {
 		return nil
 	}
-	dnsc.stack.info("dns recv!")
 	payload := pkt.Payload()
 	if len(payload) < dns.SizeHeader {
 		return io.ErrShortBuffer
 	}
 	dhdr := dns.DecodeHeader(payload)
 	if dhdr.TransactionID != dnsc.txid || !dhdr.Flags.IsResponse() {
+		dnsc.stack.trace("dns:badResp",
+			slog.Uint64("gotTx", uint64(dhdr.TransactionID)),
+			slog.Uint64("wantTx", uint64(dnsc.txid)),
+		)
 		return nil // Does not correspond to our transaction or is not expected server response.
 	}
+	// Gotten to this point we have a response, valid or not.
+	flags := dhdr.Flags
+	rcode := flags.ResponseCode()
+	dnsc.stack.info("dns:recv", slog.String("op", flags.OpCode().String()), slog.String("rcode", rcode.String()))
+	dnsc.state = dnsDone
+	if rcode != dns.RCodeSuccess {
+		dnsc.msg.Header = dhdr // Used in IsDone.
+		return nil
+	}
+
 	msg := &dnsc.msg
 	_, incompleteButOK, err := msg.Decode(payload)
 	if err != nil && !incompleteButOK {
 		return err
 	}
-	dnsc.state = dnsDone
 	return nil
 }
 
@@ -128,7 +141,9 @@ func (dnsc *DNSClient) isPendingHandling() bool {
 	return dnsc.state == dnsSendQuery || dnsc.state == dnsAborted
 }
 
-func (dnsc *DNSClient) IsDone() bool { return dnsc.state == dnsDone }
+func (dnsc *DNSClient) IsDone() (bool, dns.RCode) {
+	return dnsc.state == dnsDone, dnsc.msg.Header.Flags.ResponseCode()
+}
 
 func (dnsc *DNSClient) Answers() []dns.Resource {
 	if dnsc.state != dnsDone {
