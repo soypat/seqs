@@ -145,6 +145,7 @@ type HeaderV4 struct {
 	// SIAddr is the IP address of the next server to use in bootstrap. This
 	// field is used in DHCPOFFER and DHCPACK messages.
 	SIAddr [4]byte // 20:24
+	// GIAddr is the gateway IP address.
 	GIAddr [4]byte // 24:28
 	// CHAddr is the client hardware address. Can be up to 16 bytes in length but
 	// is usually 6 bytes for Ethernet.

@@ -17,6 +17,10 @@ import (
 	"github.com/soypat/seqs/stacks"
 )
 
+var (
+	broadcastIPv4 = netip.AddrFrom4([4]byte{255, 255, 255, 255})
+)
+
 const (
 	testingLargeNetworkSize = 2 // Minimum=2
 	exchangesToEstablish    = 3
@@ -68,7 +72,6 @@ func TestDNS(t *testing.T) {
 
 func TestDHCP(t *testing.T) {
 	const networkSize = testingLargeNetworkSize // How many distinct IP/MAC addresses on network.
-	requestedIP := netip.AddrFrom4([4]byte{192, 168, 1, 69})
 	siaddr := netip.AddrFrom4([4]byte{192, 168, 1, 1})
 	Stacks := createPortStacks(t, networkSize, defaultMTU)
 
@@ -76,54 +79,71 @@ func TestDHCP(t *testing.T) {
 	serverStack := Stacks[1]
 
 	clientStack.SetAddr(netip.AddrFrom4([4]byte{}))
-	serverStack.SetAddr(netip.AddrFrom4([4]byte{}))
+	serverStack.SetAddr(broadcastIPv4)
 
 	client := stacks.NewDHCPClient(clientStack, 68)
 	server := stacks.NewDHCPServer(serverStack, siaddr, 67)
-	err := client.BeginRequest(stacks.DHCPRequestConfig{
+	testDHCP(t, client, server)
+}
+
+func testDHCP(t *testing.T, cl *stacks.DHCPClient, sv *stacks.DHCPServer) {
+	var requestedIP = netip.AddrFrom4([4]byte{192, 168, 1, 69})
+	cstack := cl.PortStack()
+	sstack := sv.PortStack()
+	err := cl.BeginRequest(stacks.DHCPRequestConfig{
 		RequestedAddr: requestedIP,
 		Xid:           0x12345678,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = server.Start()
+	err = sv.Start()
 	if err != nil {
 		t.Fatal(err)
 	}
-
+	checkClientNotDone := func(msg string) {
+		t.Helper()
+		if cl.IsDone() {
+			t.Fatalf("client unexpected IsDone=true: %s", msg)
+		}
+	}
 	const minDHCPSize = eth.SizeEthernetHeader + eth.SizeIPv4Header + eth.SizeUDPHeader + eth.SizeDHCPHeader
 	// Client performs DISCOVER.
-	egr := NewExchanger(clientStack, serverStack)
-	ex, n := egr.DoExchanges(t, 1)
+	egr := NewExchanger(cstack, sstack)
+	ex, n := egr.HandleTx(t)
 	if n < minDHCPSize {
 		t.Errorf("ex[%d] sent=%d want>=%d", ex, n, minDHCPSize)
 	}
-	if client.IsDone() {
-		t.Fatal("client done on first exchange?!")
-	}
+	checkNoMoreDataSent(t, "after cl DISCOVER send", egr)
+	checkClientNotDone("after DISCOVER send")
+	egr.HandleRx(t)
 
 	// Server responds with OFFER.
-	ex, n = egr.DoExchanges(t, 1)
+	ex, n = egr.HandleTx(t)
 	if n < minDHCPSize {
 		t.Errorf("ex[%d] sent=%d want>=%d", ex, n, minDHCPSize)
 	}
+	checkNoMoreDataSent(t, "after sv OFFER send", egr)
+	egr.HandleRx(t) // Client receives OFFER.
+	checkClientNotDone("after OFFER recv")
 
 	// Client performs REQUEST.
-	ex, n = egr.DoExchanges(t, 1)
+	ex, n = egr.HandleTx(t)
 	if n < minDHCPSize {
 		t.Errorf("ex[%d] sent=%d want>=%d", ex, n, minDHCPSize)
 	}
-	if client.IsDone() {
-		t.Fatal("client done on request?!")
-	}
+	checkNoMoreDataSent(t, "after client REQUEST send", egr)
+	checkClientNotDone("after REQUEST send")
+	egr.HandleRx(t) // Server receives REQUEST.
 
 	// Server performs ACK; client processes ACK
-	ex, n = egr.DoExchanges(t, 1)
+	ex, n = egr.HandleTx(t)
 	if n < minDHCPSize {
 		t.Errorf("ex[%d] sent=%d want>=%d", ex, n, minDHCPSize)
 	}
-	if !client.IsDone() {
+	checkNoMoreDataSent(t, "after server ACK send", egr)
+	egr.HandleRx(t) // Client receives ACK. We are done!
+	if !cl.IsDone() {
 		t.Fatal("client not processed ACK yet")
 	}
 }
