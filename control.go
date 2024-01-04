@@ -22,11 +22,12 @@ var (
 	errWindowTooLarge = errors.New("invalid window size > 2**16")
 )
 
-// ControlBlock is a partial Transmission Control Block (TCB) implementation as per RFC 9293
-// in page 19 and clarified further in page 25. This implementation is limited to
-// receiving only sequential segments. This means buffer management is left up
-// entirely to the user of the ControlBlock. Use ControlBlock as the building block
-// that solves Sequence Number calculation and validation in a full TCP implementation.
+// ControlBlock is a partial Transmission Control Block (TCB) implementation as
+// per RFC 9293 in section 3.3.1. In contrast with the description in RFC9293,
+// this implementation is limited to receiving only sequential segments.
+// This means buffer management is left up entirely to the user of the ControlBlock.
+// Use ControlBlock as the building block that solves Sequence Number calculation
+// and validation in a full TCP implementation.
 //
 // A ControlBlock's internal state is modified by the available "System Calls" as defined in
 // RFC9293, such as Close, Listen/Open, Send, and Receive.

@@ -15,6 +15,8 @@ import (
 	"github.com/soypat/seqs/internal"
 )
 
+var broadcastIPv4 = netip.AddrFrom4([4]byte{255, 255, 255, 255})
+
 var (
 	errUnhandledState = errors.New("unhandled state")
 	errBadMagicCookie = errors.New("bad magic cookie")
@@ -38,6 +40,7 @@ type DHCPClient struct {
 	router      [4]byte
 	subnet      [4]byte
 	broadcast   [4]byte
+	gateway     [4]byte
 	optionbuf   [4]dhcp.Option
 	hostname    []byte
 	// This field is for avoiding heap allocations.
@@ -76,6 +79,7 @@ type DHCPRequestConfig struct {
 	Xid           uint32
 	// Optional hostname to request.
 	Hostname string
+	ServerIP netip.Addr
 }
 
 func (d *DHCPClient) BeginRequest(cfg DHCPRequestConfig) error {
@@ -85,11 +89,18 @@ func (d *DHCPClient) BeginRequest(cfg DHCPRequestConfig) error {
 		return errors.New("requested addr must be IPv4")
 	} else if len(cfg.Hostname) > 30 {
 		return errors.New("hostname too long")
+	} else if cfg.ServerIP.IsValid() && !cfg.ServerIP.Is4() {
+		return errors.New("server IP must be IPv4")
 	}
 	d.currentXid = cfg.Xid
 	if cfg.RequestedAddr.IsValid() {
 		d.requestedIP = cfg.RequestedAddr.As4()
 	}
+	if !cfg.ServerIP.IsValid() {
+		// Default is to use broadcast.
+		cfg.ServerIP = broadcastIPv4
+	}
+	d.svip = cfg.ServerIP.As4()
 	d.state = dhcpStateNone
 	d.requestHostname = cfg.Hostname
 	err := d.stack.OpenUDP(d.port, d)
@@ -104,15 +115,19 @@ func (d *DHCPClient) IsDone() bool {
 }
 
 func (d *DHCPClient) DHCPServer() netip.Addr {
-	return ipv4OrInvalid(d.svip)
+	return ipv4orInvalid(d.svip)
+}
+
+func (d *DHCPClient) Gateway() netip.Addr {
+	return ipv4orInvalid(d.gateway)
 }
 
 func (d *DHCPClient) DNSServer() netip.Addr {
-	return ipv4OrInvalid(d.dns)
+	return ipv4orInvalid(d.dns)
 }
 
 func (d *DHCPClient) Offer() netip.Addr {
-	return ipv4OrInvalid(d.offer)
+	return ipv4orInvalid(d.offer)
 }
 
 func (d *DHCPClient) Hostname() []byte {
@@ -120,11 +135,11 @@ func (d *DHCPClient) Hostname() []byte {
 }
 
 func (d *DHCPClient) Router() netip.Addr {
-	return ipv4OrInvalid(d.router)
+	return ipv4orInvalid(d.router)
 }
 
 func (d *DHCPClient) BroadcastAddr() netip.Addr {
-	return ipv4OrInvalid(d.broadcast)
+	return ipv4orInvalid(d.broadcast)
 }
 
 func (d *DHCPClient) CIDRBits() uint8 {
@@ -277,6 +292,9 @@ func (d *DHCPClient) recv(pkt *UDPPacket) (err error) {
 	if d.stack.isLogEnabled(slog.LevelDebug) {
 		*db = 1
 	}
+	if d.state == dhcpStateWaitOffer {
+		d.svip = rcvHdr.SIAddr
+	}
 	err = dhcp.ForEachOption(incpayload, func(opt dhcp.Option) error {
 		switch opt.Num {
 		case dhcp.OptMessageType:
@@ -287,7 +305,7 @@ func (d *DHCPClient) recv(pkt *UDPPacket) (err error) {
 		// be in the options. Copy into the decoded header for simplicity.
 		case dhcp.OptServerIdentification:
 			if len(opt.Data) == 4 {
-				copy(d.svip[:], opt.Data)
+				copy(d.svip[:], opt.Data) // Replaces header's SIAddr.
 			}
 		case dhcp.OptDNSServers:
 			if len(opt.Data) == 4 {
@@ -306,7 +324,10 @@ func (d *DHCPClient) recv(pkt *UDPPacket) (err error) {
 				copy(d.broadcast[:], opt.Data)
 			}
 		case dhcp.OptHostName:
-			d.hostname = append(d.hostname[:0], opt.Data...)
+			// Avoid heavy heap allocations, especially if hostname not requested.
+			if len(d.hostname) < 16 || len(d.hostname) <= len(d.requestHostname) {
+				d.hostname = append(d.hostname[:0], opt.Data...)
+			}
 		}
 		if *db != 0 && !internal.HeapAllocDebugging {
 			d.stack.debug("DHCP:rx", slog.String("opt", opt.Num.String()), slog.String("data", stringNumList(opt.Data)))
@@ -321,9 +342,7 @@ func (d *DHCPClient) recv(pkt *UDPPacket) (err error) {
 	switch d.state { // Receive.
 	case dhcpStateWaitOffer:
 		// Accept this server's offer.
-		if d.svip == [4]byte{} {
-			d.svip = rcvHdr.SIAddr // If DHCP server info not in options, use header.
-		}
+		d.gateway = rcvHdr.GIAddr
 		d.offer = rcvHdr.YIAddr
 		d.state = dhcpStateGotOffer
 	case dhcpStateWaitAck:
@@ -411,7 +430,7 @@ func stringNumList(data []byte) string {
 	return unsafe.String(&buf[0], len(buf))
 }
 
-func ipv4OrInvalid(ipv4 [4]byte) netip.Addr {
+func ipv4orInvalid(ipv4 [4]byte) netip.Addr {
 	if ipv4 == [4]byte{} {
 		return netip.Addr{}
 	}
