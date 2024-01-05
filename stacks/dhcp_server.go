@@ -169,11 +169,12 @@ func (d *DHCPServer) HandleUDP(resp []byte, packet *UDPPacket) (_ int, err error
 		ptr += n
 	}
 	resp[ptr] = 0xff // endmark
+	ptr++
 	// Set Ethernet+IP+UDP headers.
-	payload := resp[dhcpOffset : dhcpOffset+dhcp.SizeDatagram]
+	payload := resp[dhcpOffset:ptr]
 	d.setResponseUDP(client.port, packet, payload)
 	packet.PutHeaders(resp)
-	return dhcpOffset + dhcp.SizeDatagram, nil
+	return ptr, nil
 }
 
 func (d *DHCPServer) next(requested [4]byte) [4]byte {

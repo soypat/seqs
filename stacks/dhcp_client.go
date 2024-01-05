@@ -15,8 +15,10 @@ import (
 	"github.com/soypat/seqs/internal"
 )
 
-var broadcastIPv4 = netip.AddrFrom4([4]byte{255, 255, 255, 255})
-
+var (
+	undefinedIPv4 = netip.AddrFrom4([4]byte{})
+	broadcastIPv4 = netip.AddrFrom4([4]byte{255, 255, 255, 255})
+)
 var (
 	errUnhandledState = errors.New("unhandled state")
 	errBadMagicCookie = errors.New("bad magic cookie")
@@ -41,10 +43,10 @@ type DHCPClient struct {
 	subnet      [4]byte
 	broadcast   [4]byte
 	gateway     [4]byte
-	optionbuf   [4]dhcp.Option
+	optionbuf   [10]dhcp.Option
 	hostname    []byte
 	// This field is for avoiding heap allocations.
-	msgbug [2]byte
+	auxbuf [4]byte
 }
 
 // State transition table:
@@ -161,6 +163,7 @@ func (d *DHCPClient) ourHeader() dhcp.HeaderV4 {
 		HType:  1,
 		HLen:   6,
 		HOps:   0,
+		Secs:   1,
 		CIAddr: d.stack.Addr().As4(),
 		SIAddr: d.svip,
 		YIAddr: d.offer,
@@ -172,7 +175,21 @@ func (d *DHCPClient) ourHeader() dhcp.HeaderV4 {
 
 func (d *DHCPClient) isAborted() bool { return d.state == dhcpStateAborted }
 
-var dhcpDefaultParamReqList = []byte{1, 3, 15, 6}
+var dhcpDefaultParamReqList = []dhcp.OptNum{
+	dhcp.OptSubnetMask,
+	dhcp.OptTimeOffset,
+	dhcp.OptRouter,
+	dhcp.OptInterfaceMTUSize,
+	dhcp.OptBroadcastAddress,
+	dhcp.OptDNSServers,
+	dhcp.OptDomainName,
+	dhcp.OptNTPServersAddresses,
+}
+
+func getDefaultParams() []byte {
+	ptr := unsafe.SliceData(dhcpDefaultParamReqList)
+	return unsafe.Slice((*byte)(unsafe.Pointer(ptr)), len(dhcpDefaultParamReqList))
+}
 
 func (d *DHCPClient) send(dst []byte) (n int, err error) {
 	if d.isAborted() {
@@ -182,7 +199,7 @@ func (d *DHCPClient) send(dst []byte) (n int, err error) {
 	}
 	const dhcpOffset = eth.SizeEthernetHeader + eth.SizeIPv4Header + eth.SizeUDPHeader
 	switch {
-	case len(dst) < dhcpOffset+dhcp.SizeDatagram:
+	case len(dst) < dhcpOffset+dhcp.OptionsOffset+128:
 		return 0, io.ErrShortBuffer
 	}
 
@@ -192,11 +209,16 @@ func (d *DHCPClient) send(dst []byte) (n int, err error) {
 	var nextstate uint8
 	switch d.state { // Send.
 	case dhcpStateNone:
+		// Supposing no IP options:
+		maxDHCPSize := d.stack.MTU() - eth.SizeEthernetHeader - eth.SizeIPv4Header - eth.SizeUDPHeader
 		// DHCP options.
-		d.msgbug[0] = byte(dhcp.MsgDiscover)
+		d.auxbuf[0] = byte(dhcp.MsgDiscover)
+		binary.BigEndian.PutUint16(d.auxbuf[1:3], maxDHCPSize)
 		Options = append(d.optionbuf[:0], []dhcp.Option{
-			{Num: dhcp.OptMessageType, Data: d.msgbug[:1]},
-			{Num: dhcp.OptParameterRequestList, Data: dhcpDefaultParamReqList},
+			{Num: dhcp.OptMessageType, Data: d.auxbuf[:1]},
+			{Num: dhcp.OptParameterRequestList, Data: getDefaultParams()},
+			{Num: dhcp.OptClientIdentifier, Data: d.stack.mac[:]},
+			{Num: dhcp.OptMaximumMessageSize, Data: d.auxbuf[1:3]},
 		}...)
 		if d.requestedIP != [4]byte{} {
 			Options = append(Options, dhcp.Option{Num: dhcp.OptRequestedIPaddress, Data: d.requestedIP[:]})
@@ -204,16 +226,13 @@ func (d *DHCPClient) send(dst []byte) (n int, err error) {
 		nextstate = dhcpStateWaitOffer
 
 	case dhcpStateGotOffer:
-		d.msgbug[0] = byte(dhcp.MsgRequest)
+		d.auxbuf[0] = byte(dhcp.MsgRequest)
 		// Accept this server's offer.
 		Options = append(d.optionbuf[:0], []dhcp.Option{
-			{Num: dhcp.OptMessageType, Data: d.msgbug[:1]},
+			{Num: dhcp.OptMessageType, Data: d.auxbuf[:1]},
 			{Num: dhcp.OptRequestedIPaddress, Data: d.offer[:]},
 			{Num: dhcp.OptServerIdentification, Data: d.svip[:]},
 		}...)
-		if d.requestHostname != "" {
-			Options = append(Options, dhcp.Option{Num: dhcp.OptHostName, Data: unsafe.Slice(unsafe.StringData(d.requestHostname), len(d.requestHostname))})
-		}
 		nextstate = dhcpStateWaitAck
 
 	default:
@@ -222,7 +241,9 @@ func (d *DHCPClient) send(dst []byte) (n int, err error) {
 	if err != nil {
 		return 0, nil
 	}
-
+	if d.requestHostname != "" {
+		Options = append(Options, dhcp.Option{Num: dhcp.OptHostName, Data: unsafe.Slice(unsafe.StringData(d.requestHostname), len(d.requestHostname))})
+	}
 	for i := dhcpOffset + 14; i < len(dst); i++ {
 		dst[i] = 0 // Zero out BOOTP and options fields.
 	}
@@ -242,27 +263,28 @@ func (d *DHCPClient) send(dst []byte) (n int, err error) {
 		ptr += n
 	}
 	dst[ptr] = 0xff // endmark
+	ptr++
 	// Set Ethernet+IP+UDP headers.
-	payload := dst[dhcpOffset : dhcpOffset+dhcp.SizeDatagram]
+	payload := dst[dhcpOffset:ptr]
 	pkt := &d.aux
-
 	// TODO(soypat): Document why disabling ToS used by DHCP server may cause Request to fail.
 	// Apparently server sets ToS=192. Uncommenting this line causes DHCP to fail on my setup.
 	// If left fixed at 192, DHCP does not work.
 	// If left fixed at 0, DHCP does not work.
 	// Apparently ToS is a function of which state of DHCP one is in. Not sure why code below works.
+	// Note: Not exactly needed for all servers.
 	var ToS uint8
 	if d.state > dhcpStateWaitOffer {
 		ToS = 192
 	}
 	broadcast := eth.BroadcastHW6()
-	setUDP(pkt, d.stack.mac, broadcast, [4]byte(broadcast[:4]), [4]byte(broadcast[:4]), ToS, payload, 68, 67)
+	setUDP(pkt, d.stack.mac, broadcast, d.stack.ip, broadcastIPv4.As4(), ToS, payload, 68, 67)
 	pkt.PutHeaders(dst)
 	d.state = nextstate
 	if d.stack.isLogEnabled(slog.LevelInfo) {
 		d.stack.info("DHCP:tx", slog.String("msg", dhcp.MessageType(Options[0].Data[0]).String()))
 	}
-	return dhcpOffset + dhcp.SizeDatagram, nil
+	return ptr, nil
 }
 
 func (d *DHCPClient) recv(pkt *UDPPacket) (err error) {
@@ -286,8 +308,8 @@ func (d *DHCPClient) recv(pkt *UDPPacket) (err error) {
 
 	// Parse DHCP options looking for message type field.
 	// var mt dhcp.MessageType
-	mt := &d.msgbug[0]
-	db := &d.msgbug[1]
+	mt := &d.auxbuf[0]
+	db := &d.auxbuf[1]
 	*db = 0
 	if d.stack.isLogEnabled(slog.LevelDebug) {
 		*db = 1
@@ -396,6 +418,7 @@ func setUDP(packet *UDPPacket, srcHW, dstHW [6]byte, srcAddr, dstAddr [4]byte, i
 		TTL:           64,
 		ID:            prand16(packet.IP.ID),
 		ToS:           ipTOS,
+		Flags:         0x40 << 8, // Don't fragment.
 	}
 	packet.IP.Checksum = packet.IP.CalculateChecksum()
 	// UDP frame.

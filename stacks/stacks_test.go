@@ -19,6 +19,7 @@ import (
 
 var (
 	broadcastIPv4 = netip.AddrFrom4([4]byte{255, 255, 255, 255})
+	undefinedIPv4 = netip.AddrFrom4([4]byte{})
 )
 
 const (
@@ -78,8 +79,8 @@ func TestDHCP(t *testing.T) {
 	clientStack := Stacks[0]
 	serverStack := Stacks[1]
 
-	clientStack.SetAddr(netip.AddrFrom4([4]byte{}))
-	serverStack.SetAddr(broadcastIPv4)
+	clientStack.SetAddr(undefinedIPv4)
+	serverStack.SetAddr(undefinedIPv4)
 
 	client := stacks.NewDHCPClient(clientStack, 68)
 	server := stacks.NewDHCPServer(serverStack, siaddr, 67)
