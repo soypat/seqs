@@ -11,7 +11,6 @@ import (
 const (
 	sizeSName    = 64  // Server name, part of BOOTP too.
 	sizeBootFile = 128 // Boot file name, Legacy.
-	SizeOptions  = 312
 	SizeHeader   = 44
 	// Magic Cookie offset measured from the start of the UDP payload.
 	MagicCookieOffset = SizeHeader + sizeSName + sizeBootFile
