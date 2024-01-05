@@ -11,7 +11,6 @@ import (
 const (
 	sizeSName    = 64  // Server name, part of BOOTP too.
 	sizeBootFile = 128 // Boot file name, Legacy.
-	sizeOptions  = 312
 	SizeHeader   = 44
 	// Magic Cookie offset measured from the start of the UDP payload.
 	MagicCookieOffset = SizeHeader + sizeSName + sizeBootFile
@@ -19,8 +18,6 @@ const (
 	MagicCookie uint32 = 0x63825363
 	// DHCP Options offset measured from the start of the UDP payload.
 	OptionsOffset = MagicCookieOffset + 4
-	// SizeDHCPDatagram is the size of a DHCP datagram payload in bytes (not including the UDP header).
-	SizeDatagram = SizeHeader + sizeSName + sizeBootFile + sizeOptions
 
 	DefaultClientPort = 68
 	DefaultServerPort = 67
