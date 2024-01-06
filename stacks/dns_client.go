@@ -133,6 +133,8 @@ func (dnsc *DNSClient) recv(pkt *UDPPacket) error {
 	_, incompleteButOK, err := msg.Decode(payload)
 	if err != nil && !incompleteButOK {
 		return err
+	} else if incompleteButOK && err != nil {
+		dnsc.stack.info("dns:incomplete", slog.String("err", err.Error()))
 	}
 	return nil
 }

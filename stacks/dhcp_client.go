@@ -8,6 +8,7 @@ import (
 	"math/bits"
 	"net/netip"
 	"strconv"
+	"time"
 	"unsafe"
 
 	"github.com/soypat/seqs/eth"
@@ -45,6 +46,9 @@ type DHCPClient struct {
 	gateway     [4]byte
 	optionbuf   [10]dhcp.Option
 	hostname    []byte
+	tRenew      uint32 // Opt(58): Renewal time [s]
+	tRebind     uint32 // Opt(59): Rebinding time [s]
+	tIPLease    uint32 // Opt(51): IP lease time [s]
 	// This field is for avoiding heap allocations.
 	auxbuf [4]byte
 }
@@ -93,6 +97,13 @@ func (d *DHCPClient) BeginRequest(cfg DHCPRequestConfig) error {
 		return errors.New("hostname too long")
 	} else if cfg.ServerIP.IsValid() && !cfg.ServerIP.Is4() {
 		return errors.New("server IP must be IPv4")
+	} else if d.state != dhcpStateNone {
+		return errors.New("already started, call Abort() first")
+	}
+
+	err := d.stack.OpenUDP(d.port, d)
+	if err != nil {
+		return err
 	}
 	d.currentXid = cfg.Xid
 	if cfg.RequestedAddr.IsValid() {
@@ -105,10 +116,6 @@ func (d *DHCPClient) BeginRequest(cfg DHCPRequestConfig) error {
 	d.svip = cfg.ServerIP.As4()
 	d.state = dhcpStateNone
 	d.requestHostname = cfg.Hostname
-	err := d.stack.OpenUDP(d.port, d)
-	if err != nil {
-		return err
-	}
 	return d.stack.FlagPendingUDP(d.port)
 }
 
@@ -142,6 +149,16 @@ func (d *DHCPClient) Router() netip.Addr {
 
 func (d *DHCPClient) BroadcastAddr() netip.Addr {
 	return ipv4orInvalid(d.broadcast)
+}
+
+func (d *DHCPClient) RebindingTime() time.Duration {
+	return time.Duration(d.tRebind) * time.Second
+}
+func (d *DHCPClient) RenewalTime() time.Duration {
+	return time.Duration(d.tRenew) * time.Second
+}
+func (d *DHCPClient) IPLeaseTime() time.Duration {
+	return time.Duration(d.tIPLease) * time.Second
 }
 
 func (d *DHCPClient) CIDRBits() uint8 {
@@ -326,30 +343,26 @@ func (d *DHCPClient) recv(pkt *UDPPacket) (err error) {
 		// The DHCP server information does not have to be in the header, but can
 		// be in the options. Copy into the decoded header for simplicity.
 		case dhcp.OptServerIdentification:
-			if len(opt.Data) == 4 {
-				copy(d.svip[:], opt.Data) // Replaces header's SIAddr.
-			}
+			d.svip = maybeIP(opt.Data)
 		case dhcp.OptDNSServers:
-			if len(opt.Data) == 4 {
-				copy(d.dns[:], opt.Data)
-			}
+			d.dns = maybeIP(opt.Data)
 		case dhcp.OptRouter:
-			if len(opt.Data) == 4 {
-				copy(d.router[:], opt.Data)
-			}
+			d.router = maybeIP(opt.Data)
 		case dhcp.OptSubnetMask:
-			if len(opt.Data) == 4 {
-				copy(d.subnet[:], opt.Data)
-			}
+			d.subnet = maybeIP(opt.Data)
 		case dhcp.OptBroadcastAddress:
-			if len(opt.Data) == 4 {
-				copy(d.broadcast[:], opt.Data)
-			}
+			d.broadcast = maybeIP(opt.Data)
 		case dhcp.OptHostName:
 			// Avoid heavy heap allocations, especially if hostname not requested.
 			if len(d.hostname) < 16 || len(d.hostname) <= len(d.requestHostname) {
 				d.hostname = append(d.hostname[:0], opt.Data...)
 			}
+		case dhcp.OptRenewTimeValue:
+			d.tRenew = maybeU32(opt.Data)
+		case dhcp.OptIPAddressLeaseTime:
+			d.tIPLease = maybeU32(opt.Data)
+		case dhcp.OptRebindingTimeValue:
+			d.tRebind = maybeU32(opt.Data)
 		}
 		if *db != 0 && !internal.HeapAllocDebugging {
 			d.stack.debug("DHCP:rx", slog.String("opt", opt.Num.String()), slog.String("data", stringNumList(opt.Data)))
@@ -458,4 +471,18 @@ func ipv4orInvalid(ipv4 [4]byte) netip.Addr {
 		return netip.Addr{}
 	}
 	return netip.AddrFrom4(ipv4)
+}
+
+func maybeU32(b []byte) uint32 {
+	if len(b) < 4 {
+		return 0
+	}
+	return binary.BigEndian.Uint32(b)
+}
+
+func maybeIP(b []byte) [4]byte {
+	if len(b) != 4 {
+		return [4]byte{}
+	}
+	return [4]byte(b)
 }
