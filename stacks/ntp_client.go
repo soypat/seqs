@@ -31,6 +31,7 @@ type NTPClient struct {
 	svip       netip.Addr
 	svhw       [6]byte
 	notAborted bool
+	start      time.Time
 	state      uint8
 }
 
@@ -69,31 +70,29 @@ func (nc *NTPClient) send(dst []byte) (n int, err error) {
 		ToS           = 192
 	)
 	payload := dst[payloadoffset : payloadoffset+ntp.SizeHeader]
-	if nc.isAborted() || nc.IsDone() {
+	if nc.isAborted() {
 		return 0, io.EOF
 	}
 	sysprec := ntp.SystemPrecision()
-	now, err := ntp.TimestampFromTime(nc.stack.now())
-	if err != nil {
-		return 0, err
-	}
 	switch nc.state {
 	case ntpSend1:
-		nc.xmt = now
+		nc.start = nc.stack.now()
+		nc.xmt = ntp.TimestampFromUint64(0) // Start out with zero time as unsynced.
 		nc.state = ntpAwait1
 	case ntpSend2:
+		nc.xmt = nc.unsyncTimestamp()
 		nc.state = ntpDone
 	default:
 		return 0, nil // Nothing to handle.
 	}
 	nc.stack.info("ntp:send",
-		slog.Time("origin", now.Time()),
+		slog.Time("xmt", nc.xmt.Time()),
 	)
 	hdr := ntp.Header{
 		Stratum:    ntp.StratumUnsync,
 		Poll:       6,
 		Precision:  sysprec,
-		OriginTime: now,
+		OriginTime: nc.xmt,
 	}
 	hdr.SetFlags(ntp.ModeClient, ntp.LeapNoWarning)
 	hdr.Put(payload)
@@ -110,18 +109,20 @@ func (nc *NTPClient) recv(pkt *UDPPacket) (err error) {
 	if len(payload) < ntp.SizeHeader {
 		return errTooShortNTP
 	}
-	now, _ := ntp.TimestampFromTime(nc.stack.now())
-	nhdr := ntp.DecodeHeader(payload)
 
+	nhdr := ntp.DecodeHeader(payload)
+	now := nc.unsyncTimestamp()
 	nc.stack.info("ntp:recv",
 		slog.Time("origin", nhdr.OriginTime.Time()),
 		slog.Time("recv", nhdr.ReceiveTime.Time()),
 		slog.Time("transmit", nhdr.TransmitTime.Time()),
+		slog.Time("t4", now.Time()),
 	)
 	t := &nc.t
 	switch nc.state {
 	case ntpAwait1: // First packet.
 		if nhdr.TransmitTime == nc.org || nhdr.OriginTime != nc.xmt {
+			nc.stack.error("ntp:badpacket", slog.Time("hdr.origin", nhdr.OriginTime.Time()), slog.Time("xmt", nc.xmt.Time()))
 			return errBogusNTP
 		}
 		t[0] = nhdr.OriginTime
@@ -153,6 +154,10 @@ func (d *NTPClient) Abort() {
 func (d *NTPClient) isAborted() bool { return !d.notAborted }
 
 func (d *NTPClient) IsDone() bool { return d.state == ntpDone }
+
+func (d *NTPClient) unsyncTimestamp() ntp.Timestamp {
+	return ntp.TimestampFromUint64(0).Add(d.stack.now().Sub(d.start))
+}
 
 // Offset returns the estimated time offset between the local clock and the
 // server's clock.

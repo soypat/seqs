@@ -189,9 +189,9 @@ func TimestampFromUint64(ts uint64) Timestamp {
 }
 
 func TimestampFromTime(t time.Time) (Timestamp, error) {
+	t = t.UTC()
 	if t.Before(baseTime) {
 		return Timestamp{}, errors.New("ntp.TimestampFromTime: time is before baseTime")
-
 	}
 	off := t.Sub(baseTime)
 	sec := uint64(off / time.Second)
@@ -233,7 +233,7 @@ func (t Timestamp) Sub(v Timestamp) time.Duration {
 	// which means the result of dfra*MaxUint32 would be MaxUint64-MaxUint32, overflowing time.Duration's
 	// underlying int64 representation by *a lot*.
 	dfraneg := dfra < 0
-	dfra = time.Duration(uint64(dfra.Abs()) * math.MaxUint32 / uint64(time.Second))
+	dfra = time.Duration(uint64(dfra.Abs()) * uint64(time.Second) / math.MaxUint32)
 	if dfraneg {
 		dfra = -dfra
 	}

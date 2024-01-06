@@ -123,10 +123,12 @@ func (d *DHCPClient) IsDone() bool {
 	return d.state == dhcpStateDone || d.state == dhcpStateNaked
 }
 
+// DHCPServer IP address field of the DHCP packet. Is the siaddr field of the DHCP packet, which can be overriden with the Server IP option.
 func (d *DHCPClient) DHCPServer() netip.Addr {
 	return ipv4orInvalid(d.svip)
 }
 
+// Gateway IP address field of the DHCP packet. The giaddr provides the DHCP server with information about the IP address subnet in which the client resides.
 func (d *DHCPClient) Gateway() netip.Addr {
 	return ipv4orInvalid(d.gateway)
 }

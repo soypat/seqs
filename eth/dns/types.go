@@ -8,6 +8,8 @@ import (
 	"strings"
 )
 
+const allowCompression = true
+
 // Types taken from golang.org/x/net/dns/dnsmessage package. See https://pkg.go.dev/golang.org/x/net/dns/dnsmessage.
 
 // Type is a type of DNS request and response.
@@ -107,7 +109,7 @@ type Name struct {
 // consumed from b (0 if no bytes were consumed) and any error encountered.
 // If the message was not completely parsed due to LimitResourceDecoding,
 // incompleteButOK is true and an error is returned, though the message is still usable.
-func (m *Message) Decode(msg []byte) (_ uint16, incompleteButOK bool, _ error) {
+func (m *Message) Decode(msg []byte) (_ uint16, incompleteButOK bool, err error) {
 	if len(msg) < SizeHeader {
 		return 0, false, errBaseLen
 	} else if len(msg) > math.MaxUint16 {
@@ -135,8 +137,7 @@ func (m *Message) Decode(msg []byte) (_ uint16, incompleteButOK bool, _ error) {
 	}
 	m.Questions = m.Questions[:nq]
 	for i := uint16(0); i < nq; i++ {
-		decoded, err := m.Questions[i].Decode(msg[off:])
-		off += decoded
+		off, err = m.Questions[i].Decode(msg, off)
 		if err != nil {
 			m.Questions = m.Questions[:i] // Trim non-decoded/failed questions.
 			return off, false, err
@@ -144,14 +145,13 @@ func (m *Message) Decode(msg []byte) (_ uint16, incompleteButOK bool, _ error) {
 	}
 	// Skip undecoded questions.
 	for i := uint16(0); i < m.QDCount-nq; i++ {
-		decoded, err := nextQuestionLen(msg[off:])
-		off += decoded
+		off, err = skipQuestion(msg, off)
 		if err != nil {
 			return off, false, err
 		}
 	}
 
-	off, err := decodeToCapResources(&m.Answers, msg, m.ANCount, off)
+	off, err = decodeToCapResources(&m.Answers, msg, m.ANCount, off)
 	if err != nil {
 		return off, false, err
 	}
@@ -166,15 +166,14 @@ func (m *Message) Decode(msg []byte) (_ uint16, incompleteButOK bool, _ error) {
 	return off, tooManyErr != nil, tooManyErr
 }
 
-func decodeToCapResources(dst *[]Resource, msg []byte, nrec, off uint16) (uint16, error) {
+func decodeToCapResources(dst *[]Resource, msg []byte, nrec, off uint16) (_ uint16, err error) {
 	originalRec := nrec
 	if nrec > uint16(cap(*dst)) {
 		nrec = uint16(cap(*dst)) // Decode up to cap. Caller will return an error flag.
 	}
 	*dst = (*dst)[:nrec]
 	for i := uint16(0); i < nrec; i++ {
-		decoded, err := (*dst)[i].Decode(msg[off:])
-		off += decoded
+		off, err = (*dst)[i].Decode(msg, off)
 		if err != nil {
 			*dst = (*dst)[:i] // Trim non-decoded/failed resources.
 			return off, err
@@ -182,8 +181,7 @@ func decodeToCapResources(dst *[]Resource, msg []byte, nrec, off uint16) (uint16
 	}
 	// Parse undecoded resources, effectively skipping them.
 	for i := uint16(0); i < originalRec-nrec; i++ {
-		rlen, err := nextResourceLen(msg[off:])
-		off += rlen
+		off, err = skipResource(msg, off)
 		if err != nil {
 			return off, err
 		}
@@ -191,8 +189,8 @@ func decodeToCapResources(dst *[]Resource, msg []byte, nrec, off uint16) (uint16
 	return off, nil
 }
 
-func nextQuestionLen(msg []byte) (uint16, error) {
-	off, err := countNameOffset(msg)
+func skipQuestion(msg []byte, off uint16) (_ uint16, err error) {
+	off, err = skipName(msg, off)
 	if err != nil {
 		return off, err
 	}
@@ -202,22 +200,22 @@ func nextQuestionLen(msg []byte) (uint16, error) {
 	return off + 4, nil
 }
 
-func nextResourceLen(msg []byte) (uint16, error) {
-	off, err := countNameOffset(msg)
+func skipResource(msg []byte, off uint16) (_ uint16, err error) {
+	off, err = skipName(msg, off)
 	if err != nil {
 		return off, err
 	}
 	// | Name... | Type16 | Class16 | TTL32 | Length16 | Data... |
 	datalen := binary.BigEndian.Uint16(msg[off+8:])
-	rlen := datalen + off + 10
-	if rlen > uint16(len(msg)) {
+	off += datalen + 10
+	if off > uint16(len(msg)) {
 		return off, errBaseLen
 	}
-	return rlen, nil
+	return off, nil
 }
 
-func countNameOffset(name []byte) (uint16, error) {
-	return visitAllLabels(name, 0, func(b []byte) {})
+func skipName(msg []byte, off uint16) (uint16, error) {
+	return visitAllLabels(msg, off, func(b []byte) {}, allowCompression)
 }
 
 func (m *Message) AppendTo(buf []byte) (_ []byte, err error) {
@@ -340,16 +338,16 @@ func (r *ResourceHeader) Reset() {
 	*r = ResourceHeader{Name: r.Name} // Reuse Name's buffer.
 }
 
-func (q *Question) Decode(b []byte) (uint16, error) {
-	off, err := q.Name.Decode(b)
+func (q *Question) Decode(msg []byte, off uint16) (uint16, error) {
+	off, err := q.Name.Decode(msg, off)
 	if err != nil {
 		return off, err
 	}
-	if off+4 > uint16(len(b)) {
+	if off+4 > uint16(len(msg)) {
 		return off, errResourceLen
 	}
-	q.Type = Type(binary.BigEndian.Uint16(b[off:]))
-	q.Class = Class(binary.BigEndian.Uint16(b[off+2:]))
+	q.Type = Type(binary.BigEndian.Uint16(msg[off:]))
+	q.Class = Class(binary.BigEndian.Uint16(msg[off+2:]))
 	return off + 4, nil
 }
 
@@ -368,8 +366,8 @@ func (q *Question) String() string {
 	return q.Name.String() + " " + q.Type.String() + " " + q.Class.String()
 }
 
-func (r *Resource) Decode(b []byte) (uint16, error) {
-	off, err := r.Header.Decode(b)
+func (r *Resource) Decode(b []byte, off uint16) (uint16, error) {
+	off, err := r.Header.Decode(b, off)
 	if err != nil {
 		return off, err
 	}
@@ -390,18 +388,18 @@ func (r *Resource) appendTo(buf []byte) (_ []byte, err error) {
 	return buf, nil
 }
 
-func (rhdr *ResourceHeader) Decode(b []byte) (uint16, error) {
-	off, err := rhdr.Name.Decode(b)
+func (rhdr *ResourceHeader) Decode(msg []byte, off uint16) (uint16, error) {
+	off, err := rhdr.Name.Decode(msg, off)
 	if err != nil {
 		return off, err
 	}
-	if off+10 > uint16(len(b)) {
+	if off+10 > uint16(len(msg)) {
 		return off, errResourceLen
 	}
-	rhdr.Type = Type(binary.BigEndian.Uint16(b[off:]))     // 2
-	rhdr.Class = Class(binary.BigEndian.Uint16(b[off+2:])) // 4
-	rhdr.TTL = binary.BigEndian.Uint32(b[off+4:])          // 8
-	rhdr.Length = binary.BigEndian.Uint16(b[off+8:])       // 10
+	rhdr.Type = Type(binary.BigEndian.Uint16(msg[off:]))     // 2
+	rhdr.Class = Class(binary.BigEndian.Uint16(msg[off+2:])) // 4
+	rhdr.TTL = binary.BigEndian.Uint32(msg[off+4:])          // 8
+	rhdr.Length = binary.BigEndian.Uint16(msg[off+8:])       // 10
 	return off + 10, nil
 }
 
@@ -482,9 +480,9 @@ func (n *Name) AppendDottedTo(b []byte) []byte {
 }
 
 // Decode resets internal Name buffer and reads raw wire data from buffer, returning any error encountered.
-func (n *Name) Decode(b []byte) (uint16, error) {
+func (n *Name) Decode(b []byte, off uint16) (uint16, error) {
 	n.Reset()
-	off, err := visitAllLabels(b, 0, n.vistAddLabel)
+	off, err := visitAllLabels(b, off, n.vistAddLabel, allowCompression)
 	if err != nil {
 		n.Reset()
 		return off, err
@@ -529,7 +527,7 @@ func (n *Name) VisitLabels(fn func(label []byte)) error {
 	if len(n.data) > 255 {
 		return errNameTooLong
 	}
-	_, err := visitAllLabels(n.data, 0, fn)
+	_, err := visitAllLabels(n.data, 0, fn, allowCompression)
 	return err
 }
 

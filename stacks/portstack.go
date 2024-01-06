@@ -49,7 +49,7 @@ func NewPortStack(cfg PortStackConfig) *PortStack {
 	s.mtu = cfg.MTU
 	now := time.Now()
 	if now.Before(modernAge) {
-		s.timeadd = modernAge.Sub(now)
+		// s.timeadd = modernAge.Sub(now)
 	}
 	return s
 }

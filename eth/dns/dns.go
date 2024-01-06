@@ -136,14 +136,19 @@ func (flags HeaderFlags) appendF(buf []byte) []byte {
 	return buf
 }
 
-func visitAllLabels(msg []byte, off uint16, fn func(b []byte)) (uint16, error) {
+func visitAllLabels(msg []byte, off uint16, fn func(b []byte), allowCompression bool) (uint16, error) {
+	// currOff is the current working offset.
 	currOff := off
 	if len(msg) > math.MaxUint16 {
 		return off, errResTooLong
 	}
 	// ptr is the number of pointers followed.
-	var ptr uint16
-	newOff := off
+	var ptr uint8
+	// newOff is the offset where the next record will start. Pointers lead
+	// to data that belongs to other names and thus doesn't count towards to
+	// the usage of this name.
+	var newOff = off
+
 LOOP:
 	for {
 		if currOff >= uint16(len(msg)) {
@@ -171,7 +176,22 @@ LOOP:
 
 		case 0xc0: // Pointer.
 			// https://cs.opensource.google/go/x/net/+/refs/tags/v0.19.0:dns/dnsmessage/message.go;l=2078
-			return off, errCompressedSRV // No support for compressed.
+			if !allowCompression {
+				return off, errCompressedSRV
+			}
+			if currOff >= uint16(len(msg)) {
+				return off, errInvalidPtr
+			}
+			c1 := msg[currOff]
+			currOff++
+			if ptr == 0 {
+				newOff = currOff
+			}
+			// Don't follow too many pointers, maybe there's a loop.
+			if ptr++; ptr > 10 {
+				return off, errTooManyPtr
+			}
+			currOff = (c^0xC0)<<8 | uint16(c1)
 		default:
 			// Prefixes 0x80 and 0x40 are reserved.
 			return off, errReserved

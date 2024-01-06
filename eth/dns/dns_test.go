@@ -40,7 +40,7 @@ func TestNameAppendDecode(t *testing.T) {
 	}
 
 	var name2 Name
-	n, err := name2.Decode(b)
+	n, err := name2.Decode(b, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestNameAppendDecode(t *testing.T) {
 
 	// Re-decode.
 	const okvalidName = "\x03www\x02go\x03dev\x00"
-	_, err = name.Decode([]byte(okvalidName))
+	_, err = name.Decode([]byte(okvalidName), 0)
 	if err != nil {
 		t.Error("got error decoding valid name", err)
 	} else if name.String() != "www.go.dev." {
@@ -71,7 +71,7 @@ func TestNameAppendDecode(t *testing.T) {
 	}
 	// Decode invalid name.
 	const invalidName = "\x03w.w\x02go\x03dev\x00"
-	_, err = name.Decode([]byte(invalidName))
+	_, err = name.Decode([]byte(invalidName), 0)
 	if err == nil {
 		t.Error("expected error for invalid name")
 	} else if err != errInvalidName {

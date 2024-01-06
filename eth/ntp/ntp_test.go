@@ -36,3 +36,25 @@ func TestTimestamp(t *testing.T) {
 		t.Fatalf("got %v, want %v", t1got, t1)
 	}
 }
+
+func TestTimestampOverflow(t *testing.T) {
+	const tol = time.Microsecond
+	var now = time.Now() // time.Date(2035, 2, 7, 6, 28, 16, 0, time.UTC)
+	told, err := TimestampFromTime(baseTime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmodern, err := TimestampFromTime(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	diff := tmodern.Sub(told)
+	if diff < 0 {
+		t.Fatalf("got %v, want positive", diff)
+	}
+	diffwant := now.Sub(baseTime)
+	differr := (diff - diffwant).Abs()
+	if differr > tol {
+		t.Fatalf("got diff %v", differr)
+	}
+}
