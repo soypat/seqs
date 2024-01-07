@@ -10,6 +10,7 @@ type RequestHeader struct {
 //
 // io.EOF is returned if r is closed before reading the first header byte.
 func (h *RequestHeader) Read(r *bufio.Reader) error {
+	h.hdr.trace("httpx:RqHdr.Read")
 	return h.hdr.readLoop(r, true)
 }
 

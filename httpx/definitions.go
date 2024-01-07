@@ -1,6 +1,7 @@
 package httpx
 
 const (
+	slashChar          = '/'
 	rChar              = '\r'
 	nChar              = '\n'
 	defaultServerName  = "fasthttp"
@@ -9,7 +10,6 @@ const (
 )
 
 const (
-	strSlash                    = "/"
 	strSlashSlash               = "//"
 	strSlashDotDot              = "/.."
 	strSlashDotSlash            = "/./"

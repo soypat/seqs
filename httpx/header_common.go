@@ -2,9 +2,12 @@ package httpx
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/soypat/seqs/internal"
 )
 
 // header implements logic shared by RequestHeader and ResponseHeader.
@@ -33,6 +36,7 @@ type header struct {
 	cookies []argsKV
 	trailer []argsKV
 	scanner headerScanner
+	logger  *slog.Logger
 }
 
 func (h *header) Set(key, value string) {
@@ -90,7 +94,7 @@ func (h *header) setSpecialHeader(key, value string) bool {
 	if len(key) == 0 || h.disableSpecialHeader {
 		return false
 	}
-
+	h.trace("setSpecialHeader", slog.String("key", key), slog.String("value", value))
 	switch key[0] | 0x20 {
 	case 'c':
 		switch {
@@ -166,11 +170,11 @@ func (h *header) SetContentRange(startPos, endPos, contentLength int) {
 	b := h.bufKV.value[:0]
 	b = append(b, strBytes...)
 	b = append(b, ' ')
-	b = AppendUint(b, startPos)
+	b = appendUint(b, startPos)
 	b = append(b, '-')
-	b = AppendUint(b, endPos)
+	b = appendUint(b, endPos)
 	b = append(b, '/')
-	b = AppendUint(b, contentLength)
+	b = appendUint(b, contentLength)
 	h.bufKV.value = b
 
 	h.setNonSpecial(strContentRange, b2s(h.bufKV.value))
@@ -178,10 +182,11 @@ func (h *header) SetContentRange(startPos, endPos, contentLength int) {
 
 // setNonSpecial directly put into map i.e. not a basic header.
 func (h *header) setNonSpecial(key string, value string) {
+	h.trace("httpx:setNonSpecial", slog.String("key", key), slog.String("value", value))
 	h.h = setArg(h.h, key, value, argsHasValue)
 }
 
-func AppendUint(b []byte, v int) []byte {
+func appendUint(b []byte, v int) []byte {
 	if v < 0 {
 		panic("negative uint")
 	}
@@ -205,7 +210,7 @@ func (h *header) ContentLength() int {
 func (h *header) SetContentLength(contentLength int) {
 	h.contentLength = contentLength
 	if contentLength >= 0 {
-		h.contentLengthBytes = AppendUint(h.contentLengthBytes[:0], contentLength)
+		h.contentLengthBytes = appendUint(h.contentLengthBytes[:0], contentLength)
 		h.h = delAllArgs(h.h, strTransferEncoding)
 	} else {
 		h.contentLengthBytes = h.contentLengthBytes[:0]
@@ -255,6 +260,7 @@ func (h *header) SetTrailer(trailer string) error {
 //
 // Return ErrBadTrailer if contain any forbidden trailers.
 func (h *header) AddTrailer(trailer string) error {
+	h.trace("httpx:AddTrailer", slog.String("trailer", trailer))
 	var err error
 	for i := -1; i+1 < len(trailer); {
 		trailer = trailer[i+1:]
@@ -498,3 +504,13 @@ type noCopy struct{}
 
 func (*noCopy) Lock()   {}
 func (*noCopy) Unlock() {}
+
+func (h *header) trace(msg string, attrs ...slog.Attr) {
+	internal.LogAttrs(h.logger, internal.LevelTrace, msg, attrs...)
+}
+func (h *header) debug(msg string, attrs ...slog.Attr) {
+	internal.LogAttrs(h.logger, slog.LevelDebug, msg, attrs...)
+}
+func (h *header) info(msg string, attrs ...slog.Attr) {
+	internal.LogAttrs(h.logger, slog.LevelInfo, msg, attrs...)
+}

@@ -128,6 +128,7 @@ func (h *ResponseHeader) Peek(key string) []byte {
 // AppendBytes appends response header representation to dst and returns
 // the extended dst.
 func (h *ResponseHeader) AppendBytes(dst []byte) []byte {
+	h.hdr.trace("httpx:RspHdr.AppendBytes")
 	dst = h.appendStatusLine(dst[:0])
 
 	server := h.Server()

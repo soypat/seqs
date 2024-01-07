@@ -13,11 +13,11 @@ import (
 var zeroTime time.Time
 
 var (
-	// CookieExpireDelete may be set on Cookie.Expire for expiring the given cookie.
-	CookieExpireDelete = time.Date(2009, time.November, 10, 23, 0, 0, 0, time.UTC)
+	// cookieExpireDelete may be set on Cookie.Expire for expiring the given cookie.
+	cookieExpireDelete = time.Date(2009, time.November, 10, 23, 0, 0, 0, time.UTC)
 
-	// CookieExpireUnlimited indicates that the cookie doesn't expire.
-	CookieExpireUnlimited = zeroTime
+	// cookieExpireUnlimited indicates that the cookie doesn't expire.
+	cookieExpireUnlimited = zeroTime
 )
 
 // CookieSameSite is an enum for the mode in which the SameSite flag should be set for the given cookie.
@@ -38,19 +38,19 @@ const (
 	CookieSameSiteNoneMode
 )
 
-// AcquireCookie returns an empty Cookie object from the pool.
+// acquireCookie returns an empty Cookie object from the pool.
 //
 // The returned object may be returned back to the pool with ReleaseCookie.
 // This allows reducing GC load.
-func AcquireCookie() *Cookie {
+func acquireCookie() *Cookie {
 	return cookiePool.Get().(*Cookie)
 }
 
-// ReleaseCookie returns the Cookie object acquired with AcquireCookie back
+// releaseCookie returns the Cookie object acquired with AcquireCookie back
 // to the pool.
 //
 // Do not access released Cookie object, otherwise data races may occur.
-func ReleaseCookie(c *Cookie) {
+func releaseCookie(c *Cookie) {
 	c.Reset()
 	cookiePool.Put(c)
 }
@@ -187,7 +187,7 @@ func (c *Cookie) SetMaxAge(seconds int) {
 func (c *Cookie) Expire() time.Time {
 	expire := c.expire
 	if expire.IsZero() {
-		expire = CookieExpireUnlimited
+		expire = cookieExpireUnlimited
 	}
 	return expire
 }
@@ -264,7 +264,7 @@ func (c *Cookie) AppendBytes(dst []byte) []byte {
 		dst = append(dst, ';', ' ')
 		dst = append(dst, strCookieMaxAge...)
 		dst = append(dst, '=')
-		dst = AppendUint(dst, c.maxAge)
+		dst = appendUint(dst, c.maxAge)
 	} else if !c.expire.IsZero() {
 		c.bufKV.value = AppendHTTPDate(c.bufKV.value[:0], c.expire)
 		dst = append(dst, ';', ' ')
@@ -596,7 +596,7 @@ func normalizePath(dst []byte, src string) []byte {
 		if n < 0 {
 			break
 		}
-		nn := strings.LastIndexByte(b2s(b[:n]), '/')
+		nn := strings.LastIndexByte(b2s(b[:n]), slashChar)
 		if nn < 0 {
 			nn = 0
 		}
@@ -608,9 +608,9 @@ func normalizePath(dst []byte, src string) []byte {
 	// remove trailing /foo/..
 	n := strings.LastIndex(b2s(b), strSlashDotDot)
 	if n >= 0 && n+len(strSlashDotDot) == len(b) {
-		nn := strings.LastIndexByte(b2s(b[:n]), '/')
+		nn := strings.LastIndexByte(b2s(b[:n]), slashChar)
 		if nn < 0 {
-			return append(dst[:0], strSlash...)
+			return append(dst[:0], slashChar)
 		}
 		b = b[:nn+1]
 	}
@@ -633,7 +633,7 @@ func normalizePath(dst []byte, src string) []byte {
 			if n < 0 {
 				break
 			}
-			nn := strings.LastIndexByte(b2s(b[:n]), '/')
+			nn := strings.LastIndexByte(b2s(b[:n]), slashChar)
 			if nn < 0 {
 				nn = 0
 			}
@@ -649,7 +649,7 @@ func normalizePath(dst []byte, src string) []byte {
 			if n < 0 {
 				break
 			}
-			nn := strings.LastIndexByte(b2s(b[:n]), '/')
+			nn := strings.LastIndexByte(b2s(b[:n]), slashChar)
 			if nn < 0 {
 				nn = 0
 			}
@@ -661,9 +661,9 @@ func normalizePath(dst []byte, src string) []byte {
 		// remove trailing \foo\..
 		n := strings.LastIndex(b2s(b), strBackSlashDotDot)
 		if n >= 0 && n+len(strSlashDotDot) == len(b) {
-			nn := strings.LastIndexByte(b2s(b[:n]), '/')
+			nn := strings.LastIndexByte(b2s(b[:n]), slashChar)
 			if nn < 0 {
-				return append(dst[:0], strSlash...)
+				return append(dst[:0], slashChar)
 			}
 			b = b[:nn+1]
 		}
@@ -674,8 +674,8 @@ func normalizePath(dst []byte, src string) []byte {
 
 func addLeadingSlash(dst []byte, src string) []byte {
 	// add leading slash for unix paths
-	if len(src) == 0 || src[0] != '/' {
-		dst = append(dst, '/')
+	if len(src) == 0 || src[0] != slashChar {
+		dst = append(dst, slashChar)
 	}
 
 	return dst
