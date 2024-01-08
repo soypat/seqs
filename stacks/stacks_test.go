@@ -1,6 +1,7 @@
 package stacks_test
 
 import (
+	"bytes"
 	"cmp"
 	"encoding/hex"
 	"errors"
@@ -312,6 +313,97 @@ func TestTCPSendReceive_duplex(t *testing.T) {
 
 	// Send data from client to server multiple times.
 	testSocketDuplex(t, client, server, egr, defaultTestDuplexMessages)
+}
+
+func TestTCPSendReceive_datalink(t *testing.T) {
+	// Create Client+Server and establish TCP connection between them.
+	type action uint8
+	const (
+		_ action = iota
+		// actionDropAll
+		actionExchange
+		actionClientWrite
+		actionServerWrite
+		actionClientRead
+		actionServerRead
+	)
+	type message struct {
+		action action
+		size   uint16
+	}
+	tests := []struct {
+		cbuf, sbuf uint16
+		mtu        uint16
+		msgs       []message
+	}{
+		{
+			sbuf: 32, cbuf: 32, mtu: 128,
+			msgs: []message{
+				{action: actionClientWrite, size: 32},
+				{action: actionExchange},
+				{action: actionServerRead, size: 32},
+			},
+		},
+	}
+	incBuf := make([]byte, defaultMTU+256)
+	for i := range incBuf {
+		incBuf[i] = byte(i)
+	}
+
+	var buf [defaultMTU]byte
+	for _, test := range tests {
+		sSent := 0
+		cSent := 0
+		var cReceived, sReceived bytes.Buffer
+		client, server := createTCPClientServerPair(t, test.cbuf, test.sbuf, test.mtu)
+		egr := NewExchanger(client.PortStack(), server.PortStack())
+		egr.DoExchanges(t, exchangesToEstablish)
+		if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
+			t.Fatalf("not established: client=%s server=%s", client.State(), server.State())
+		}
+		for _, msg := range test.msgs {
+			var n int
+			var err error
+			switch msg.action {
+			case actionExchange:
+				_, n = egr.DoExchanges(t, 1)
+				if n == 0 {
+					t.Fatal("no packet in exchange")
+				}
+			case actionClientWrite:
+				off := cSent % 256
+				_, err = client.Write(incBuf[off : off+int(msg.size)])
+			case actionServerWrite:
+				off := sSent % 256
+				_, err = server.Write(incBuf[off : off+int(msg.size)])
+			case actionClientRead:
+				n, err = client.Read(buf[:msg.size])
+				cReceived.Read(buf[:n])
+			case actionServerRead:
+				n, err = server.Read(buf[:msg.size])
+				sReceived.Read(buf[:n])
+			}
+			if err != nil {
+				t.Error(msg.action, err)
+			}
+		}
+		if cSent != sReceived.Len() {
+			t.Errorf("client sent=%d server received=%d", cSent, sReceived.Len())
+		}
+		if sSent != cReceived.Len() {
+			t.Errorf("server sent=%d client received=%d", sSent, cReceived.Len())
+		}
+		for i, c := range cReceived.Bytes() {
+			if c != byte(i) {
+				t.Errorf("client received[%d]=%d want=%d", i, c, byte(i))
+			}
+		}
+		for i, c := range sReceived.Bytes() {
+			if c != byte(i) {
+				t.Errorf("client received[%d]=%d want=%d", i, c, byte(i))
+			}
+		}
+	}
 }
 
 func TestTCPClose_noPendingData(t *testing.T) {
@@ -798,18 +890,21 @@ func socketSendString(s *stacks.TCPConn, str string) {
 func checkNoMoreDataSent(t *testing.T, msg string, egr *Exchanger) {
 	t.Helper()
 	buf := egr.auxbuf()
-	handleTx := func() (txs int) {
+	var txs, data int
+	handleTx := func() (newTxs int) {
+		txOld := txs
 		for istack := 0; istack < len(egr.Stacks); istack++ {
 			n, _ := egr.Stacks[istack].HandleEth(buf)
 			if n > 0 {
 				txs++
+				data += n
 			}
 		}
-		return txs
+		return txs - txOld
 	}
 
-	txs := handleTx()
-	if txs > 0 {
+	done := handleTx()
+	if done > 0 {
 		retriesBeforeInfLoop := 1000
 		for handleTx() > 0 {
 			retriesBeforeInfLoop--
@@ -817,7 +912,7 @@ func checkNoMoreDataSent(t *testing.T, msg string, egr *Exchanger) {
 				t.Fatal("likely infinite send loop detected")
 			}
 		}
-		t.Errorf("[txs=%d] unexpected data: %s", txs, msg)
+		t.Errorf("[txs=%d] unexpected %d data: %s", txs, data, msg)
 	}
 }
 func assertOneTCPTx(t *testing.T, msg string, wantFlags seqs.Flags, egr *Exchanger) {
