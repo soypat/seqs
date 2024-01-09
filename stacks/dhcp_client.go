@@ -39,16 +39,17 @@ type DHCPClient struct {
 	// DHCP server IP
 	svip        [4]byte
 	requestedIP [4]byte
-	dns         [4]byte
+	dns         []netip.Addr
 	router      [4]byte
 	subnet      [4]byte
 	broadcast   [4]byte
 	gateway     [4]byte
-	optionbuf   [10]dhcp.Option
-	hostname    []byte
-	tRenew      uint32 // Opt(58): Renewal time [s]
-	tRebind     uint32 // Opt(59): Rebinding time [s]
-	tIPLease    uint32 // Opt(51): IP lease time [s]
+
+	optionbuf [10]dhcp.Option
+	hostname  []byte
+	tRenew    uint32 // Opt(58): Renewal time [s]
+	tRebind   uint32 // Opt(59): Rebinding time [s]
+	tIPLease  uint32 // Opt(51): IP lease time [s]
 	// This field is for avoiding heap allocations.
 	auxbuf [4]byte
 }
@@ -133,8 +134,8 @@ func (d *DHCPClient) Gateway() netip.Addr {
 	return ipv4orInvalid(d.gateway)
 }
 
-func (d *DHCPClient) DNSServer() netip.Addr {
-	return ipv4orInvalid(d.dns)
+func (d *DHCPClient) DNSServers() []netip.Addr {
+	return d.dns
 }
 
 func (d *DHCPClient) Offer() netip.Addr {
@@ -347,7 +348,12 @@ func (d *DHCPClient) recv(pkt *UDPPacket) (err error) {
 		case dhcp.OptServerIdentification:
 			d.svip = maybeIP(opt.Data)
 		case dhcp.OptDNSServers:
-			d.dns = maybeIP(opt.Data)
+			if len(d.dns) > 0 && len(opt.Data)%4 != 0 {
+				return nil // No DNS parsing if already got in previous exchange.
+			}
+			for i := 0; i < len(opt.Data); i += 4 {
+				d.dns = append(d.dns, netip.AddrFrom4([4]byte(opt.Data[i:i+4])))
+			}
 		case dhcp.OptRouter:
 			d.router = maybeIP(opt.Data)
 		case dhcp.OptSubnetMask:
@@ -409,8 +415,10 @@ func (d *DHCPClient) Abort() {
 
 func (d *DHCPClient) abort() {
 	*d = DHCPClient{
-		stack: d.stack,
-		port:  d.port,
+		stack:    d.stack,
+		port:     d.port,
+		dns:      d.dns[:0],
+		hostname: d.hostname[:0],
 	}
 }
 
