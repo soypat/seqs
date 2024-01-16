@@ -89,7 +89,7 @@ func DecodeHeader(b []byte) (dhdr Header) {
 
 // NewClientHeaderFlags creates the header flags for a client request.
 func NewClientHeaderFlags(op OpCode, enableRecursion bool) HeaderFlags {
-	return HeaderFlags(op&0b1111)<<11 | HeaderFlags(b2u8(enableRecursion))<<7
+	return HeaderFlags(op&0b1111)<<11 | HeaderFlags(b2u8(enableRecursion))<<8
 }
 
 // IsResponse returns QR bit which specifies whether this message is a query (0), or a response (1).
