@@ -374,6 +374,15 @@ func (h *header) Method() []byte {
 	return h.method
 }
 
+func (h *header) SetMethod(method string) {
+	h.method = append(h.method[:0], method...)
+}
+
+// SetRequestURI sets RequestURI for the first HTTP request line.
+func (h *header) SetRequestURI(requestURI string) {
+	h.requestURI = append(h.requestURI[:0], requestURI...)
+}
+
 // RequestURI returns RequestURI from the first HTTP request line.
 func (h *header) RequestURI() []byte {
 	requestURI := h.requestURI
@@ -389,6 +398,10 @@ func (h *header) Protocol() []byte {
 		h.proto = append(h.proto, strHTTP11...)
 	}
 	return h.proto
+}
+
+func (h *header) SetProtocol(protocol string) {
+	h.proto = append(h.proto[:0], protocol...)
 }
 
 // AppendReqRespCommon appends request/response common header representation to dst and returns the extended buffer.

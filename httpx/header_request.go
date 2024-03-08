@@ -24,11 +24,34 @@ func (h *RequestHeader) DisableNormalizing() { h.hdr.DisableNormalizing() }
 
 func (h *RequestHeader) Method() []byte { return h.hdr.Method() }
 
+func (h *RequestHeader) SetMethod(method string) {
+	h.hdr.SetMethod(method)
+}
+
 func (h *RequestHeader) RequestURI() []byte { return h.hdr.RequestURI() }
 
-func (h *RequestHeader) Protocol() []byte      { return h.hdr.Protocol() }
-func (h *RequestHeader) UserAgent() []byte     { return h.hdr.UserAgent() }
-func (h *RequestHeader) ContentType() []byte   { return h.hdr.ContentType() }
+func (h *RequestHeader) SetRequestURI(uri string) {
+	h.hdr.SetRequestURI(uri)
+}
+
+func (h *RequestHeader) Protocol() []byte { return h.hdr.Protocol() }
+
+func (h *RequestHeader) SetProtocol(protocol string) {
+	h.hdr.SetProtocol(protocol)
+}
+
+func (h *RequestHeader) UserAgent() []byte { return h.hdr.UserAgent() }
+
+func (h *RequestHeader) SetUserAgent(s string) {
+	h.hdr.SetUserAgent(s)
+}
+
+func (h *RequestHeader) ContentType() []byte { return h.hdr.ContentType() }
+
+func (h *RequestHeader) SetContentType(s string) {
+	h.hdr.SetContentType(s)
+}
+
 func (h *RequestHeader) DisableSpecialHeader() { h.hdr.DisableSpecialHeader() }
 
 // String returns request header representation.

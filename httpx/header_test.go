@@ -177,3 +177,11 @@ func TestRequestDisableSpecialHeaders(t *testing.T) {
 	// 	t.Fatalf("custom special header ordering failed: %q", h.String())
 	// }
 }
+
+func TestRequest(t *testing.T) {
+	var req RequestHeader
+	req.SetRequestURI("http://example.com")
+
+	var b bytes.Buffer
+	b.Write(req.Header())
+}
