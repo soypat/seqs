@@ -28,6 +28,10 @@ func (h *RequestHeader) SetMethod(method string) {
 	h.hdr.SetMethod(method)
 }
 
+func (h *RequestHeader) SetHost(host string) {
+	h.hdr.SetHost(host)
+}
+
 func (h *RequestHeader) RequestURI() []byte { return h.hdr.RequestURI() }
 
 func (h *RequestHeader) SetRequestURI(uri string) {
