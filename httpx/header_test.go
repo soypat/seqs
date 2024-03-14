@@ -181,7 +181,21 @@ func TestRequestDisableSpecialHeaders(t *testing.T) {
 func TestRequest(t *testing.T) {
 	var req RequestHeader
 	req.SetRequestURI("http://example.com")
+	req.SetHost("example.com")
+	req.SetMethod("PUT")
+	req.SetUserAgent("test")
+	req.SetContentType("text/plain")
+	// req.SetProtocol("HTTP/2.1")
+	result := string(req.Header())
+	b := bufio.NewReader(strings.NewReader(result))
 
-	var b bytes.Buffer
-	b.Write(req.Header())
+	var loop RequestHeader
+	err := loop.Read(b)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	resultLoopback := string(loop.Header())
+	if result != resultLoopback {
+		t.Errorf("loopback mismatch: %q got %q", result, resultLoopback)
+	}
 }
