@@ -480,8 +480,9 @@ func (sock *TCPConn) stateCheck() (portStackErr error) {
 			sock.debug("TCP:delayed-close", slog.Uint64("port", uint64(sock.localPort)))
 		} else {
 			now := sock.stack.now()
-			if now.Sub(sock.lastTx) > 3*time.Second {
-				sock.logerr("TCP:idleabort")
+			elapsed := now.Sub(sock.lastTx)
+			if elapsed > 3*time.Second {
+				sock.logerr("TCP:idleabort", slog.Duration("elapsed", elapsed))
 				return io.EOF // Abort connection- no response from remote.
 			}
 		}

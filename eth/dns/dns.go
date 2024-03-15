@@ -38,7 +38,7 @@ const (
 	// SizeHeader is the length (in bytes) of a DNS header.
 	// A header is comprised of 6 uint16s and no padding.
 	SizeHeader = 6 * 2
-	// The Internet supports name server access using TCP [RFC-793] on server
+	// The Internet supports name server access using TCP [RFC-9293] on server
 	// port 53 (decimal) as well as datagram access using UDP [RFC-768] on UDP port 53 (decimal).
 	ServerPort = 53
 	ClientPort = 53

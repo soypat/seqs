@@ -67,6 +67,10 @@ func (tcb *ControlBlock) Open(iss Value, wnd Size, state State) (err error) {
 	return nil
 }
 
+// Close implements a passive/active closing of a connection. It does not immediately
+// delete the TCB but initiates the process so that pending outgoing segments initiate
+// the closing process. After a call to Close users should not send more data.
+// Close returns an error if the connection is already closed or closing.
 func (tcb *ControlBlock) Close() (err error) {
 	// See RFC 9293: 3.10.4 CLOSE call.
 	switch tcb.state {
