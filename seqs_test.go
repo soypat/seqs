@@ -475,6 +475,46 @@ func TestResetEstablished(t *testing.T) {
 	checkNoPending(t, &tcb)
 }
 
+func TestFinackClose(t *testing.T) {
+	var tcb seqs.ControlBlock
+	const windowA, windowB = 502, 4096
+	const issA, issB = 100, 200
+	tcb.HelperInitState(seqs.StateEstablished, issA, issA, windowA)
+	tcb.HelperInitRcv(issB, issB, windowB)
+	// Start closing process.
+	err := tcb.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seg, ok := tcb.PendingSegment(0)
+	if !ok {
+		t.Fatal("expected pending segment")
+	}
+	if !seg.Flags.HasAll(seqs.FlagFIN | seqs.FlagACK) {
+		t.Fatalf("expected FIN|ACK; got %s", seg.Flags.String())
+	}
+	err = tcb.Send(seg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tcb.State() != seqs.StateFinWait1 {
+		t.Fatalf("expected FinWait1; got %s", tcb.State().String())
+	}
+	// Special case where we receive FINACK all together, we can streamline and go into TimeWait.
+	err = tcb.Recv(seqs.Segment{
+		SEQ:   issB,
+		ACK:   issA + 1,
+		WND:   windowB,
+		Flags: FINACK,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tcb.State() != seqs.StateTimeWait {
+		t.Fatalf("expected TimeWait after FINACK; got %s", tcb.State().String())
+	}
+}
+
 func TestExchange_helloworld_client(t *testing.T) {
 	return
 	// Client Transmission Control Block.

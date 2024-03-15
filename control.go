@@ -238,15 +238,22 @@ func (tcb *ControlBlock) rcvEstablished(seg Segment) (pending Flags, err error) 
 
 func (tcb *ControlBlock) rcvFinWait1(seg Segment) (pending Flags, err error) {
 	flags := seg.Flags
-	if !flags.HasAny(FlagACK) {
-		return 0, errFinwaitExpectedACK
-	} else if flags.HasAny(FlagFIN) {
-		tcb.state = StateClosing // Simultaneous close. See figure 13 of RFC 9293.
-		pending = FlagACK
-	} else {
+	hasFin := flags&FlagFIN != 0
+	hasAck := flags&FlagACK != 0
+	switch {
+	case hasFin && hasAck && seg.ACK == tcb.snd.NXT:
+		// Special case: Server sent a FINACK response to our FIN so we enter TimeWait directly.
+		// We have to check ACK against send NXT to avoid simultaneous close sequence edge case.
+		tcb.state = StateTimeWait
+	case hasFin:
+		tcb.state = StateClosing
+	case hasAck:
+		// TODO(soypat): Check if this branch does NOT need ACK queued. Online flowcharts say not needed.
 		tcb.state = StateFinWait2
-		pending = FlagACK
+	default:
+		return 0, errFinwaitExpectedACK
 	}
+	pending = FlagACK
 	return pending, nil
 }
 
@@ -409,16 +416,20 @@ func (tcb *ControlBlock) logenabled(lvl slog.Level) bool {
 	return internal.HeapAllocDebugging || (tcb.log != nil && tcb.log.Handler().Enabled(context.Background(), lvl))
 }
 
+func (tcb *ControlBlock) logattrs(lvl slog.Level, msg string, attrs ...slog.Attr) {
+	internal.LogAttrs(tcb.log, lvl, msg, attrs...)
+}
+
 func (tcb *ControlBlock) debug(msg string, attrs ...slog.Attr) {
-	internal.LogAttrs(tcb.log, slog.LevelDebug, msg, attrs...)
+	tcb.logattrs(slog.LevelDebug, msg, attrs...)
 }
 
 func (tcb *ControlBlock) trace(msg string, attrs ...slog.Attr) {
-	internal.LogAttrs(tcb.log, internal.LevelTrace, msg, attrs...)
+	tcb.logattrs(internal.LevelTrace, msg, attrs...)
 }
 
 func (tcb *ControlBlock) logerr(msg string, attrs ...slog.Attr) {
-	internal.LogAttrs(tcb.log, slog.LevelError, msg, attrs...)
+	tcb.logattrs(slog.LevelError, msg, attrs...)
 }
 
 func (tcb *ControlBlock) traceSnd(msg string) {
