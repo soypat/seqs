@@ -378,10 +378,15 @@ func (sock *TCPConn) send(response []byte) (n int, err error) {
 	if !sock.remote.IsValid() {
 		return 0, nil // No remote address yet, yield.
 	}
-	if sock.mustSendSyn() {
-		// Connection is still closed, we need to establish
-		return sock.handleInitSyn(response)
+	if sock.awaitingSyn() {
+		// Connection is still preestablished, we need to establish
+		if sock.mustSendSyn() {
+			return sock.handleInitSyn(response)
+		}
+		// We sent the initializing SYN less than N seconds ago, yield.
+		return 0, ErrFlagPending
 	}
+
 	// Advertise our receive window as the amount of space available in our receive buffer.
 	sock.scb.SetRecvWindow(seqs.Size(sock.rx.Free()))
 
@@ -414,7 +419,7 @@ func (sock *TCPConn) send(response []byte) (n int, err error) {
 		sock.info("TCP:tx-statechange", slog.Uint64("port", uint64(sock.localPort)), slog.String("old", prevState.String()), slog.String("new", sock.scb.State().String()), slog.String("txflags", seg.Flags.String()))
 	}
 	err = sock.stateCheck()
-	sock.onsend(sizeTCPNoOptions + n)
+	sock.onsend(response[:sizeTCPNoOptions+n])
 	return sizeTCPNoOptions + n, err
 }
 
@@ -433,7 +438,7 @@ func (sock *TCPConn) handleInitSyn(response []byte) (n int, err error) {
 	sock.setSrcDest(&sock.pkt)
 	sock.pkt.CalculateHeaders(sock.synsentSegment(), nil)
 	sock.pkt.PutHeaders(response)
-	sock.onsend(sizeTCPNoOptions)
+	sock.onsend(response[:sizeTCPNoOptions])
 	return sizeTCPNoOptions, nil
 }
 
@@ -442,11 +447,12 @@ func (sock *TCPConn) awaitingSyn() bool {
 }
 
 func (sock *TCPConn) mustSendSyn() bool {
+	// lastTx is zero-valued on init, so this will trigger on t=0 and every 3 seconds.
 	return sock.awaitingSyn() && time.Since(sock.lastTx) > 3*time.Second
 }
 
-func (sock *TCPConn) onsend(n int) {
-	if n > 0 {
+func (sock *TCPConn) onsend(b []byte) {
+	if len(b) > 0 {
 		sock.lastTx = sock.stack.now()
 	}
 }

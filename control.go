@@ -153,6 +153,7 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 		Flags:   pending,
 		DATALEN: Size(payloadLen),
 	}
+	tcb.traceSeg("tcb:pending-out", seg)
 	return seg, true
 }
 
@@ -452,13 +453,15 @@ func (tcb *ControlBlock) traceRcv(msg string) {
 }
 
 func (tcb *ControlBlock) traceSeg(msg string, seg Segment) {
-	tcb.trace(msg,
-		slog.Uint64("seg.seq", uint64(seg.SEQ)),
-		slog.Uint64("seg.ack", uint64(seg.ACK)),
-		slog.Uint64("seg.wnd", uint64(seg.WND)),
-		slog.Uint64("seg.flags", uint64(seg.Flags)),
-		slog.Uint64("seg.data", uint64(seg.DATALEN)),
-	)
+	if tcb.logenabled(internal.LevelTrace) {
+		tcb.trace(msg,
+			slog.Uint64("seg.seq", uint64(seg.SEQ)),
+			slog.Uint64("seg.ack", uint64(seg.ACK)),
+			slog.Uint64("seg.wnd", uint64(seg.WND)),
+			slog.String("seg.flags", seg.Flags.String()),
+			slog.Uint64("seg.data", uint64(seg.DATALEN)),
+		)
+	}
 }
 
 // Flags is a TCP flags masked implementation i.e: SYN, FIN, ACK.
@@ -513,6 +516,8 @@ func (flags Flags) String() string {
 		return "[SYN]"
 	case FlagFIN:
 		return "[FIN]"
+	case FlagRST:
+		return "[RST]"
 	}
 	buf := make([]byte, 0, 2+3*bits.OnesCount16(uint16(flags)))
 	buf = append(buf, '[')
