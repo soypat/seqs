@@ -120,8 +120,28 @@ func (d *DHCPClient) BeginRequest(cfg DHCPRequestConfig) error {
 	return d.stack.FlagPendingUDP(d.port)
 }
 
+// IsDone
+//
+// Deprecated: Use d.State()==dhcp.StateBound instead.
 func (d *DHCPClient) IsDone() bool {
 	return d.state == dhcpStateDone || d.state == dhcpStateNaked
+}
+
+// State returns the current state of the DHCP client.
+func (d *DHCPClient) State() dhcp.ClientState {
+	switch d.state {
+	case dhcpStateNone:
+		return dhcp.StateInit
+	case dhcpStateWaitOffer, dhcpStateGotOffer:
+		return dhcp.StateSelecting
+	case dhcpStateWaitAck:
+		return dhcp.StateRequesting
+	case dhcpStateDone:
+		return dhcp.StateBound
+	case dhcpStateNaked:
+		return dhcp.StateInit
+	}
+	return 0
 }
 
 // DHCPServer IP address field of the DHCP packet. Is the siaddr field of the DHCP packet, which can be overriden with the Server IP option.

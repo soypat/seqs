@@ -62,7 +62,7 @@ const (
 // An RCode is a DNS response status code.
 type RCode uint16
 
-//go:generate stringer -type=RCode -trimprefix=RCode -output=rcode_string.go
+// /go:generate stringer -type=RCode -trimprefix=RCode -output=rcode_string.go
 const (
 	RCodeSuccess        RCode = 0 // No error condition.
 	RCodeFormatError    RCode = 1 // Format error - The name server was unable to interpret the query.

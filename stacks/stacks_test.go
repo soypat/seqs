@@ -14,6 +14,7 @@ import (
 
 	"github.com/soypat/seqs"
 	"github.com/soypat/seqs/eth"
+	"github.com/soypat/seqs/eth/dhcp"
 	"github.com/soypat/seqs/eth/dns"
 	"github.com/soypat/seqs/stacks"
 )
@@ -89,6 +90,13 @@ func TestDHCP(t *testing.T) {
 }
 
 func testDHCP(t *testing.T, cl *stacks.DHCPClient, sv *stacks.DHCPServer) {
+	checkClientState := func(t *testing.T, want dhcp.ClientState) {
+		t.Helper()
+		if cl.State() != want {
+			t.Fatalf("client state=%s want=%s", cl.State().String(), want.String())
+		}
+	}
+	checkClientState(t, dhcp.StateInit)
 	var requestedIP = netip.AddrFrom4([4]byte{192, 168, 1, 69})
 	cstack := cl.PortStack()
 	sstack := sv.PortStack()
@@ -103,6 +111,7 @@ func testDHCP(t *testing.T, cl *stacks.DHCPClient, sv *stacks.DHCPServer) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	checkClientNotDone := func(msg string) {
 		t.Helper()
 		if cl.IsDone() {
@@ -116,6 +125,7 @@ func testDHCP(t *testing.T, cl *stacks.DHCPClient, sv *stacks.DHCPServer) {
 	if n < minDHCPSize {
 		t.Errorf("ex[%d] sent=%d want>=%d", ex, n, minDHCPSize)
 	}
+	checkClientState(t, dhcp.StateSelecting)
 	checkNoMoreDataSent(t, "after cl DISCOVER send", egr)
 	checkClientNotDone("after DISCOVER send")
 	egr.HandleRx(t)
@@ -125,6 +135,7 @@ func testDHCP(t *testing.T, cl *stacks.DHCPClient, sv *stacks.DHCPServer) {
 	if n < minDHCPSize {
 		t.Errorf("ex[%d] sent=%d want>=%d", ex, n, minDHCPSize)
 	}
+	checkClientState(t, dhcp.StateSelecting)
 	checkNoMoreDataSent(t, "after sv OFFER send", egr)
 	egr.HandleRx(t) // Client receives OFFER.
 	checkClientNotDone("after OFFER recv")
@@ -134,6 +145,7 @@ func testDHCP(t *testing.T, cl *stacks.DHCPClient, sv *stacks.DHCPServer) {
 	if n < minDHCPSize {
 		t.Errorf("ex[%d] sent=%d want>=%d", ex, n, minDHCPSize)
 	}
+	checkClientState(t, dhcp.StateRequesting)
 	checkNoMoreDataSent(t, "after client REQUEST send", egr)
 	checkClientNotDone("after REQUEST send")
 	egr.HandleRx(t) // Server receives REQUEST.
@@ -148,6 +160,7 @@ func testDHCP(t *testing.T, cl *stacks.DHCPClient, sv *stacks.DHCPServer) {
 	if !cl.IsDone() {
 		t.Fatal("client not processed ACK yet")
 	}
+	checkClientState(t, dhcp.StateBound)
 }
 
 func TestARP(t *testing.T) {

@@ -23,6 +23,35 @@ const (
 	DefaultServerPort = 67
 )
 
+// ClientState represents the state of a DHCP client.
+// Below is a state diagram of a DHCP client.
+type ClientState uint8
+
+// IsValid returns true if the state is within the valid range.
+func (s ClientState) IsValid() bool {
+	return s > 0 || s < ClientState(s)
+}
+
+// install stringer with `go install golang.org/x/tools/cmd/stringer@latest`
+//
+//go:generate stringer -type=ClientState -trimprefix=State
+const (
+	_ ClientState = iota
+	// On clean slate boot, abort, NAK or decline enter the INIT state.
+	StateInit
+	// After sending out a Discover enter SELECTING.
+	StateSelecting
+	// After receiving a worthy offer enter REQUESTING.
+	StateRequesting
+	// On reboot enter INIT-REBOOT state.
+	// StateInitReboot
+	// On sending out a Request enter REBOOTING.
+	// StateRebooting
+	// On ACK to Request enter BOUND.
+	StateBound
+	numStates uint8 = iota
+)
+
 type Option struct {
 	Num  OptNum
 	Data []byte
