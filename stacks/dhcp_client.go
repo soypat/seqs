@@ -145,6 +145,12 @@ func (d *DHCPClient) State() dhcp.ClientState {
 	return 0
 }
 
+// LocalPort returns the local port number used by the DHCP client.
+// If zero the client is not initialized.
+func (d *DHCPClient) LocalPort() uint16 {
+	return d.port
+}
+
 // RequestSentAt returns the time at which the last DHCP request was sent.
 func (d *DHCPClient) RequestSentAt() time.Time {
 	return d.requestSentAt
