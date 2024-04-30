@@ -31,6 +31,7 @@ type DHCPClient struct {
 	currentXid      uint32
 	port            uint16
 	requestHostname string
+	requestSentAt   time.Time
 	aux             UDPPacket // Avoid heap allocation.
 	// aborted         bool
 	state uint8
@@ -142,6 +143,11 @@ func (d *DHCPClient) State() dhcp.ClientState {
 		return dhcp.StateInit
 	}
 	return 0
+}
+
+// RequestSentAt returns the time at which the last DHCP request was sent.
+func (d *DHCPClient) RequestSentAt() time.Time {
+	return d.requestSentAt
 }
 
 // DHCPServer IP address field of the DHCP packet. Is the siaddr field of the DHCP packet, which can be overriden with the Server IP option.
@@ -274,6 +280,7 @@ func (d *DHCPClient) send(dst []byte) (n int, err error) {
 			{Num: dhcp.OptServerIdentification, Data: d.svip[:]},
 		}...)
 		nextstate = dhcpStateWaitAck
+		d.requestSentAt = d.stack.now()
 
 	default:
 		err = errUnhandledState
