@@ -783,7 +783,15 @@ func TestIssue19(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	assertState(seqs.StateTimeWait)
 
+	// Check we still need to send an ACK.
+	pending, ok = tcb.PendingSegment(0)
+	if !ok {
+		t.Fatal("expected pending segment")
+	} else if pending.Flags != seqs.FlagACK {
+		t.Fatalf("expected ACK; got %s", pending.Flags.String())
+	}
 	// Prepare response to client.
 	err = tcb.Send(pending)
 	if err != nil {
