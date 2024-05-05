@@ -87,6 +87,8 @@ func (tcb *ControlBlock) Close() (err error) {
 		tcb.pending[0] = (tcb.pending[0] & FlagACK) | FlagFIN
 	case StateFinWait2, StateTimeWait:
 		err = errConnectionClosing
+	default:
+		err = errInvalidState
 	}
 	if err == nil {
 		tcb.trace("tcb:close", slog.String("state", tcb.state.String()))
@@ -134,7 +136,8 @@ func (tcb *ControlBlock) Send(seg Segment) error {
 	// Advance pending flags queue.
 	tcb.pending[0] &^= seg.Flags
 	if tcb.pending[0] == 0 {
-		tcb.pending = [2]Flags{tcb.pending[1], 0}
+		// Ensure we don't queue a FINACK if we have already sent a FIN.
+		tcb.pending = [2]Flags{tcb.pending[1] &^ (seg.Flags & (FlagFIN)), 0}
 	}
 	tcb.pending[0] |= newPending
 
@@ -183,6 +186,11 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 		if seg.Flags.HasAny(FlagACK) {
 			tcb.close()
 		}
+	// case StateClosing:
+	// 	if seg.Flags.HasAny(FlagACK) {
+	// 		tcb.state = StateTimeWait
+	// 		pending = FlagACK
+	// 	}
 	default:
 		panic("unexpected state" + tcb.state.String())
 	}

@@ -667,3 +667,37 @@ var exchangeHelloWorld = [][]byte{
 	// server ACK
 	11: []byte("\xd8\x5e\xd3\x43\x03\xeb\x28\xcd\xc1\x05\x4d\xbb\x08\x00\x45\x00\x00\x28\x00\x00\x40\x00\x40\x06\xb6\x5b\xc0\xa8\x01\x91\xc0\xa8\x01\x93\x04\xd2\x84\x96\xbe\x6e\x4c\x28\x5e\x72\x2b\x97\x50\x10\x10\x00\xfd\x56\x00\x00\x00\x00\x00\x00\x00\x00"),
 }
+
+func TestUnexpectedStateClosing(t *testing.T) {
+	// TCB is a server which returns an HTTP response and receives a FINACK.
+	var tcb seqs.ControlBlock
+	const httpLen = 1192
+	const issA, issB, windowA, windowB = 1, 127, 2000, 2000
+	tcb.HelperInitState(seqs.StateEstablished, issA, issA, windowA)
+	tcb.HelperInitRcv(issB, issB, windowB)
+
+	ex := []seqs.Exchange{
+		0: { // Server sends HTTP response.
+			Outgoing:  &seqs.Segment{SEQ: issA, ACK: issB, Flags: PSHACK, WND: windowA, DATALEN: httpLen},
+			WantState: seqs.StateEstablished,
+		},
+		1: { // Client sends an ACK to server.
+			Incoming:  &seqs.Segment{SEQ: issB, ACK: issA + httpLen, Flags: seqs.FlagACK, WND: windowB},
+			WantState: seqs.StateEstablished,
+		},
+		2: { //  Client sends FIN|ACK to server.
+			Incoming:    &seqs.Segment{SEQ: issB, ACK: issA + httpLen, Flags: FINACK, WND: windowB},
+			WantPending: &seqs.Segment{SEQ: issA + httpLen, ACK: issB + 1, Flags: seqs.FlagACK, WND: windowA},
+			WantState:   seqs.StateCloseWait,
+		},
+		3: { // Server sends out FINACK.
+			Outgoing:  &seqs.Segment{SEQ: issA + httpLen, ACK: issB + 1, Flags: FINACK, WND: windowA},
+			WantState: seqs.StateLastAck,
+		},
+		4: { // Client sends back ACK.
+			Incoming:  &seqs.Segment{SEQ: issB + 1, ACK: issA + httpLen + 1, Flags: seqs.FlagACK, WND: windowB},
+			WantState: seqs.StateClosed,
+		},
+	}
+	tcb.HelperExchange(t, ex[:])
+}

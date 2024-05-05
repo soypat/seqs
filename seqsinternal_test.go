@@ -193,7 +193,7 @@ func (ex *Exchange) appendVisualization(buf []byte, A, B State) []byte {
 	}
 	var seg *Segment
 	sentByA := ex.Outgoing != nil
-	if ex.Outgoing != nil {
+	if sentByA {
 		seg = ex.Outgoing
 	} else if ex.Incoming != nil {
 		seg = ex.Incoming
@@ -201,7 +201,7 @@ func (ex *Exchange) appendVisualization(buf []byte, A, B State) []byte {
 		return buf
 	}
 	dirSep := []byte(" <-- ")
-	if !sentByA {
+	if sentByA {
 		dirSep = []byte(" --> ")
 	}
 	astr := A.String()
