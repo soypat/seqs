@@ -1,6 +1,8 @@
 package seqs_test
 
 import (
+	"log/slog"
+	"os"
 	"strconv"
 	"testing"
 
@@ -700,4 +702,99 @@ func TestUnexpectedStateClosing(t *testing.T) {
 		},
 	}
 	tcb.HelperExchange(t, ex[:])
+}
+
+// This corresponds to https://github.com/soypat/seqs/issues/19
+// The bug consisted of a panic condition encountered when using wget client with a seqs based server.
+// Thanks to @knieriem for finding this and the detailed report they submitted.
+func TestIssue19(t *testing.T) {
+	var tcb seqs.ControlBlock
+	tcb.SetLogger(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelDebug - 2,
+	})))
+	assertState := func(state seqs.State) {
+		t.Helper()
+		if tcb.State() != state {
+			t.Fatalf("want state %s; got %s", state.String(), tcb.State().String())
+		}
+	}
+	const httpLen = 1192
+	const issA, issB, windowA, windowB = 1, 0, 2000, 2000
+	tcb.HelperInitState(seqs.StateEstablished, issA, issA, windowA)
+	tcb.HelperInitRcv(issB, issB, windowB)
+
+	// Send out HTTP request and close connection.
+	err := tcb.Send(seqs.Segment{SEQ: issA, ACK: issB, Flags: PSHACK, WND: windowA, DATALEN: httpLen})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = tcb.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertState(seqs.StateEstablished)
+
+	pending, ok := tcb.PendingSegment(0)
+	if !ok {
+		t.Fatal("expected pending segment")
+	} else if pending.Flags != FINACK {
+		t.Fatalf("expected FINACK; got %s", pending.Flags.String())
+	}
+
+	// Receive ACK of HTTP segment.
+	err = tcb.Recv(seqs.Segment{SEQ: issB, ACK: issA + httpLen, Flags: seqs.FlagACK, WND: windowB})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertState(seqs.StateEstablished)
+	err = tcb.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, ok = tcb.PendingSegment(0)
+	if !ok {
+		t.Fatal("expected pending segment")
+	} else if pending.Flags != FINACK {
+		t.Fatalf("expected FINACK; got %s", pending.Flags.String())
+	}
+
+	// Send out FINACK.
+	err = tcb.Send(pending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertState(seqs.StateFinWait1)
+
+	// Receive FINACK response from client.
+	err = tcb.Recv(seqs.Segment{SEQ: issB, ACK: issA + httpLen, Flags: FINACK, WND: windowB})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertState(seqs.StateClosing)
+	pending, ok = tcb.PendingSegment(0)
+	if !ok {
+		t.Fatal("expected pending segment")
+	} else if pending.Flags != seqs.FlagACK {
+		t.Fatalf("expected ACK; got %s", pending.Flags.String())
+	}
+
+	// Before responding we receive an ACK from client. This is where panic is triggered.
+	err = tcb.Recv(seqs.Segment{SEQ: issB + 1, ACK: issA + httpLen + 1, Flags: seqs.FlagACK, WND: windowB})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertState(seqs.StateTimeWait)
+
+	// Check we still need to send an ACK.
+	pending, ok = tcb.PendingSegment(0)
+	if !ok {
+		t.Fatal("expected pending segment")
+	} else if pending.Flags != seqs.FlagACK {
+		t.Fatalf("expected ACK; got %s", pending.Flags.String())
+	}
+	// Prepare response to client.
+	err = tcb.Send(pending)
+	if err != nil {
+		t.Fatal(err)
+	}
 }

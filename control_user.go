@@ -186,19 +186,19 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 		if seg.Flags.HasAny(FlagACK) {
 			tcb.close()
 		}
-	// case StateClosing:
-	// 	if seg.Flags.HasAny(FlagACK) {
-	// 		tcb.state = StateTimeWait
-	// 		pending = FlagACK
-	// 	}
+	case StateClosing:
+		// Thanks to @knieriem for finding and reporting this bug.
+		if seg.Flags.HasAny(FlagACK) {
+			tcb.state = StateTimeWait
+		}
 	default:
-		panic("unexpected state" + tcb.state.String())
+		panic("unexpected recv state:" + tcb.state.String())
 	}
 	if err != nil {
 		return err
 	}
 
-	tcb.pending[0] = pending
+	tcb.pending[0] |= pending
 	if prevNxt != 0 && tcb.snd.NXT != prevNxt && tcb.logenabled(slog.LevelDebug) {
 		tcb.debug("tcb:snd.nxt-change", slog.String("state", tcb.state.String()),
 			slog.Uint64("seg.ack", uint64(seg.ACK)), slog.Uint64("snd.nxt", uint64(tcb.snd.NXT)),
