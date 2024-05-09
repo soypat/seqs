@@ -251,3 +251,23 @@ func (tcb *ControlBlock) SetRecvWindow(wnd Size) {
 func (tcb *ControlBlock) SetLogger(log *slog.Logger) {
 	tcb.log = log
 }
+
+// IncomingIsKeepalive checks if an incoming segment is a keepalive segment.
+// Segments which are keepalives should not be passed into Recv or Send methods.
+func (tcb *ControlBlock) IncomingIsKeepalive(incomingSegment Segment) bool {
+	return incomingSegment.SEQ == tcb.rcv.NXT-1 &&
+		incomingSegment.Flags == FlagACK &&
+		incomingSegment.ACK == tcb.snd.NXT && incomingSegment.DATALEN == 0
+}
+
+// MakeKeepalive creates a TCP keepalive segment. This segment
+// should not be passed into Recv or Send methods.
+func (tcb *ControlBlock) MakeKeepalive() Segment {
+	return Segment{
+		SEQ:     tcb.snd.NXT - 1,
+		ACK:     tcb.rcv.NXT,
+		Flags:   FlagACK,
+		WND:     tcb.rcv.WND,
+		DATALEN: 0,
+	}
+}

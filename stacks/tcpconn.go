@@ -300,13 +300,13 @@ func (sock *TCPConn) open(state seqs.State, localPortNum uint16, iss seqs.Value,
 
 func (sock *TCPConn) Close() error {
 	toSend := sock.tx.Buffered()
-	sock.closing = true
 	if toSend == 0 {
 		err := sock.scb.Close()
 		if err != nil {
 			return err
 		}
 	}
+	sock.closing = true
 	sock.stack.FlagPendingTCP(sock.localPort)
 	return nil
 }
@@ -342,7 +342,10 @@ func (sock *TCPConn) recv(pkt *TCPPacket) (err error) {
 	// By this point we know that the packet is valid and contains data, we process it.
 	payload := pkt.Payload()
 	segIncoming := pkt.TCP.Segment(len(payload))
-
+	if sock.scb.IncomingIsKeepalive(segIncoming) {
+		sock.trace("TCPConn.recv:keepalive")
+		return nil
+	}
 	err = sock.scb.Recv(segIncoming)
 	if err != nil {
 		if sock.scb.State() == seqs.StateClosed {
