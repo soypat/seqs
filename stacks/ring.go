@@ -32,7 +32,7 @@ func (r *ring) Write(b []byte) (int, error) {
 	n := copy(r.buf[r.end:], b)
 	r.end += n
 	if n < len(b) {
-		n2 := copy(r.buf, b[n:r.off])
+		n2 := copy(r.buf, b[n:])
 		r.end = n2
 		n += n2
 	}
@@ -44,7 +44,7 @@ func (r *ring) Read(b []byte) (int, error) {
 		return 0, io.EOF
 	}
 
-	if r.end >= r.off {
+	if r.end > r.off {
 		// start       off       end      len(buf)
 		//   |  sfree   |  used   |  efree   |
 		n := copy(b, r.buf[r.off:r.end])

@@ -109,6 +109,53 @@ func TestRing2(t *testing.T) {
 	}
 }
 
+func TestRing_findcrash(t *testing.T) {
+	const maxsize = 33
+	const ntests = 800000
+	r := ring{
+		buf: make([]byte, maxsize*6),
+	}
+	rng := rand.New(rand.NewSource(0))
+	data := make([]byte, maxsize)
+
+	for i := 0; i < ntests; i++ {
+		free := r.Free()
+		if free < 0 {
+			t.Fatal("free < 0")
+		}
+		if rng.Intn(2) == 0 {
+			l := max(rng.Intn(len(data)), 1)
+			if l > free {
+				continue // Buffer full.
+			}
+			n, err := r.Write(data[:l])
+			expectFree := free - n
+			free = r.Free()
+			if n != l {
+				t.Fatal(i, "write failed", n, l, err)
+			} else if expectFree != free {
+				t.Fatal(i, "free not updated correctly", expectFree, free)
+			}
+		}
+		buffered := r.Buffered()
+		if buffered < 0 {
+			t.Fatal("buffered < 0")
+		}
+		if rng.Intn(2) == 0 {
+			l := max(rng.Intn(len(data)), 1)
+			n, err := r.Read(data[:l])
+			expectRead := min(buffered, l)
+			expectBuffered := buffered - n
+			buffered = r.Buffered()
+			if n != expectRead {
+				t.Fatal(i, "read failed", n, l, expectRead, err)
+			} else if buffered != expectBuffered {
+				t.Fatal(i, "buffered not updated correctly", expectBuffered, buffered)
+			}
+		}
+	}
+}
+
 func testRing1_loopback(t *testing.T, rng *rand.Rand, ringbuf, data, auxbuf []byte) bool {
 	if len(data) > len(ringbuf) || len(data) > len(auxbuf) {
 		panic("invalid ringbuf or data")
