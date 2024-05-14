@@ -5,8 +5,10 @@ import (
 	"cmp"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math"
+	"math/rand"
 	"net/netip"
 	"strconv"
 	"strings"
@@ -648,6 +650,71 @@ func TestListener(t *testing.T) {
 
 	if !client.State().IsClosed() || !server.State().IsClosed() {
 		t.Fatalf("not closed: client=%s server=%s", client.State(), server.State())
+	}
+}
+
+func TestTCPConnClientActionFuzz(t *testing.T) {
+	const ntests = 100000
+	const mtu = 2048
+	const bufsize = mtu
+	const maxActions = 10
+	rng := rand.New(rand.NewSource(0))
+	const (
+		actionTxExchange = iota
+		actionClose
+		actionSend
+		actionMax
+		actionRxExchange
+	)
+	var buf [mtu]byte
+	var actions [maxActions]int
+	var rints [maxActions]int
+	var actionIdx int
+	errorfail := func(t *testing.T, fmtMessage string, additional ...any) {
+		t.Helper()
+		t.Errorf("errfail rints=%v actions=%v", rints[:actionIdx], actions[:actionIdx])
+		msg := fmt.Sprintf(fmtMessage, additional...)
+		t.Error(msg)
+		panic(msg)
+	}
+	for i := 0; i < ntests; i++ {
+		client, server := createTCPClientServerPair(t, bufsize, bufsize, mtu)
+		_, tx := client.RingBuffers()
+		egr := NewExchanger(client.PortStack(), server.PortStack())
+		closeCalled := false
+		for actionIdx = 0; actionIdx < maxActions; actionIdx++ {
+			rint := rng.Int() % mtu
+			a := rint % actionMax
+			rints[actionIdx] = rint
+			actions[actionIdx] = a
+			switch a {
+			case actionSend:
+				tosend := rint % mtu
+				bufree := tx.Free()
+				if tosend > bufree {
+					// Equal parts fill buffer
+					tosend = bufree - rng.Intn(2)
+				}
+				if tosend <= 0 {
+					break
+				}
+				_, err := client.Write(buf[:tosend])
+				if closeCalled && err == nil {
+					errorfail(t, "expected error")
+				} else if !closeCalled && err != nil {
+					errorfail(t, "expected no error on write err=%s", err)
+				}
+			case actionRxExchange, actionTxExchange:
+				egr.DoExchanges(t, 1)
+			case actionClose:
+				err := client.Close()
+				if !closeCalled && err != nil {
+					errorfail(t, "close returned error before close call err=%s state=%s",
+						err.Error(), client.State())
+				}
+				closeCalled = true
+			}
+		}
 	}
 }
 

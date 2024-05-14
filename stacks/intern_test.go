@@ -255,3 +255,7 @@ func (tcp *TCPConn) SCB() seqs.ControlBlock { return tcp.scb }
 
 func (dhcpc *DHCPClient) PortStack() *PortStack { return dhcpc.stack }
 func (dhcps *DHCPServer) PortStack() *PortStack { return dhcps.stack }
+
+func (tcp *TCPConn) RingBuffers() (rx, tx *ring) {
+	return &tcp.rx, &tcp.tx
+}
