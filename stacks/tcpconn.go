@@ -303,6 +303,10 @@ func (sock *TCPConn) Close() error {
 	if toSend == 0 {
 		err := sock.scb.Close()
 		if err != nil {
+			if sock.scb.State().IsClosing() {
+				// TODO(soypat): FinWait2 and Timewait would prevent socket from closing indefinetely if it were not for this.
+				sock.closing = true
+			}
 			return err
 		}
 	}
