@@ -1,4 +1,4 @@
-package stacks
+package internal
 
 import (
 	"bytes"
@@ -6,15 +6,16 @@ import (
 	"io"
 )
 
-var errRingBufferFull = errors.New("seqs/ring: buffer full")
+var errRingBufferFull = errors.New("seqs: ringbuffer full")
 
-type ring struct {
-	buf []byte
-	off int
-	end int
+// Ring is a ring buffer implementation.
+type Ring struct {
+	Buf []byte
+	Off int
+	End int
 }
 
-func (r *ring) Write(b []byte) (int, error) {
+func (r *Ring) Write(b []byte) (int, error) {
 	free := r.Free()
 	if len(b) > free {
 		return 0, errRingBufferFull
@@ -23,88 +24,88 @@ func (r *ring) Write(b []byte) (int, error) {
 	if midFree > 0 {
 		// start     end       off    len(buf)
 		//   |  used  |  mfree  |  used  |
-		n := copy(r.buf[r.end:r.off], b)
-		r.end += n
+		n := copy(r.Buf[r.End:r.Off], b)
+		r.End += n
 		return n, nil
 	}
 	// start       off       end      len(buf)
 	//   |  sfree   |  used   |  efree   |
-	n := copy(r.buf[r.end:], b)
-	r.end += n
+	n := copy(r.Buf[r.End:], b)
+	r.End += n
 	if n < len(b) {
-		n2 := copy(r.buf, b[n:])
-		r.end = n2
+		n2 := copy(r.Buf, b[n:])
+		r.End = n2
 		n += n2
 	}
 	return n, nil
 }
 
-func (r *ring) Read(b []byte) (int, error) {
+func (r *Ring) Read(b []byte) (int, error) {
 	if r.Buffered() == 0 {
 		return 0, io.EOF
 	}
 
-	if r.end > r.off {
+	if r.End > r.Off {
 		// start       off       end      len(buf)
 		//   |  sfree   |  used   |  efree   |
-		n := copy(b, r.buf[r.off:r.end])
-		r.off += n
+		n := copy(b, r.Buf[r.Off:r.End])
+		r.Off += n
 		r.onReadEnd()
 		return n, nil
 	}
 	// start     end       off     len(buf)
 	//   |  used  |  mfree  |  used  |
-	n := copy(b, r.buf[r.off:])
-	r.off += n
+	n := copy(b, r.Buf[r.Off:])
+	r.Off += n
 	if n < len(b) {
-		n2 := copy(b[n:], r.buf[:r.end])
-		r.off = n2
+		n2 := copy(b[n:], r.Buf[:r.End])
+		r.Off = n2
 		n += n2
 	}
 	r.onReadEnd()
 	return n, nil
 }
 
-func (r *ring) Buffered() int {
-	return len(r.buf) - r.Free()
+func (r *Ring) Buffered() int {
+	return len(r.Buf) - r.Free()
 }
 
-func (r *ring) Reset() {
-	r.off = 0
-	r.end = 0
+func (r *Ring) Reset() {
+	r.Off = 0
+	r.End = 0
 }
 
-func (r *ring) Free() int {
-	if r.off == 0 {
-		return len(r.buf) - r.end
+func (r *Ring) Free() int {
+	if r.Off == 0 {
+		return len(r.Buf) - r.End
 	}
-	if r.off < r.end {
+	if r.Off < r.End {
 		// start       off       end      len(buf)
 		//   |  sfree   |  used   |  efree   |
-		startFree := r.off
-		endFree := len(r.buf) - r.end
+		startFree := r.Off
+		endFree := len(r.Buf) - r.End
 		return startFree + endFree
 	}
 	// start     end       off     len(buf)
 	//   |  used  |  mfree  |  used  |
-	return r.off - r.end
+	return r.Off - r.End
 }
 
-func (r *ring) midFree() int {
-	if r.end >= r.off {
+func (r *Ring) midFree() int {
+	if r.End >= r.Off {
 		return 0
 	}
-	return r.off - r.end
+	return r.Off - r.End
 }
 
-func (r *ring) onReadEnd() {
-	if r.end == len(r.buf) {
-		r.end = 0 // Wrap around.
+func (r *Ring) onReadEnd() {
+	if r.End == len(r.Buf) {
+		r.End = 0 // Wrap around.
 	}
-	if r.off == len(r.buf) {
-		r.off = 0 // Wrap around.
+	if r.Off == len(r.Buf) {
+		r.Off = 0 // Wrap around.
 	}
-	if r.off == r.end {
+	if r.Off == r.End {
 		r.Reset() // We read everything, reset.
 	}
 }
@@ -123,7 +124,7 @@ func min(a, b int) int {
 	return b
 }
 
-func (r *ring) string() string {
+func (r *Ring) string() string {
 	var b bytes.Buffer
 	b.ReadFrom(r)
 	return b.String()
