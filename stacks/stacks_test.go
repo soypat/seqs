@@ -677,6 +677,7 @@ func TestTCPConnClientActionFuzz(t *testing.T) {
 		t.Error(msg)
 		panic(msg)
 	}
+
 	for i := 0; i < ntests; i++ {
 		client, server := createTCPClientServerPair(t, bufsize, bufsize, mtu)
 		_, tx := client.RingBuffers()
