@@ -2,6 +2,7 @@ package seqs_test
 
 import (
 	"log/slog"
+	"math/rand"
 	"os"
 	"strconv"
 	"testing"
@@ -797,4 +798,72 @@ func TestIssue19(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+func FuzzTCBActions(f *testing.F) {
+	const mtu = 2048
+	const (
+		actionRecv = iota
+		actionSend
+		actionClose
+		actionMax
+		actionRxExchange
+	)
+	f.Add(
+		0x2313_2313,
+		[]byte{actionSend, actionRecv, actionSend, actionRecv, actionSend, actionRecv},
+	)
+	f.Add(
+		0x2fefe_feefe,
+		[]byte{actionSend, actionRecv, actionSend, actionClose, actionSend, actionRecv},
+	)
+
+	f.Fuzz(func(t *testing.T, seed int, actions []byte) {
+		if len(actions) == 0 || len(actions) > 100 {
+			t.SkipNow()
+		}
+		rng := rand.New(rand.NewSource(int64(seed)))
+		clientISS := seqs.Value(rng.Int31())
+		serverISS := seqs.Value(rng.Int31())
+
+		var client seqs.ControlBlock
+		// client.SetLogger(slog.Default())
+		client.HelperInitState(seqs.StateEstablished, clientISS, clientISS, mtu)
+		client.HelperInitRcv(serverISS, serverISS, mtu)
+
+		var server seqs.ControlBlock
+		server.HelperInitState(seqs.StateEstablished, serverISS, serverISS, mtu)
+		server.HelperInitRcv(clientISS, clientISS, mtu)
+
+		client.SetLogger(slog.Default())
+		server.SetLogger(slog.Default())
+		var closeCalled bool
+		for _, action := range actions {
+			v := rng.Int()
+			switch action % actionMax {
+			case actionSend:
+				seg, ok := client.PendingSegment(v % mtu)
+				if ok {
+					err := server.Recv(seg)
+					if err != nil {
+						panic(err)
+					}
+				}
+			case actionRecv:
+				seg, ok := server.PendingSegment(v % mtu)
+				if ok {
+					err := client.Recv(seg)
+					if err != nil && !closeCalled {
+						panic(err)
+					}
+				}
+			case actionClose:
+				err := client.Close()
+				if err != nil && !closeCalled {
+					panic(err)
+				}
+				closeCalled = true
+			}
+		}
+	})
 }
