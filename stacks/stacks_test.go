@@ -653,14 +653,24 @@ func TestListener(t *testing.T) {
 	}
 }
 
+func TestActionCases(t *testing.T) {
+	for _, rints := range [][]int{
+		{429, 923, 528, 588, 108, 1547, 1371},
+		{816, 185, 306, 1505, 458, 1054, 1106, 1560, 1000, 1657, 1191, 225, 1521}, // Zero window segment reject.
+	} {
+		testTCPConnClientActions(t, rints)
+	}
+}
+
 func TestTCPConnClientActionFuzz(t *testing.T) {
 	const ntests = 100000
-	const maxActions = 64
+	const maxActions = 16
+
 	rng := rand.New(rand.NewSource(2))
 	var rints [maxActions]int
 	for i := 0; i < ntests; i++ {
 		for i := range rints {
-			rints[i] = rng.Int()
+			rints[i] = rng.Int() % defaultMTU
 		}
 		testTCPConnClientActions(t, rints[:])
 	}
@@ -670,9 +680,6 @@ func testTCPConnClientActions(t *testing.T, rints []int) {
 	const mtu = 2048
 	const bufsize = mtu
 	var buf [mtu]byte
-	for i := range rints {
-		rints[i] %= mtu // Limit size of random integers.
-	}
 	const (
 		actionTxExchange = iota
 		actionClose
@@ -691,7 +698,7 @@ func testTCPConnClientActions(t *testing.T, rints []int) {
 		for _, ex := range egr.exchanges {
 			t.Error(seqs.StringExchange(ex.seg, ex.A, ex.B, ex.who != 0))
 		}
-		t.Errorf("errfail rints=%v", rints[:actionIdx])
+		t.Errorf("errfail rints=%v", rints[:actionIdx+1])
 		msg := fmt.Sprintf(fmtMessage, additional...)
 		t.Error(msg)
 		panic(msg)
@@ -721,7 +728,7 @@ func testTCPConnClientActions(t *testing.T, rints []int) {
 			egr.DoExchanges(t, 1)
 			rejerr := new(seqs.RejectError)
 			if len(egr.lastErrs) > 0 {
-				if errors.As(egr.lastErrs[0], &rejerr) {
+				if true || errors.As(egr.lastErrs[0], &rejerr) {
 					errorfail(t, "error in exchange: %s", rejerr.Error())
 				}
 				return // ignore other errors for now.

@@ -78,6 +78,16 @@ type sendSpace struct {
 	// WL2 Value // segment acknowledgment number used for last window update
 }
 
+// inFlight returns amount of unacked bytes sent out.
+func (snd *sendSpace) inFlight() Size {
+	return Sizeof(snd.UNA, snd.NXT)
+}
+
+// maxSend returns maximum segment datalength receivable by remote peer.
+func (snd *sendSpace) maxSend() Size {
+	return snd.WND - snd.inFlight()
+}
+
 // recvSpace contains Receive Sequence Space data. Its sequence numbers correspond to remote data.
 type recvSpace struct {
 	IRS Value // initial receive sequence number, defined by remote in SYN segment received.
@@ -100,8 +110,18 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 	if pending == 0 && payloadLen == 0 {
 		return Segment{}, false // No pending segment.
 	}
-	if payloadLen > math.MaxUint16 || Size(payloadLen) > tcb.snd.WND {
-		payloadLen = int(tcb.snd.WND)
+
+	// Limit payload to what send window allows.
+	inFlight := tcb.snd.inFlight()
+	_ = inFlight
+	maxPayload := tcb.snd.maxSend()
+	if payloadLen > int(maxPayload) {
+		if maxPayload == 0 && !tcb.pending[0].HasAny(FlagFIN|FlagRST|FlagSYN) {
+			return Segment{}, false
+		} else if maxPayload > tcb.snd.WND {
+			panic("seqs: bad calculation")
+		}
+		payloadLen = int(maxPayload)
 	}
 
 	if established {
@@ -330,6 +350,10 @@ func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
 	hasAck := seg.Flags.HasAny(FlagACK)
 	checkSeq := !seg.Flags.HasAny(FlagRST)
 	seglast := seg.Last()
+	// Extra check for when send Window is zero and no data is being sent.
+	zeroWindowOK := tcb.snd.WND == 0 && seg.DATALEN == 0 && seg.SEQ == tcb.snd.NXT
+	outOfWindow := checkSeq && !InWindow(seg.SEQ, tcb.snd.NXT, tcb.snd.WND) &&
+		!zeroWindowOK
 	switch {
 	case tcb.state == StateClosed:
 		err = io.ErrClosedPipe
@@ -338,11 +362,16 @@ func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
 	case hasAck && seg.ACK != tcb.rcv.NXT:
 		err = errAckNotNext
 
-	case checkSeq && !InWindow(seg.SEQ, tcb.snd.NXT, tcb.snd.WND):
-		err = errSeqNotInWindow
+	case outOfWindow:
+		if tcb.snd.WND == 0 {
+			err = errZeroWindow
+		} else {
+			err = errSeqNotInWindow
+		}
+
 	case seg.DATALEN > 0 && (tcb.state == StateFinWait1 || tcb.state == StateFinWait2):
 		err = errConnectionClosing // Case 1: No further SENDs from the user will be accepted by the TCP implementation.
-	case checkSeq && !InWindow(seglast, tcb.snd.NXT, tcb.snd.WND):
+	case checkSeq && !InWindow(seglast, tcb.snd.NXT, tcb.snd.WND) && !zeroWindowOK:
 		err = errLastNotInWindow
 	}
 	return err

@@ -29,9 +29,13 @@ func (tcb *ControlBlock) HelperExchange(t *testing.T, exchange []Exchange) {
 			t.Fatalf(pfx+"[%d] must send or receive a segment.", i)
 		}
 		if ex.Outgoing != nil {
+			prevInflight := tcb.snd.inFlight()
 			err := tcb.Send(*ex.Outgoing)
+			gotSent := tcb.snd.inFlight() - prevInflight
 			if err != nil {
 				t.Fatalf(pfx+"[%d] snd: %s\nseg=%+v\nrcv=%+v\nsnd=%+v", i, err, *ex.Outgoing, tcb.rcv, tcb.snd)
+			} else if gotSent != ex.Outgoing.LEN() {
+				t.Fatalf(pfx+"[%d] snd: expected %d data sent, calculated inflight %d", i, ex.Outgoing.LEN(), gotSent)
 			}
 		}
 		if ex.Incoming != nil {

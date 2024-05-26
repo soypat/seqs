@@ -25,6 +25,7 @@ var (
 
 	errWindowOverflow    = newRejectErr("wnd > 2**16")
 	errSeqNotInWindow    = newRejectErr("seq not in snd/rcv.wnd")
+	errZeroWindow        = newRejectErr("zero window")
 	errLastNotInWindow   = newRejectErr("last not in snd/rcv.wnd")
 	errRequireSequential = newRejectErr("seq != rcv.nxt (require sequential segments)")
 	errAckNotNext        = newRejectErr("ack != snd.nxt")
