@@ -119,7 +119,7 @@ func (flags Flags) HasAny(mask Flags) bool { return flags&mask != 0 }
 // All flags are printed with length of 3, so a NS flag will
 // end with a space i.e. [ACK,NS ]
 func (flags Flags) String() string {
-	// Cover main cases.
+	// Cover most common cases without heap allocating.
 	switch flags {
 	case 0:
 		return "[]"

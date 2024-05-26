@@ -30,13 +30,15 @@ var (
 	errAckNotNext        = newRejectErr("ack != snd.nxt")
 )
 
-func newRejectErr(err string) *rejectErr { return &rejectErr{err: "reject in/out seg: " + err} }
+func newRejectErr(err string) *RejectError { return &RejectError{err: "reject in/out seg: " + err} }
 
-type rejectErr struct {
+// RejectError represents an error that arises during admission of a segment into the
+// Transmission Control Block logic in which the packet cannot be processed by the TCB.
+type RejectError struct {
 	err string
 }
 
-func (e *rejectErr) Error() string { return e.err }
+func (e *RejectError) Error() string { return e.err }
 
 // State returns the current state of the connection.
 func (tcb *ControlBlock) State() State { return tcb.state }
