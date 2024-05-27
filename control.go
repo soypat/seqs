@@ -288,6 +288,7 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	acksOld := hasAck && !LessThan(tcb.snd.UNA, seg.ACK)
 	acksUnsentData := hasAck && !LessThanEq(seg.ACK, tcb.snd.NXT)
 	ctlOrDataSegment := established && (seg.DATALEN > 0 || flags.HasAny(FlagFIN|FlagRST))
+	zeroWindowOK := tcb.rcv.WND == 0 && seg.DATALEN == 0 && seg.SEQ == tcb.rcv.NXT
 	// See section 3.4 of RFC 9293 for more on these checks.
 	switch {
 	case seg.WND > math.MaxUint16:
@@ -295,10 +296,13 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	case tcb.state == StateClosed:
 		err = io.ErrClosedPipe
 
-	case checkSEQ && !InWindow(seg.SEQ, tcb.rcv.NXT, tcb.rcv.WND):
+	case checkSEQ && tcb.rcv.WND == 0 && seg.DATALEN > 0 && seg.SEQ == tcb.rcv.NXT:
+		err = errZeroWindow
+
+	case checkSEQ && !InWindow(seg.SEQ, tcb.rcv.NXT, tcb.rcv.WND) && !zeroWindowOK:
 		err = errSeqNotInWindow
 
-	case checkSEQ && !InWindow(seg.Last(), tcb.rcv.NXT, tcb.rcv.WND):
+	case checkSEQ && !InWindow(seg.Last(), tcb.rcv.NXT, tcb.rcv.WND) && !zeroWindowOK:
 		err = errLastNotInWindow
 
 	case checkSEQ && seg.SEQ != tcb.rcv.NXT:
@@ -371,6 +375,10 @@ func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
 
 	case seg.DATALEN > 0 && (tcb.state == StateFinWait1 || tcb.state == StateFinWait2):
 		err = errConnectionClosing // Case 1: No further SENDs from the user will be accepted by the TCP implementation.
+
+	case checkSeq && tcb.snd.WND == 0 && seg.DATALEN > 0 && seg.SEQ == tcb.snd.NXT:
+		err = errZeroWindow
+
 	case checkSeq && !InWindow(seglast, tcb.snd.NXT, tcb.snd.WND) && !zeroWindowOK:
 		err = errLastNotInWindow
 	}

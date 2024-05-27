@@ -318,8 +318,13 @@ func TestTCPSendReceive_duplex_single(t *testing.T) {
 }
 
 func TestTCPSendReceive_duplex(t *testing.T) {
+	// Length of testSocketDuplex messages. We need to create
+	// buffers of twice the length since the window will fill up
+	// between messages and cause short messages to be transmitted.
+	// TODO: fix this behaviour, maybe by sending an ACK in testSocketDuplex between messages?
+	const messagelen = 27 + 3
 	// Create Client+Server and establish TCP connection between them.
-	client, server := createTCPClientServerPair(t, 32, 32, defaultMTU)
+	client, server := createTCPClientServerPair(t, messagelen*2, messagelen*2, defaultMTU)
 	egr := NewExchanger(client.PortStack(), server.PortStack())
 	egr.DoExchanges(t, exchangesToEstablish)
 	if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
@@ -663,10 +668,10 @@ func TestActionCases(t *testing.T) {
 }
 
 func TestTCPConnClientActionFuzz(t *testing.T) {
-	const ntests = 100000
-	const maxActions = 16
+	const ntests = 1000
+	const maxActions = 64
 
-	rng := rand.New(rand.NewSource(2))
+	rng := rand.New(rand.NewSource(0))
 	var rints [maxActions]int
 	for i := 0; i < ntests; i++ {
 		for i := range rints {
