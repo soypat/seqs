@@ -1,0 +1,3 @@
+go test fuzz v1
+int(588456716)
+[]byte("\x02\x00")

@@ -5,8 +5,10 @@ import (
 	"cmp"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math"
+	"math/rand"
 	"net/netip"
 	"strconv"
 	"strings"
@@ -316,8 +318,13 @@ func TestTCPSendReceive_duplex_single(t *testing.T) {
 }
 
 func TestTCPSendReceive_duplex(t *testing.T) {
+	// Length of testSocketDuplex messages. We need to create
+	// buffers of twice the length since the window will fill up
+	// between messages and cause short messages to be transmitted.
+	// TODO: fix this behaviour, maybe by sending an ACK in testSocketDuplex between messages?
+	const messagelen = 27 + 3
 	// Create Client+Server and establish TCP connection between them.
-	client, server := createTCPClientServerPair(t, 32, 32, defaultMTU)
+	client, server := createTCPClientServerPair(t, messagelen*2, messagelen*2, defaultMTU)
 	egr := NewExchanger(client.PortStack(), server.PortStack())
 	egr.DoExchanges(t, exchangesToEstablish)
 	if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
@@ -446,9 +453,9 @@ func TestTCPClose_noPendingData(t *testing.T) {
 			if pkts == 0 {
 				t.Error("no packet")
 			}
-			lastSeg := egr.LastSegment()
-			if wantFlags != 0 && lastSeg.Flags != wantFlags {
-				t.Errorf("do[%d] RX=%v\nwant flags=%v\ngot  flags=%v", i, isRx, wantFlags, lastSeg.Flags)
+			lastEx := egr.LastExchange()
+			if wantFlags != 0 && lastEx.seg.Flags != wantFlags {
+				t.Errorf("do[%d] RX=%v\nwant flags=%v\ngot  flags=%v", i, isRx, wantFlags, lastEx.seg.Flags)
 			}
 		} else {
 			egr.HandleRx(t)
@@ -543,16 +550,16 @@ func testSocketDuplex(t *testing.T, client, server *stacks.TCPConn, egr *Exchang
 		messagelen := len(cdata) // Same length for both client and server.
 		socketSendString(client, string(cdata))
 		socketSendString(server, string(sdata))
-		prevSegs := len(egr.segments)
+		prevSegs := len(egr.exchanges)
 		tx, bytes := egr.DoExchanges(t, 1)
 		if client.State() != seqs.StateEstablished || server.State() != seqs.StateEstablished {
 			t.Fatalf("not established: client=%s server=%s", client.State(), server.State())
 		}
-		totSegments := len(egr.segments) - prevSegs
+		totSegments := len(egr.exchanges) - prevSegs
 		if totSegments != 2 {
 			t.Errorf("expected 2 segments exchanged, got %d", totSegments)
-		} else if messagelen != int(egr.LastSegment().DATALEN) || messagelen != int(egr.SegmentToLast(1).DATALEN) {
-			t.Errorf("expected %d bytes exchanged, got %d,%d", messagelen, egr.LastSegment().DATALEN, egr.SegmentToLast(1).DATALEN)
+		} else if messagelen != int(egr.LastExchange().seg.DATALEN) || messagelen != int(egr.ExchangeToLast(1).seg.DATALEN) {
+			t.Errorf("expected %d bytes exchanged, got %d,%d", messagelen, egr.LastExchange().seg.DATALEN, egr.ExchangeToLast(1).seg.DATALEN)
 		}
 		_, _ = tx, bytes
 		clientstr := socketReadAllString(client)
@@ -571,9 +578,9 @@ func testSocketDuplex(t *testing.T, client, server *stacks.TCPConn, egr *Exchang
 	if txs != 2 {
 		t.Errorf("expected 2 ACK segments exchanged on duplex end, got %d", txs)
 	} else {
-		s1, s2 := egr.SegmentToLast(0), egr.SegmentToLast(1)
-		if s1.Flags != seqs.FlagACK || s2.Flags != seqs.FlagACK {
-			t.Errorf("expected ACK segments exchanged on duplex end, got %v,%v", s1.Flags, s2.Flags)
+		e1, e2 := egr.ExchangeToLast(0), egr.ExchangeToLast(1)
+		if e1.seg.Flags != seqs.FlagACK || e2.seg.Flags != seqs.FlagACK {
+			t.Errorf("expected ACK segments exchanged on duplex end, got %v,%v", e1.seg.Flags, e2.seg.Flags)
 		}
 	}
 	checkNoMoreDataSent(t, "after duplex ACKs", egr)
@@ -651,13 +658,113 @@ func TestListener(t *testing.T) {
 	}
 }
 
+func TestActionCases(t *testing.T) {
+	for _, rints := range [][]int{
+		{429, 923, 528, 588, 108, 1547, 1371},
+		{816, 185, 306, 1505, 458, 1054, 1106, 1560, 1000, 1657, 1191, 225, 1521}, // Zero window segment reject.
+	} {
+		testTCPConnClientActions(t, rints)
+	}
+}
+
+func TestTCPConnClientActionFuzz(t *testing.T) {
+	const ntests = 1000
+	const maxActions = 64
+
+	rng := rand.New(rand.NewSource(0))
+	var rints [maxActions]int
+	for i := 0; i < ntests; i++ {
+		for i := range rints {
+			rints[i] = rng.Int() % defaultMTU
+		}
+		testTCPConnClientActions(t, rints[:])
+	}
+}
+
+func testTCPConnClientActions(t *testing.T, rints []int) {
+	const mtu = 2048
+	const bufsize = mtu
+	var buf [mtu]byte
+	const (
+		actionTxExchange = iota
+		actionClose
+		actionSend
+		actionMax
+		actionRxExchange
+	)
+	client, server := createTCPClientServerPair(t, bufsize, bufsize, mtu)
+	_, tx := client.RingBuffers()
+	egr := NewExchanger(client.PortStack(), server.PortStack())
+	var actionIdx int
+	var closeCalled bool
+
+	errorfail := func(t *testing.T, fmtMessage string, additional ...any) {
+		t.Helper()
+		for _, ex := range egr.exchanges {
+			t.Error(seqs.StringExchange(ex.seg, ex.A, ex.B, ex.who != 0))
+		}
+		t.Errorf("errfail rints=%v", rints[:actionIdx+1])
+		msg := fmt.Sprintf(fmtMessage, additional...)
+		t.Error(msg)
+		panic(msg)
+	}
+
+	for actionIdx = 0; actionIdx < len(rints); actionIdx++ {
+		rint := rints[actionIdx]
+		a := rint % actionMax
+		switch a {
+		case actionSend:
+			tosend := rint % mtu
+			bufree := tx.Free()
+			if tosend > bufree {
+				// Equal parts fill buffer
+				tosend = bufree - rint%2
+			}
+			if tosend <= 0 {
+				break
+			}
+			_, err := client.Write(buf[:tosend])
+			if closeCalled && err == nil {
+				errorfail(t, "expected error")
+			} else if !closeCalled && err != nil {
+				errorfail(t, "expected no error on write err=%s", err)
+			}
+		case actionRxExchange, actionTxExchange:
+			egr.DoExchanges(t, 1)
+			rejerr := new(seqs.RejectError)
+			if len(egr.lastErrs) > 0 {
+				if true || errors.As(egr.lastErrs[0], &rejerr) {
+					errorfail(t, "error in exchange: %s", rejerr.Error())
+				}
+				return // ignore other errors for now.
+			}
+
+		case actionClose:
+			err := client.Close()
+			if !closeCalled && err != nil {
+				errorfail(t, "close returned error before close call err=%s state=%s",
+					err.Error(), client.State())
+			}
+			closeCalled = true
+		}
+	}
+}
+
+type exchange struct {
+	// who is the index of the sending stack.
+	who  int
+	seg  seqs.Segment
+	A, B seqs.State
+}
+
 type Exchanger struct {
-	Stacks   []*stacks.PortStack
-	pipesN   []int
-	pipes    [][]byte
-	segments []seqs.Segment
-	ex       int
-	loglevel slog.Level
+	Stacks    []*stacks.PortStack
+	pipesN    []int
+	pipes     [][]byte
+	ex        int
+	loglevel  slog.Level
+	lastErrs  []error
+	exchanges []exchange
 }
 
 func NewExchanger(stacks ...*stacks.PortStack) *Exchanger {
@@ -684,17 +791,17 @@ func NewExchanger(stacks ...*stacks.PortStack) *Exchanger {
 func (egr *Exchanger) isdebug() bool { return egr.loglevel <= slog.LevelDebug }
 func (egr *Exchanger) isinfo() bool  { return egr.loglevel <= slog.LevelInfo }
 
-// LastSegment returns the last TCP segment sent over the stack.
-func (egr *Exchanger) LastSegment() seqs.Segment {
-	if len(egr.segments) == 0 {
-		return seqs.Segment{}
+// LastExchange returns the last TCP segment sent over the stack.
+func (egr *Exchanger) LastExchange() exchange {
+	if len(egr.exchanges) == 0 {
+		return exchange{}
 	}
-	return egr.segments[len(egr.segments)-1]
+	return egr.exchanges[len(egr.exchanges)-1]
 }
 
-// SegmentToLast returns the ith from last TCP segment sent over the stack. When fromLast==0 returns last segment.
-func (egr *Exchanger) SegmentToLast(fromLast int) seqs.Segment {
-	return egr.segments[len(egr.segments)-fromLast-1]
+// ExchangeToLast returns the ith from last TCP segment sent over the stack. When fromLast==0 returns last segment.
+func (egr *Exchanger) ExchangeToLast(fromLast int) exchange {
+	return egr.exchanges[len(egr.exchanges)-fromLast-1]
 }
 
 func (egr *Exchanger) getPayload(istack int) []byte {
@@ -722,24 +829,25 @@ func (egr *Exchanger) HandleTx(t *testing.T) (pkts, bytesSent int) {
 	for istack := 0; istack < len(egr.Stacks); istack++ {
 		// This first for loop generates packets "in-flight" contained in `pipes` data structure.
 		egr.pipesN[istack], err = egr.Stacks[istack].HandleEth(egr.pipes[istack][:])
-		if (err != nil && !isDroppedPacket(err)) || egr.pipesN[istack] < 0 {
-			t.Errorf("ex[%d] send[%d]: %s", egr.ex, istack, err)
-			return pkts, bytesSent
-		} else if isDroppedPacket(err) && egr.isdebug() {
-			t.Logf("ex[%d] send[%d]: %s", egr.ex, istack, err)
-		}
+		egr.handleErr(t, err, "send", istack)
+		bytesSent += egr.pipesN[istack]
 		if egr.pipesN[istack] > 0 {
 			pkts++
 			pkt, err := stacks.ParseTCPPacket(egr.getPayload(istack))
 			if err == nil {
 				seg := pkt.TCP.Segment(len(pkt.Payload()))
-				egr.segments = append(egr.segments, seg)
+				egr.exchanges = append(egr.exchanges, exchange{
+					who: istack,
+					seg: seg,
+				})
 				if egr.isdebug() {
 					t.Logf("ex[%d] send[%d]: %+v", egr.ex, istack, seg)
 				}
 			}
 		}
-		bytesSent += egr.pipesN[istack]
+		if t.Failed() {
+			return pkts, bytesSent
+		}
 	}
 	return pkts, bytesSent
 }
@@ -757,13 +865,23 @@ func (egr *Exchanger) HandleRx(t *testing.T) {
 				continue // Don't deliver to self.
 			}
 			err = egr.Stacks[irecv].RecvEth(payload)
-			if err != nil && !isDroppedPacket(err) {
-				t.Errorf("ex[%d] recv[%d]: %s", egr.ex, irecv, err)
-			} else if isDroppedPacket(err) && egr.isdebug() {
-				t.Logf("ex[%d] recv[%d]: %s", egr.ex, irecv, err)
+			egr.handleErr(t, err, "recv", irecv)
+			if t.Failed() {
+				return
 			}
 		}
 		egr.zeroPayload(isend)
+	}
+}
+
+func (egr *Exchanger) handleErr(t *testing.T, err error, action string, i int) {
+	if err != nil {
+		egr.lastErrs = append(egr.lastErrs, err)
+		if !isDroppedPacket(err) {
+			t.Errorf("ex[%d] %s[%d]: %s", egr.ex, action, i, err)
+		} else if egr.isdebug() {
+			t.Logf("ex[%d] %s[%d]: %s", egr.ex, action, i, err)
+		}
 	}
 }
 
@@ -930,9 +1048,9 @@ func checkNoMoreDataSent(t *testing.T, msg string, egr *Exchanger) {
 }
 func assertOneTCPTx(t *testing.T, msg string, wantFlags seqs.Flags, egr *Exchanger) {
 	t.Helper()
-	nseg := len(egr.segments)
+	nseg := len(egr.exchanges)
 	txs, n := egr.HandleTx(t)
-	totsegs := len(egr.segments) - nseg
+	totsegs := len(egr.exchanges) - nseg
 	if txs == 0 {
 		t.Fatalf("no data sent: %s", msg)
 	} else if n < 54 {
@@ -941,8 +1059,8 @@ func assertOneTCPTx(t *testing.T, msg string, wantFlags seqs.Flags, egr *Exchang
 		t.Fatalf("more than one tx: %d", txs)
 	} else if totsegs != 1 {
 		t.Fatal("expected one TCP segment")
-	} else if egr.LastSegment().Flags != wantFlags {
-		t.Fatalf("expected flags=%v got=%v", wantFlags, egr.LastSegment().Flags)
+	} else if egr.LastExchange().seg.Flags != wantFlags {
+		t.Fatalf("expected flags=%v got=%v", wantFlags, egr.LastExchange().seg.Flags)
 	}
 }
 
