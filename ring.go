@@ -24,9 +24,11 @@ type RingTx struct {
 	// packets contains
 	packets []ringidx
 	// firstPkt is the index of the oldest packet in the packets field.
-	firstPkt  int
-	lastPkt   int
+	firstPkt int
+	lastPkt  int
+	// unsentOff is the offset of start of unsent data into rawbuf.
 	unsentoff int
+	// unsentend is the offset of end of unsent data in rawbuf.
 	unsentend int
 }
 
@@ -101,7 +103,7 @@ func (tx *RingTx) packetRing(i int) internal.Ring {
 	if pkt.off < 0 {
 		return internal.Ring{}
 	}
-	return internal.Ring{Buf: tx.rawbuf, Off: pkt.off, End: pkt.end}
+	return tx.ring(pkt.off, pkt.end)
 }
 
 // RecvSegment processes an incoming segment and updates the sent packet queue
@@ -123,52 +125,19 @@ func (tx *RingTx) RecvACK(ack Value) error {
 	return nil
 }
 
-// unsentOff returns the offset of start of unsent data into rawbuf.
-func (tx *RingTx) unsentOff() int {
-	return tx.unsentoff
-}
-
 func (tx *RingTx) unsentRing() internal.Ring {
-	return internal.Ring{Buf: tx.rawbuf, Off: tx.unsentoff, End: tx.unsentend}
+	return tx.ring(tx.unsentoff, tx.unsentend)
 }
 
 func (tx *RingTx) sentRing() internal.Ring {
 	first := tx.packets[tx.firstPkt]
 	if first.off < 0 {
-		return internal.Ring{Buf: tx.rawbuf}
+		return tx.ring(0, 0)
 	}
 	last := tx.packets[tx.lastPkt]
-	return internal.Ring{Buf: tx.rawbuf, Off: first.off, End: last.end}
+	return tx.ring(first.off, last.end)
 }
 
-/*
-type ringPacket struct {
-	ring internal.Ring
-	seq  Value
+func (tx *RingTx) ring(off, end int) internal.Ring {
+	return internal.Ring{Buf: tx.rawbuf, Off: off, End: end}
 }
-
-func (r *RingTx) packet(i int) (ringidx, error) {
-	if i > len(r.packets) {
-		return ringidx{}, errors.New("oob idx")
-	}
-	i = (i + r.firstPkt) % len(r.packets)
-	p := r.packets[i]
-	if p.off < 0 {
-		return ringidx{}, errors.New("no packets")
-	}
-	return p, nil
-}
-
-func (r *RingTx) ringpacket(i int) (ringPacket, error) {
-	p, err := r.packet(i)
-	if err != nil {
-		return ringPacket{}, err
-	}
-	ring := internal.Ring{Buf: r.rawbuf, Off: p.off, End: p.end}
-	rp := ringPacket{
-		ring: ring,
-		seq:  p.seq,
-	}
-	return rp, nil
-}
-*/
