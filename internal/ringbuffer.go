@@ -6,7 +6,10 @@ import (
 	"io"
 )
 
-var errRingBufferFull = errors.New("seqs: ringbuffer full")
+var (
+	errRingBufferFull  = errors.New("seqs: ringbuffer full")
+	errRingBufferSmall = errors.New("seqs: ringbuffer too small")
+)
 
 // Ring is a ring buffer implementation.
 type Ring struct {
@@ -38,6 +41,27 @@ func (r *Ring) Write(b []byte) (int, error) {
 		n += n2
 	}
 	return n, nil
+}
+
+// WriteLimited performs a write that does not write over the ring buffer's
+// limitOffset index, which points to a position to r.Buf.
+func (r *Ring) WriteLimited(b []byte, limitOffset int) (int, error) {
+	if limitOffset > len(r.Buf) {
+		panic("bad limit offset")
+	}
+	if len(b) > len(r.Buf) {
+		return 0, errRingBufferSmall
+	}
+	writeEnd := r.Off + len(b)
+	if limitOffset >= r.Off && writeEnd > limitOffset {
+		return 0, errRingBufferFull
+	} else if writeEnd > len(r.Buf) {
+		writeEnd %= len(r.Buf)
+		if writeEnd > limitOffset {
+			return 0, errRingBufferFull
+		}
+	}
+	return r.Write(b)
 }
 
 func (r *Ring) Read(b []byte) (int, error) {

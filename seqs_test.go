@@ -798,3 +798,8 @@ func TestIssue19(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func ExampleRingTx() {
+	var ring seqs.RingTx
+
+}
