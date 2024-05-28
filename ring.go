@@ -2,9 +2,20 @@ package seqs
 
 import (
 	"errors"
+	"time"
 
 	"github.com/soypat/seqs/internal"
 )
+
+func NewRingTx(buf []byte, maxQueuedPackets int) *RingTx {
+	if maxQueuedPackets <= 0 || len(buf) < 2 || len(buf) < maxQueuedPackets {
+		panic("invalid argument to NewRingTx")
+	}
+	return &RingTx{
+		rawbuf:  buf,
+		packets: make([]ringidx, maxQueuedPackets),
+	}
+}
 
 // RingTx is a ring buffer with retransmission queue functionality added.
 type RingTx struct {
@@ -19,13 +30,26 @@ type RingTx struct {
 	unsentend int
 }
 
-// BufferedUnsent
-func (tx *RingTx) BufferedUnsent() int {
+// ringidx represents packet data inside RingTx
+type ringidx struct {
+	// off is data start offset of packet data inside buf.
+	off int
+	// end is the ringed data end offset, non-inclusive.
+	end int
+	// seq is the sequence number of the packet.
+	seq Value
+	t   time.Time
+	// acked flags if this packet has been acknowledged. Useful for SACK (selective acknowledgement)
+	// acked bool
+}
+
+// Buffered returns the amount of unsent bytes.
+func (tx *RingTx) Buffered() int {
 	r := tx.unsentRing()
 	return r.Buffered()
 }
 
-// BufferedSent
+// BufferedSent returns the total amount of bytes sent but not acked.
 func (tx *RingTx) BufferedSent() int {
 	r := tx.sentRing()
 	return r.Buffered()
@@ -44,7 +68,7 @@ func (tx *RingTx) Write(b []byte) (int, error) {
 
 // ReadPacket reads from the unsent data ring buffer and generates a new packet segment.
 // It fails if the sent packet queue is full.
-func (tx *RingTx) ReadPacket(b []byte) (int, error) {
+func (tx *RingTx) NewPacketAndRead(b []byte) (int, error) {
 	nxtpkt := (tx.lastPkt + 1) % len(tx.packets)
 	if tx.firstPkt == nxtpkt {
 		return 0, errors.New("packet queue full")
@@ -56,9 +80,11 @@ func (tx *RingTx) ReadPacket(b []byte) (int, error) {
 	if err != nil {
 		return n, err
 	}
+	last := &tx.packets[tx.lastPkt]
+	rlast := tx.packetRing(tx.lastPkt)
 	tx.packets[nxtpkt].off = start
 	tx.packets[nxtpkt].end = r.Off
-	tx.packets[nxtpkt].seq = tx.packets[tx.lastPkt].seq + Value(tx.packets[tx.lastPkt].end-tx.packets[tx.lastPkt].off)
+	tx.packets[nxtpkt].seq = last.seq + Value(rlast.Buffered())
 	tx.lastPkt = nxtpkt
 	tx.unsentoff = r.Off
 	return n, nil
@@ -70,12 +96,20 @@ func (tx *RingTx) IsQueueFull() bool {
 	return tx.firstPkt == (tx.lastPkt+1)%len(tx.packets)
 }
 
+func (tx *RingTx) packetRing(i int) internal.Ring {
+	pkt := tx.packets[i]
+	if pkt.off < 0 {
+		return internal.Ring{}
+	}
+	return internal.Ring{Buf: tx.rawbuf, Off: pkt.off, End: pkt.end}
+}
+
 // RecvSegment processes an incoming segment and updates the sent packet queue
 func (tx *RingTx) RecvACK(ack Value) error {
 	i := tx.firstPkt
 	for {
 		pkt := &tx.packets[i]
-		if ack > pkt.seq {
+		if ack >= pkt.seq {
 			// Packet was received by remote. Mark it as acked.
 			pkt.off = -1
 			tx.firstPkt++
@@ -107,18 +141,7 @@ func (tx *RingTx) sentRing() internal.Ring {
 	return internal.Ring{Buf: tx.rawbuf, Off: first.off, End: last.end}
 }
 
-// ringidx represents packet data inside RingTx
-type ringidx struct {
-	// off is data start offset of packet data inside buf.
-	off int
-	// end is the ringed data end offset, non-inclusive.
-	end int
-	// seq is the sequence number of the packet.
-	seq Value
-	// acked flags if this packet has been acknowledged. Useful for SACK (selective acknowledgement)
-	// acked bool
-}
-
+/*
 type ringPacket struct {
 	ring internal.Ring
 	seq  Value
@@ -148,3 +171,4 @@ func (r *RingTx) ringpacket(i int) (ringPacket, error) {
 	}
 	return rp, nil
 }
+*/

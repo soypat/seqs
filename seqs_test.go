@@ -800,6 +800,22 @@ func TestIssue19(t *testing.T) {
 }
 
 func ExampleRingTx() {
-	var ring seqs.RingTx
+	const bufsize = 1024
+	// ring := seqs.NewRingTx(make([]byte, bufsize), 2)
+	// const (
+	// 	action
+	// )
+	// rng := rand.New(rand.NewSource(1))
 
+	// p1 := makeRepeat(bufsize, 1)
+
+	// ring.Write()
+}
+
+func makeRepeat[T any](n int, value T) []T {
+	v := make([]T, n)
+	for i := range v {
+		v[i] = value
+	}
+	return v
 }
