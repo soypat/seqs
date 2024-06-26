@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/soypat/seqs"
 	"github.com/soypat/seqs/eth"
 	"github.com/soypat/seqs/internal"
 )
@@ -114,6 +115,16 @@ type PortStack struct {
 	auxTCP  TCPPacket
 	auxARP  eth.ARPv4Header
 	timeadd time.Duration
+	// tcpkillqueue is a array of TCP packets that
+	// are queued to be sent out to terminate bothersome connections.
+	tcpkillqueue [2]struct {
+		pending bool
+		dst     netip.Addr
+		dstmac  [6]byte
+		dstport uint16
+		srcport uint16
+		segment seqs.Segment
+	}
 }
 
 // Common errors.
@@ -457,6 +468,37 @@ func (ps *PortStack) handleEth(dst []byte) (n int, err error) {
 		if !socketPending {
 			ps.pendingTCPv4 = 0 // No more pending TCP sockets.
 		}
+	}
+
+	for i := range ps.tcpkillqueue {
+		kq := &ps.tcpkillqueue[i]
+		if !kq.pending {
+			continue
+		}
+		ps.auxTCP.Eth = eth.EthernetHeader{
+			Destination:     kq.dstmac,
+			Source:          ps.mac,
+			SizeOrEtherType: uint16(eth.EtherTypeIPv4),
+		}
+		ps.auxTCP.IP = eth.IPv4Header{
+			VersionAndIHL: (5 << 4) | 4,
+			ToS:           0,
+			TotalLength:   20 + 20,
+			ID:            prand16(ps.auxTCP.IP.ID) ^ (uint16(ps.auxTCP.IP.Destination[3]) | (uint16(ps.auxTCP.IP.Destination[2]) << 8)),
+			Flags:         0x4000,
+			TTL:           64,
+			Protocol:      6,
+			Source:        ps.ip,
+			Destination:   kq.dst.As4(),
+		}
+		ps.auxTCP.TCP = eth.TCPHeader{
+			SourcePort:      kq.srcport,
+			DestinationPort: kq.dstport,
+		}
+		ps.auxTCP.CalculateHeaders(kq.segment, nil)
+		ps.auxTCP.PutHeaders(dst)
+		kq.pending = false
+		return 54, nil
 	}
 
 	return 0, nil // Nothing handled.
