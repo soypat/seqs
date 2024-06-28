@@ -129,26 +129,32 @@ func (l *TCPListener) recv(pkt *TCPPacket) error {
 	if !l.isOpen() {
 		return io.EOF
 	}
+	l.stack.trace("lst:recv", slog.Uint64("lport", uint64(l.port)), slog.Uint64("rport", uint64(pkt.TCP.SourcePort)))
 	var freeconn *TCPConn
-	isSYN := pkt.TCP.Flags() == seqs.FlagSYN
+	isSYN := pkt.TCP.Ack == 0 && pkt.TCP.Flags() == seqs.FlagSYN
 	var connidx int
-	for connidx = range l.conns {
-		conn := &l.conns[connidx]
-		if pkt.TCP.Ack == 0 && isSYN && !l.used[connidx] && conn.State() == seqs.StateListen {
-			// Get first available connection in list for first SYN packet, initiating connection.
-			freeconn = conn
-			break
+	if isSYN {
+		for connidx = range l.conns {
+			conn := &l.conns[connidx]
+			if conn.scb.State() == seqs.StateListen && !conn.scb.HasPending() {
+				// Get first available connection in list for first SYN packet, initiating connection.
+				if l.used[connidx] {
+					// See https://github.com/soypat/seqs/issues/25.
+					l.stack.trace("lst:reuse-conn", slog.Uint64("rport", uint64(pkt.TCP.SourcePort)), slog.Uint64("rport-old", uint64(conn.remote.Port())))
+				}
+				freeconn = conn
+				break
+			}
 		}
-		if pkt.TCP.SourcePort != conn.remote.Port() ||
-			pkt.IP.Source != conn.remote.Addr().As4() {
-			continue // Not for this connection.
+	} else {
+		for connidx = range l.conns {
+			conn := &l.conns[connidx]
+			isMatch := pkt.TCP.SourcePort == conn.remote.Port() && pkt.IP.Source == conn.remote.Addr().As4()
+			if isMatch {
+				freeconn = conn
+				break
+			}
 		}
-		err := conn.recv(pkt)
-		if err == io.EOF {
-			l.freeConnForReuse(connidx)
-			err = nil
-		}
-		return err
 	}
 	if freeconn == nil {
 		l.trace("lst:noconn2recv")
