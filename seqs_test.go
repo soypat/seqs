@@ -1,8 +1,7 @@
 package seqs_test
 
 import (
-	"log/slog"
-	"os"
+	"math/rand"
 	"strconv"
 	"testing"
 
@@ -709,9 +708,6 @@ func TestUnexpectedStateClosing(t *testing.T) {
 // Thanks to @knieriem for finding this and the detailed report they submitted.
 func TestIssue19(t *testing.T) {
 	var tcb seqs.ControlBlock
-	tcb.SetLogger(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelDebug - 2,
-	})))
 	assertState := func(state seqs.State) {
 		t.Helper()
 		if tcb.State() != state {
@@ -799,23 +795,98 @@ func TestIssue19(t *testing.T) {
 	}
 }
 
-func ExampleRingTx() {
-	const bufsize = 1024
-	// ring := seqs.NewRingTx(make([]byte, bufsize), 2)
-	// const (
-	// 	action
-	// )
-	// rng := rand.New(rand.NewSource(1))
 
-	// p1 := makeRepeat(bufsize, 1)
-
-	// ring.Write()
-}
-
-func makeRepeat[T any](n int, value T) []T {
-	v := make([]T, n)
-	for i := range v {
-		v[i] = value
+func FuzzTCBActions(f *testing.F) {
+	const mtu = 2048
+	const (
+		actionRecv = iota
+		actionSend
+		actionClose
+		actionMax
+	)
+	f.Add(
+		0x2313_2313,
+		[]byte{actionSend, actionRecv, actionSend, actionRecv, actionSend, actionRecv},
+	)
+	f.Add(
+		0x2fefe_feefe,
+		[]byte{actionSend, actionRecv, actionSend, actionClose, actionSend, actionRecv},
+	)
+	f.Add(
+		0x2fefe_feefe,
+		[]byte{actionClose, actionRecv, actionSend, actionClose, actionSend, actionRecv},
+	)
+	recvsendSize := func(rng *rand.Rand) int {
+		return rng.Int() % mtu
 	}
-	return v
+	f.Fuzz(func(t *testing.T, seed int, actions []byte) {
+		if len(actions) == 0 || len(actions) > 100 {
+			t.SkipNow()
+		}
+		rng := rand.New(rand.NewSource(int64(seed)))
+		var clientISS seqs.Value = seqs.Value(rng.Int31())
+		var serverISS seqs.Value = seqs.Value(rng.Int31())
+
+		var client seqs.ControlBlock
+		client.HelperInitState(seqs.StateEstablished, clientISS, clientISS, mtu)
+		client.HelperInitRcv(serverISS, serverISS, mtu)
+
+		var server seqs.ControlBlock
+		server.HelperInitState(seqs.StateEstablished, serverISS, serverISS, mtu)
+		server.HelperInitRcv(clientISS, clientISS, mtu)
+		var closeCalled bool
+		// logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		// 	Level: slog.LevelDebug - 2,
+		// }))
+		// client.SetLogger(logger.WithGroup("client"))
+		// server.SetLogger(logger.WithGroup("server"))
+		// var exchanges []seqs.Exchange
+		// hasPanicked := true
+		// defer func() {
+		// 	if hasPanicked {
+		// 		for _, ex := range exchanges {
+		// 			t.Log(ex.RFC9293String(seqs.StateEstablished, seqs.StateEstablished))
+		// 		}
+		// 	}
+		// }()
+		for _, action := range actions {
+			v := recvsendSize(rng)
+			switch action % actionMax {
+			case actionSend:
+				seg, ok := client.PendingSegment(v % mtu)
+				if ok {
+					// exchanges = append(exchanges, seqs.Exchange{Outgoing: &seg})
+					err := client.Send(seg)
+					if err != nil {
+						panic(err)
+					}
+					err = server.Recv(seg)
+					if err != nil {
+						panic(err)
+					}
+				}
+			case actionRecv:
+				seg, ok := server.PendingSegment(v % mtu)
+				if ok {
+					// exchanges = append(exchanges, seqs.Exchange{Incoming: &seg})
+					err := server.Send(seg)
+					if err != nil {
+						panic(err)
+					}
+					err = client.Recv(seg)
+					if err != nil && !closeCalled {
+						panic(err)
+					}
+				}
+			case actionClose:
+				err := client.Close()
+				if err != nil && !closeCalled {
+					panic(err)
+				}
+				closeCalled = true
+				return
+			}
+		}
+		// hasPanicked = false
+	})
 }

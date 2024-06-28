@@ -3,7 +3,6 @@ package seqs
 import (
 	"errors"
 	"fmt"
-	"strconv"
 	"testing"
 )
 
@@ -30,9 +29,13 @@ func (tcb *ControlBlock) HelperExchange(t *testing.T, exchange []Exchange) {
 			t.Fatalf(pfx+"[%d] must send or receive a segment.", i)
 		}
 		if ex.Outgoing != nil {
+			prevInflight := tcb.snd.inFlight()
 			err := tcb.Send(*ex.Outgoing)
+			gotSent := tcb.snd.inFlight() - prevInflight
 			if err != nil {
 				t.Fatalf(pfx+"[%d] snd: %s\nseg=%+v\nrcv=%+v\nsnd=%+v", i, err, *ex.Outgoing, tcb.rcv, tcb.snd)
+			} else if gotSent != ex.Outgoing.LEN() {
+				t.Fatalf(pfx+"[%d] snd: expected %d data sent, calculated inflight %d", i, ex.Outgoing.LEN(), gotSent)
 			}
 		}
 		if ex.Incoming != nil {
@@ -171,53 +174,14 @@ func IsDroppedErr(err error) bool {
 }
 
 func (ex *Exchange) RFC9293String(A, B State) string {
-	buf := make([]byte, 0, 64)
-	buf = ex.appendVisualization(buf, A, B)
-	return string(buf)
-}
-
-// appendVisualization appends a RFC9293 styled visualization of exchange to buf.
-// i.e:
-//
-//	SynSent <-- <SEQ=300><ACK=91>[SYN,ACK]  <-- SynRcvd
-func (ex *Exchange) appendVisualization(buf []byte, A, B State) []byte {
-	const emptySpaces = "            "
-	buf = buf[len(buf):] // clip off any previous data so we work with our data only.
-	appendVal := func(buf []byte, name string, i Value) []byte {
-		buf = append(buf, '<')
-		buf = append(buf, name...)
-		buf = append(buf, '=')
-		buf = strconv.AppendInt(buf, int64(i), 10)
-		buf = append(buf, '>')
-		return buf
-	}
-	var seg *Segment
+	var seg Segment
 	sentByA := ex.Outgoing != nil
 	if sentByA {
-		seg = ex.Outgoing
+		seg = *ex.Outgoing
 	} else if ex.Incoming != nil {
-		seg = ex.Incoming
+		seg = *ex.Incoming
 	} else {
-		return buf
+		return ""
 	}
-	dirSep := []byte(" <-- ")
-	if sentByA {
-		dirSep = []byte(" --> ")
-	}
-	astr := A.String()
-	buf = append(buf, astr...)
-	buf = append(buf, emptySpaces[:11-len(astr)]...) // Fill up to 11 characters
-	buf = append(buf, dirSep...)
-	buf = appendVal(buf, "SEQ", seg.SEQ)
-	buf = appendVal(buf, "ACK", seg.ACK)
-	if seg.DATALEN > 0 {
-		buf = appendVal(buf, "DATA", Value(seg.DATALEN))
-	}
-	buf = append(buf, seg.Flags.String()...)
-	if len(buf) < 44 {
-		buf = append(buf, emptySpaces[:44-len(buf)]...) // Fill up to 44 characters
-	}
-	buf = append(buf, dirSep...)
-	buf = append(buf, B.String()...)
-	return buf
+	return StringExchange(seg, A, B, !sentByA)
 }

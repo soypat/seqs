@@ -6,7 +6,6 @@ import (
 	"io"
 	"log/slog"
 	"math"
-	"math/bits"
 	"net"
 
 	"github.com/soypat/seqs/internal"
@@ -79,36 +78,21 @@ type sendSpace struct {
 	// WL2 Value // segment acknowledgment number used for last window update
 }
 
+// inFlight returns amount of unacked bytes sent out.
+func (snd *sendSpace) inFlight() Size {
+	return Sizeof(snd.UNA, snd.NXT)
+}
+
+// maxSend returns maximum segment datalength receivable by remote peer.
+func (snd *sendSpace) maxSend() Size {
+	return snd.WND - snd.inFlight()
+}
+
 // recvSpace contains Receive Sequence Space data. Its sequence numbers correspond to remote data.
 type recvSpace struct {
 	IRS Value // initial receive sequence number, defined by remote in SYN segment received.
 	NXT Value // receive next. seqs before this have been acked. this seq and up to NXT+WND-1 are allowed to be sent. Corresponds to remote data.
 	WND Size  // receive window defined by local. Permitted number of remote unacked octets in flight.
-}
-
-// Segment represents an incoming/outgoing TCP segment in the sequence space.
-type Segment struct {
-	SEQ     Value // sequence number of first octet of segment. If SYN is set it is the initial sequence number (ISN) and the first data octet is ISN+1.
-	ACK     Value // acknowledgment number. If ACK is set it is sequence number of first octet the sender of the segment is expecting to receive next.
-	DATALEN Size  // The number of octets occupied by the data (payload) not counting SYN and FIN.
-	WND     Size  // segment window
-	Flags   Flags // TCP flags.
-}
-
-// LEN returns the length of the segment in octets including SYN and FIN flags.
-func (seg *Segment) LEN() Size {
-	add := Size(seg.Flags>>0) & 1 // Add FIN bit.
-	add += Size(seg.Flags>>1) & 1 // Add SYN bit.
-	return seg.DATALEN + add
-}
-
-// End returns the sequence number of the last octet of the segment.
-func (seg *Segment) Last() Value {
-	seglen := seg.LEN()
-	if seglen == 0 {
-		return seg.SEQ
-	}
-	return Add(seg.SEQ, seglen) - 1
 }
 
 // PendingSegment calculates a suitable next segment to send from a payload length.
@@ -126,8 +110,18 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 	if pending == 0 && payloadLen == 0 {
 		return Segment{}, false // No pending segment.
 	}
-	if payloadLen > math.MaxUint16 || Size(payloadLen) > tcb.snd.WND {
-		payloadLen = int(tcb.snd.WND)
+
+	// Limit payload to what send window allows.
+	inFlight := tcb.snd.inFlight()
+	_ = inFlight
+	maxPayload := tcb.snd.maxSend()
+	if payloadLen > int(maxPayload) {
+		if maxPayload == 0 && !tcb.pending[0].HasAny(FlagFIN|FlagRST|FlagSYN) {
+			return Segment{}, false
+		} else if maxPayload > tcb.snd.WND {
+			panic("seqs: bad calculation")
+		}
+		payloadLen = int(maxPayload)
 	}
 
 	if established {
@@ -294,6 +288,7 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	acksOld := hasAck && !LessThan(tcb.snd.UNA, seg.ACK)
 	acksUnsentData := hasAck && !LessThanEq(seg.ACK, tcb.snd.NXT)
 	ctlOrDataSegment := established && (seg.DATALEN > 0 || flags.HasAny(FlagFIN|FlagRST))
+	zeroWindowOK := tcb.rcv.WND == 0 && seg.DATALEN == 0 && seg.SEQ == tcb.rcv.NXT
 	// See section 3.4 of RFC 9293 for more on these checks.
 	switch {
 	case seg.WND > math.MaxUint16:
@@ -301,10 +296,13 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	case tcb.state == StateClosed:
 		err = io.ErrClosedPipe
 
-	case checkSEQ && !InWindow(seg.SEQ, tcb.rcv.NXT, tcb.rcv.WND):
+	case checkSEQ && tcb.rcv.WND == 0 && seg.DATALEN > 0 && seg.SEQ == tcb.rcv.NXT:
+		err = errZeroWindow
+
+	case checkSEQ && !InWindow(seg.SEQ, tcb.rcv.NXT, tcb.rcv.WND) && !zeroWindowOK:
 		err = errSeqNotInWindow
 
-	case checkSEQ && !InWindow(seg.Last(), tcb.rcv.NXT, tcb.rcv.WND):
+	case checkSEQ && !InWindow(seg.Last(), tcb.rcv.NXT, tcb.rcv.WND) && !zeroWindowOK:
 		err = errLastNotInWindow
 
 	case checkSEQ && seg.SEQ != tcb.rcv.NXT:
@@ -356,6 +354,10 @@ func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
 	hasAck := seg.Flags.HasAny(FlagACK)
 	checkSeq := !seg.Flags.HasAny(FlagRST)
 	seglast := seg.Last()
+	// Extra check for when send Window is zero and no data is being sent.
+	zeroWindowOK := tcb.snd.WND == 0 && seg.DATALEN == 0 && seg.SEQ == tcb.snd.NXT
+	outOfWindow := checkSeq && !InWindow(seg.SEQ, tcb.snd.NXT, tcb.snd.WND) &&
+		!zeroWindowOK
 	switch {
 	case tcb.state == StateClosed:
 		err = io.ErrClosedPipe
@@ -364,11 +366,20 @@ func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
 	case hasAck && seg.ACK != tcb.rcv.NXT:
 		err = errAckNotNext
 
-	case checkSeq && !InWindow(seg.SEQ, tcb.snd.NXT, tcb.snd.WND):
-		err = errSeqNotInWindow
+	case outOfWindow:
+		if tcb.snd.WND == 0 {
+			err = errZeroWindow
+		} else {
+			err = errSeqNotInWindow
+		}
+
 	case seg.DATALEN > 0 && (tcb.state == StateFinWait1 || tcb.state == StateFinWait2):
 		err = errConnectionClosing // Case 1: No further SENDs from the user will be accepted by the TCP implementation.
-	case checkSeq && !InWindow(seglast, tcb.snd.NXT, tcb.snd.WND):
+
+	case checkSeq && tcb.snd.WND == 0 && seg.DATALEN > 0 && seg.SEQ == tcb.snd.NXT:
+		err = errZeroWindow
+
+	case checkSeq && !InWindow(seglast, tcb.snd.NXT, tcb.snd.WND) && !zeroWindowOK:
 		err = errLastNotInWindow
 	}
 	return err
@@ -462,151 +473,4 @@ func (tcb *ControlBlock) traceSeg(msg string, seg Segment) {
 			slog.Uint64("seg.data", uint64(seg.DATALEN)),
 		)
 	}
-}
-
-// Flags is a TCP flags masked implementation i.e: SYN, FIN, ACK.
-type Flags uint16
-
-const (
-	FlagFIN Flags = 1 << iota // FlagFIN - No more data from sender.
-	FlagSYN                   // FlagSYN - Synchronize sequence numbers.
-	FlagRST                   // FlagRST - Reset the connection.
-	FlagPSH                   // FlagPSH - Push function.
-	FlagACK                   // FlagACK - Acknowledgment field significant.
-	FlagURG                   // FlagURG - Urgent pointer field significant.
-	FlagECE                   // FlagECE - ECN-Echo has a nonce-sum in the SYN/ACK.
-	FlagCWR                   // FlagCWR - Congestion Window Reduced.
-	FlagNS                    // FlagNS  - Nonce Sum flag (see RFC 3540).
-)
-
-// The union of SYN|FIN|PSH and ACK flags is commonly found throughout the specification, so we define unexported shorthands.
-const (
-	synack = FlagSYN | FlagACK
-	finack = FlagFIN | FlagACK
-	pshack = FlagPSH | FlagACK
-)
-
-// HasAll checks if mask bits are all set in the receiver flags.
-func (flags Flags) HasAll(mask Flags) bool { return flags&mask == mask }
-
-// HasAny checks if one or more mask bits are set in receiver flags.
-func (flags Flags) HasAny(mask Flags) bool { return flags&mask != 0 }
-
-// StringFlags returns human readable flag string. i.e:
-//
-//	"[SYN,ACK]"
-//
-// Flags are printed in order from LSB (FIN) to MSB (NS).
-// All flags are printed with length of 3, so a NS flag will
-// end with a space i.e. [ACK,NS ]
-func (flags Flags) String() string {
-	// Cover main cases.
-	switch flags {
-	case 0:
-		return "[]"
-	case synack:
-		return "[SYN,ACK]"
-	case finack:
-		return "[FIN,ACK]"
-	case pshack:
-		return "[PSH,ACK]"
-	case FlagACK:
-		return "[ACK]"
-	case FlagSYN:
-		return "[SYN]"
-	case FlagFIN:
-		return "[FIN]"
-	case FlagRST:
-		return "[RST]"
-	}
-	buf := make([]byte, 0, 2+3*bits.OnesCount16(uint16(flags)))
-	buf = append(buf, '[')
-	buf = flags.AppendFormat(buf)
-	buf = append(buf, ']')
-	return string(buf)
-}
-
-// AppendFormat appends a human readable flag string to b returning the extended buffer.
-func (flags Flags) AppendFormat(b []byte) []byte {
-	if flags == 0 {
-		return b
-	}
-	// String Flag const
-	const flaglen = 3
-	const strflags = "FINSYNRSTPSHACKURGECECWRNS "
-	var addcommas bool
-	for flags != 0 { // written by Github Copilot- looks OK.
-		i := bits.TrailingZeros16(uint16(flags))
-		if addcommas {
-			b = append(b, ',')
-		} else {
-			addcommas = true
-		}
-		b = append(b, strflags[i*flaglen:i*flaglen+flaglen]...)
-		flags &= ^(1 << i)
-	}
-	return b
-}
-
-// State enumerates states a TCP connection progresses through during its lifetime.
-//
-//go:generate stringer -type=State -trimprefix=State
-type State uint8
-
-const (
-	// CLOSED - represents no connection state at all. Is not a valid state of the TCP state machine but rather a pseudo-state pre-initialization.
-	StateClosed State = iota
-	// LISTEN - represents waiting for a connection request from any remote TCP and port.
-	StateListen
-	// SYN-RECEIVED - represents waiting for a confirming connection request acknowledgment
-	// after having both received and sent a connection request.
-	StateSynRcvd
-	// SYN-SENT - represents waiting for a matching connection request after having sent a connection request.
-	StateSynSent
-	// ESTABLISHED - represents an open connection, data received can be delivered
-	// to the user.  The normal state for the data transfer phase of the connection.
-	StateEstablished
-	// FIN-WAIT-1 - represents waiting for a connection termination request
-	// from the remote TCP, or an acknowledgment of the connection
-	// termination request previously sent.
-	StateFinWait1
-	// FIN-WAIT-2 - represents waiting for a connection termination request
-	// from the remote TCP.
-	StateFinWait2
-	// CLOSING - represents waiting for a connection termination request
-	// acknowledgment from the remote TCP.
-	StateClosing
-	// TIME-WAIT - represents waiting for enough time to pass to be sure the remote
-	// TCP received the acknowledgment of its connection termination request.
-	StateTimeWait
-	// CLOSE-WAIT - represents waiting for a connection termination request
-	// from the local user.
-	StateCloseWait
-	// LAST-ACK - represents waiting for an acknowledgment of the
-	// connection termination request previously sent to the remote TCP
-	// (which includes an acknowledgment of its connection termination request).
-	StateLastAck
-)
-
-// IsPreestablished returns true if the connection is in a state preceding the established state.
-// Returns false for Closed pseudo state.
-func (s State) IsPreestablished() bool {
-	return s == StateSynRcvd || s == StateSynSent || s == StateListen
-}
-
-// IsClosing returns true if the connection is in a closing state but not yet terminated (relieved of remote connection state).
-// Returns false for Closed pseudo state.
-func (s State) IsClosing() bool {
-	return !(s <= StateEstablished)
-}
-
-// IsClosed returns true if the connection closed and can possibly relieved of
-// all state related to the remote connection. It returns true if Closed or in TimeWait.
-func (s State) IsClosed() bool {
-	return s == StateClosed || s == StateTimeWait
-}
-
-// IsSynchronized returns true if the connection has gone through the Established state.
-func (s State) IsSynchronized() bool {
-	return s >= StateEstablished
 }
