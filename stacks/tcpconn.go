@@ -26,6 +26,7 @@ const (
 
 // TCPConn is a userspace implementation of a TCP connection intended for use with PortStack
 // though is purposefully loosely coupled. It implements [net.Conn].
+
 type TCPConn struct {
 	stack  *PortStack
 	rdead  time.Time
@@ -39,7 +40,7 @@ type TCPConn struct {
 	// remote is the IP+port address of remote.
 	remote    netip.AddrPort
 	localPort uint16
-	remoteMAC [6]byte
+	remoteMAC [6]byte //this is the ROUTERS mac address .. it's not a great name (IMHO) - unless it isn't in which case I appologise
 	abortErr  error
 	closing   bool
 	// connid is a conenction counter that is incremented each time a new
@@ -50,12 +51,12 @@ type TCPConn struct {
 	raddr, laddr net.TCPAddr
 }
 
-type TCPConnConfig struct {
+type TCPConConfig struct {
 	TxBufSize uint16
 	RxBufSize uint16
 }
 
-func NewTCPConn(stack *PortStack, cfg TCPConnConfig) (*TCPConn, error) {
+func NewTCPConn(stack *PortStack, cfg TCPConConfig) (*TCPConn, error) {
 	if cfg.RxBufSize == 0 {
 		cfg.RxBufSize = defaultSocketSize
 	}
@@ -160,8 +161,10 @@ func (sock *TCPConn) Write(b []byte) (n int, _ error) {
 	}
 }
 
-// Read reads data from the socket's input buffer. If the buffer is empty,
-// Read will block until data is available.
+
+// Read reads data from the socket's input (RX) (ring) buffer... populating b[].. 
+//If the rx buffer is empty, Read will block until data is available.
+
 func (sock *TCPConn) Read(b []byte) (int, error) {
 	err := sock.checkPipeOpen()
 	if err != nil {
@@ -331,6 +334,8 @@ func (sock *TCPConn) checkPipeOpen() error {
 	return nil
 }
 
+//take a packet from the stack and and write it's payload into the socket's rx (ring) buffer
+// /\ i found this really misleading - the packet is not 'taken' from the stack, it is passed to the handler (called by PortStack RecvEth)
 func (sock *TCPConn) recv(pkt *TCPPacket) (err error) {
 	sock.trace("TCPConn.recv:start")
 	prevState := sock.scb.State()
@@ -380,6 +385,7 @@ func (sock *TCPConn) recv(pkt *TCPPacket) (err error) {
 	return err
 }
 
+//this handler is called by the underlying stack and populates response[] from the TX ring buffer, with data to be sent as a packet
 func (sock *TCPConn) send(response []byte) (n int, err error) {
 	defer sock.trace("TCPConn.send:start")
 	if !sock.remote.IsValid() {
@@ -414,14 +420,15 @@ func (sock *TCPConn) send(response []byte) (n int, err error) {
 	var payload []byte
 	if available > 0 {
 		payload = response[sizeTCPNoOptions : sizeTCPNoOptions+seg.DATALEN]
+		//we are reading out of the TX ring buffer, data to encapsulate and send 
 		n, err = sock.tx.Read(payload)
 		if err != nil && err != io.EOF || n != int(seg.DATALEN) {
-			panic("bug in handleUser") // This is a bug in ring buffer or a race condition.
+			panic("bug in handleUser") // This is a bug in ring buffer or a race condition. - is it ? - odd message then
 		}
 	}
 	sock.setSrcDest(&sock.pkt)
 	sock.pkt.CalculateHeaders(seg, payload)
-	sock.pkt.PutHeaders(response)
+	sock.pkt.PutHeaders(response) //puts the headers in the response bytes array (around the payload)
 	if prevState != sock.scb.State() {
 		sock.info("TCP:tx-statechange", slog.Uint64("port", uint64(sock.localPort)), slog.String("old", prevState.String()), slog.String("new", sock.scb.State().String()), slog.String("txflags", seg.Flags.String()))
 	}

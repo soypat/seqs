@@ -9,13 +9,23 @@ import (
 	"github.com/soypat/seqs/eth"
 )
 
+// <unhelpful and misleading !>
 // tcphandler represents a user provided function for handling incoming TCP packets on a port.
 // Incoming data is sent inside the `pkt` TCPPacket argument when pkt.HasPacket returns true.
 // Outgoing data is stored into the `response` byte slice. The function must return the number of
 // bytes written to `response` and an error.
-//
+// </unhelpful and misleading !>
+
+// <suggeted replacement>
+// tcphandler represents a user provided function for handling incoming TCP packets on a port.
+// Incoming data is passed in a 'pkt' to the recv function which is invoked whenever data arrives (by RecvEth)
+// Outgoing data is written into the `dst` byte slice (from the tx ring buffer). The function must return the number of
+// bytes written to `response` and an error.
+// TCPConn provides an implemntation of this interface - note .send is ONLY called by HandleEth
+// </suggeted replacement>
+
 // See [PortStack] for information on how to use this function and other port handlers.
-type itcphandler interface {
+type itcphandler interface {  //note TCPConn is our implementation of this interface 
 	send(dst []byte) (n int, err error)
 	recv(pkt *TCPPacket) error
 	// needsHandling() bool
@@ -51,7 +61,7 @@ func (port *tcpPort) HandleEth(dst []byte) (n int, err error) {
 	return n, err
 }
 
-// Open sets the UDP handler and opens the port.
+// Open sets the TCP handler and opens the port.
 func (port *tcpPort) Open(portNum uint16, handler itcphandler) {
 	if portNum == 0 || handler == nil {
 		panic("invalid port or nil handler" + strconv.Itoa(int(port.port)))
@@ -192,6 +202,45 @@ func (pkt *TCPPacket) CalculateHeaders(seg seqs.Segment, payload []byte) {
 	pkt.TCP.SetOffset(offset)
 	pkt.TCP.Checksum = pkt.TCP.CalculateChecksumIPv4(&pkt.IP, nil, payload)
 }
+
+func (pkt *UDPPacket) CalculateHeaders( payload []byte) {
+	const ipLenInWords = 5
+
+//	if int(seg.DATALEN) != len(payload) {
+		//panic("seg.DATALEN != len(payload)")
+//	}
+	// Ethernet frame.
+	pkt.Eth.SizeOrEtherType = uint16(eth.EtherTypeIPv4)
+
+	// IPv4 frame.
+	pkt.IP.Protocol = 17 // UDP
+	pkt.IP.TTL = 64
+	pkt.IP.ID = prand16(pkt.IP.ID)
+	pkt.IP.VersionAndIHL = ipLenInWords // Sets IHL: No IP options. Version set automatically.
+	pkt.IP.TotalLength = 4*ipLenInWords + eth.SizeUDPHeader + uint16(len(payload))
+	// TODO(soypat): Document how to handle ToS. For now just use ToS used by other side.
+	pkt.IP.Flags = 0 // packet.IP.ToS = 0
+	pkt.IP.Checksum = pkt.IP.CalculateChecksum()
+
+	// TCP frame.
+	//const offset = 5
+
+	pkt.UDP = eth.UDPHeader{
+		SourcePort:      pkt.UDP.SourcePort,
+		DestinationPort: pkt.UDP.DestinationPort,
+		Checksum : pkt.UDP.CalculateChecksumIPv4(&pkt.IP,  payload),
+		Length: uint16(len(payload)+8),
+		
+	//	Seq:             seg.SEQ,
+	//	Ack:             seg.ACK,
+///		WindowSizeRaw:   uint16(seg.WND),
+	///	UrgentPtr:       0, // We do not implement urgent pointer.
+	}
+	//pkt.UDP.SetFlags(seg.Flags)
+	//pkt.UDP.SetOffset(offset)
+	//pkt.UDP.
+}
+
 
 // prand16 generates a pseudo random number from a seed.
 func prand16(seed uint16) uint16 {
