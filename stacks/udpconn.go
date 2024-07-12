@@ -1,27 +1,22 @@
 package stacks
 
 //UDP is 'connectionless' so this is only a connection in so far as it's a bunch of packets arriving on a common port
+//Packets can fail to arrive, or arrive out of order, or arrive more than once - this is the nature of UDP
+//It is very easy to build a reliable protocol on top of UDP
 
-import (
-	// "errors"
-	 "io"
-	 "log/slog"
-	 "net"
-     
-	"net/netip"
-	// "os"
-	// "runtime"
-	"time"
-
-	//"github.com/soypat/seqs"
+import (	
+	"io"
+	"log/slog"
+	"net"     
+	"net/netip"	
+	"time"	
 	"github.com/soypat/seqs/internal"
-	"github.com/soypat/seqs/eth"
-	// "github.com/soypat/seqs/internal"
+	"github.com/soypat/seqs/eth"	
 )
 
 var _ net.Conn = &UDPConn{}  //net.conn is part of the standard go library - it's an interface we must implement
 
-//the handler is a set of methods (primarily send and recv) that the underlying port stack will call, to pass packets for processing
+//The handler is a set of methods (primarily send and recv) that the underlying port stack will call, to pass packets for processing
 //it is an interface we need to implement
 var handler iudphandler = (*UDPConn)(nil)
 
@@ -34,28 +29,15 @@ const (
 
 
 type UDPConn struct {
-	stack  *PortStack
-	//rdead  time.Time
-	//wdead  time.Time
-	//lastTx time.Time
+	stack  *PortStack	
 	lastRx time.Time
-	pkt    UDPPacket //this is a reusable 'scratchpad' packet used for sending
-	//scb    seqs.ControlBlock
-	tx     ring //the ring buffers contain unpacketised data
-	rx     ring
-	// remote is the IP+port address of remote.
+	pkt    UDPPacket //this is a reusable 'scratchpad' packet used for sending	
+	tx     ring  //the ring buffers contain unpacketised data
+	rx     ring	
 	remote    netip.AddrPort
 	localPort uint16
-	remoteMAC [6]byte //this is the ROUTERS mac address .. it's not a great name (IMHO) - unless it isn't in which case I appologise
-	//remoteMAC [6]byte
-	//abortErr  error
-	//closing   bool
-	// connid is a conenction counter that is incremented each time a new
-	// connection is established via Open calls. This disambiguate's whether
-	// Read and Write calls belong to the current connection.
-	//connid uint8
-	// Avoid heap allocations by making LocalAddr and RemoteAddr give out pointers to these fields.
-	//raddr, laddr net.TCPAddr
+	remoteMAC [6]byte //this is the ROUTER/Gateways mac address .. it's not a great name (IMHO) - unless it isn't in which case I appologise
+	
 }
 
 //this is an identical structure to TCPConnConfig - but I didn't want to change the original name without discussions
@@ -123,20 +105,13 @@ func (sock *UDPConn) open( localPortNum uint16, remoteMAC [6]byte, remoteAddr ne
 }
 
 
-
-// var _ net.Conn = &UDPConn{} //we are implementing the net.Conn interface
-
-// UDPConn is a stub for the net.Conn interface.
-//type UDPConn struct{}
-
-
-// Read implements the Read method of the net.Conn interface.
 func (u *UDPConn) abort() {
-    // Implement the method  
+    // There is no connection per se to abort
+	
 }
 
 func (u *UDPConn) SetReadDeadline(t time.Time) error  {
-    // not really relevant to UDP
+    // not really relevant to UDP - buit the interface requires it
 	return nil
 }
 
@@ -147,13 +122,13 @@ func (u *UDPConn) SetWriteDeadline(t time.Time) error  {
 
 func (sock *UDPConn) isPendingHandling() bool  {
     
-	// much simplet than TCP - may need expanding??
-	return sock.tx.Buffered() > 0 
+	// much simpler than TCP - may need expanding??
+	return (sock.tx.Buffered()>0) || (sock.rx.Buffered() > 0 )
 	
 }
 
 
-// Reads from the underlying rx ring buffer
+// Reads from the underlying rx ring buffer, throws an EOF error if no data is available
 func (u *UDPConn) Read(b []byte) (n int, err error) {    
 	return u.rx.Read(b) //read from the rx ring buffer into b    
 }
@@ -165,16 +140,16 @@ func (sock *UDPConn) Write(b []byte) (n int, err error) {
     return sock.tx.Write(b)
 }
 
-// Close implements the Close method of the net.Conn interface.
-func (u *UDPConn) Close() error {
-    // Implement the method
+
+func (u *UDPConn) Close() error {    
     return nil
 }
 
 // LocalAddr implements the LocalAddr method of the net.Conn interface.
 func (u *UDPConn) LocalAddr() net.Addr {
     // Implement the method
-    return nil
+
+    return u.LocalAddr()
 }
 
 // RemoteAddr implements the RemoteAddr method of the net.Conn interface.
@@ -183,7 +158,7 @@ func (u *UDPConn) RemoteAddr() net.Addr {
     return nil
 }
 
-// SetDeadline implements the SetDeadline method of the net.Conn interface.
+
 func (u *UDPConn) SetDeadline(t time.Time) error {
     // Implement the method
     return nil
@@ -193,37 +168,21 @@ func (sock *UDPConn) trace(msg string, attrs ...slog.Attr) {
 	internal.LogAttrs(sock.stack.logger, internal.LevelTrace, msg, attrs...)
 }
 
-//implementing the iudphandler interface
+
 //takes (the contents of ) a packet it and puts it in the RX ring buffer
 func (sock *UDPConn) recv(pkt *UDPPacket) (err error) {
 	sock.trace("UDP.recv:start")
 	
-	// prevState := sock.scb.State()
-	// if prevState.IsClosed() {
-	// 	return io.EOF
-	// }
-
 	remotePort := sock.remote.Port()
 	if remotePort != 0 && pkt.UDP.SourcePort != remotePort {
 		return nil // This packet came from a different client (remote port) to the one we are interacting with.
 	}
 	sock.lastRx = pkt.Rx
 	// By this point we know that the packet is valid and contains data, we process it.
-	payload := pkt.Payload()
-	
+	payload := pkt.Payload()	
 	_, err = sock.rx.Write(payload) //write into the UDPconns rx (ring) buffer
 	
-		//if err != nil {
-//			return err
-		//}
-	// }
-	// if segIncoming.Flags.HasAny(seqs.FlagSYN) && !sock.remote.IsValid() {
-	// 	// We have a client that wants to connect to us.
-	// 	sock.remoteMAC = pkt.Eth.Source
-	// 	sock.remote = netip.AddrPortFrom(netip.AddrFrom4(pkt.IP.Source), pkt.TCP.SourcePort)
-	// }
-	//err = sock.stateCheck()
-	return err  //which is probably (hopefully) nil
+	return err  //which is hopefully nil - but could be errRingBufferFull
 }
 
 //this handler is called regularly by the underlying stack (HandleEth) and populates response[] from the TX ring buffer, with data to be sent as a packet
@@ -234,57 +193,29 @@ func (sock *UDPConn) send(response []byte) (n int, err error) {
 	if !sock.remote.IsValid() {
 		return 0, nil // No remote address yet, yield.
 	}
-
 	
 	available := min(sock.tx.Buffered(), len(response)-sizeUDPNoOptions)
 
-	//println("Available:",available) //@@@REMOVE
-
-	// seg, ok := sock.scb.PendingSegment(available)
-	// if !ok {
-	// 	// No pending control segment or data to send. Yield to handleUser.
-	// 	return 0, sock.stateCheck()
-	// }
-
-	// prevState := sock.scb.State()
-	// err = sock.scb.Send(seg)
-	// if err != nil {
-	// 	return 0, err
-	// }
-
-	// If we have user data to send we send it, else we send the control segment.
-
-	segDATALEN:=available //temporary - just so i can see where seg.datalen was being used
+	
 	var payload []byte
 	if available > 0 {
-		payload = response[sizeUDPNoOptions : sizeUDPNoOptions+segDATALEN]  //this is a reference to the payload section of the response[] slice we are populating
+		payload = response[sizeUDPNoOptions : sizeUDPNoOptions+available]  //this is a reference to the payload section of the response[] slice we are populating
 
-		
 		//we are reading out of the TX ring buffer, data to encapsulate and send 
 		n, err = sock.tx.Read(payload) //fill the payload section from the TX ring buffer
 
 		//println("payload filled with ",string(payload)) //@@@REMOVE
 
-		if err != nil && err != io.EOF || n != int(segDATALEN) {
+		if err != nil && err != io.EOF || n != int(available) {
 			panic("bug in handleUser") // This is a bug in ring buffer or a race condition. - is it ? - odd message then
 		}
 	}
 
-	// n, err = sock.tx.Read(response) //<--Read ..loads data from the tx ring buffer into response[] - called dst[] up to now ??
-	// if err != nil && err != io.EOF {
-	// 	panic("bug in UDP send") // This is a bug in ring buffer or a race condition.		
-	// }
-
-	
-	//pkt := sock.pkt
 	sock.setSrcDest(&sock.pkt)
-	//sock.pkt.
 	sock.pkt.CalculateHeaders(payload)
-
-	sock.pkt.PutHeaders(response) //the sock has the local and remote port data to be able to embed in the packet
-	//err = sock.stateCheck()
-	//sock.onsend(response[:sizeTCPNoOptions+n])
-	return sizeUDPNoOptions + n, err //TODO(nickax) - is there a UDP equivalent of sizeTCPNoOptions ??
+	sock.pkt.PutHeaders(response) //the sock (conn object) has the local and remote port data to be able to embed in the packet
+	
+	return sizeUDPNoOptions + n, err 
 }
 
 func (sock *UDPConn) setSrcDest(pkt *UDPPacket) {
@@ -296,25 +227,4 @@ func (sock *UDPConn) setSrcDest(pkt *UDPPacket) {
 	pkt.UDP.DestinationPort = sock.remote.Port()
 	pkt.Eth.Destination = sock.remoteMAC
 }
-
-// // IPv4 frame.
-// packet.IP = eth.IPv4Header{
-// 	Source:        srcAddr,
-// 	Destination:   dstAddr,
-// 	VersionAndIHL: ipLenInWords, // Sets IHL: No IP options. Version set automatically.
-// 	TotalLength:   4*ipLenInWords + eth.SizeUDPHeader + uint16(len(payload)),
-// 	Protocol:      17, // UDP
-// 	TTL:           64,
-// 	ID:            prand16(packet.IP.ID),
-// 	ToS:           ipTOS,
-// 	Flags:         0x40 << 8, // Don't fragment.
-// }
-// packet.IP.Checksum = packet.IP.CalculateChecksum()
-// // UDP frame.
-// packet.UDP = eth.UDPHeader{
-// 	SourcePort:      lport,
-// 	DestinationPort: rport,
-// 	Length:          packet.IP.TotalLength - 4*ipLenInWords,
-// }
-// packet.UDP.Checksum = packet.UDP.CalculateChecksumIPv4(&packet.IP, payload)
 
