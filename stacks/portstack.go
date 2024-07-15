@@ -18,6 +18,12 @@ const (
 	arpOpWait  = 0xffff
 )
 
+type socket interface {
+	Close()
+	IsPendingHandling() bool
+	HandleEth(dst []byte) (int, error)
+}
+
 var modernAge = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 
 type ethernethandler = func(ehdr *eth.EthernetHeader, ethPayload []byte) error
@@ -167,7 +173,6 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 	if len(payload) < eth.SizeEthernetHeader+eth.SizeIPv4Header {
 		return errPacketSmol
 	} else if len(payload) > int(ps.mtu) {
-		//println("recv", payload, ps.mtu)
 		return errPacketExceedsMTU
 	}
 	ps.trace("Stack.RecvEth:start", slog.Int("plen", len(payload)))
@@ -268,7 +273,7 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 		pkt.IP = ihdr // TODO(soypat): Don't ignore IP options.
 		pkt.UDP = uhdr
 		copy(pkt.payload[:], payload) //copies the payload from the EtherNet frame into the UDP packet
-		err = port.handler.recv(pkt) //<-- where the magic happens - invoking recv(), passes the arrived packet so in can be placed in the RX ring buffer
+		err = port.handler.recv(pkt)  //<-- where the magic happens - invoking recv(), passes the arrived packet so in can be placed in the RX ring buffer
 		if err == io.EOF {
 			// Special case; EOF is flag to close port
 			err = nil
@@ -353,7 +358,7 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 	}
 	return err
 }
-//HandleEth
+
 func (ps *PortStack) HandleEth(dst []byte) (n int, err error) {
 	isTrace := ps.isLogEnabled(internal.LevelTrace)
 	n, err = ps.handleEth(dst)
@@ -376,17 +381,11 @@ func (ps *PortStack) HandleEth(dst []byte) (n int, err error) {
 //
 // If a handler returns any other error the port is closed.
 func (ps *PortStack) handleEth(dst []byte) (n int, err error) {
-	//this would be much better named as getNextOutboundPacket
-
-	//println ("portStack:handleEth ",string(dst)) //@@@REMOVE
 
 	switch {
 	case len(dst) < int(ps.mtu):
-		
 		return 0, io.ErrShortBuffer
-
 	case !ps.IsPendingHandling():
-		
 		return 0, nil // No remaining packets to handle.
 	}
 	n = ps.arpClient.handle(dst)
@@ -394,44 +393,10 @@ func (ps *PortStack) handleEth(dst []byte) (n int, err error) {
 		return n, nil
 	}
 
-	//i don't know why this is defined within the scope of handleEth
-	type Socket interface {
-		Close()
-		IsPendingHandling() bool
-		 HandleEth(dst []byte) (int, error)
-	}
-	//or why this is an anonymous function is stored in a local variable before invocation  - I can see it narrows scope, but it's an odd pattern and confusing as the code does not run in the order it appears
-	handleSocket := func(dst []byte, sock Socket) (int, bool, error) {
-		
-		//println ("handleSocket called") //@@@REMOVE
-		//note sock is a UDPport or TCPport - things that impliment the Sock interface
-		
-		if !sock.IsPendingHandling() {
-			return 0, false, nil // Nothing to handle, just skip.
-		}
-		// Socket has an unhandled packet.
-		//println ("handleSocket, calling sock.handleEth") //@@@REMOVE
-		n, err := sock.HandleEth(dst)
-		if err == ErrFlagPending {
-			// Special case: Socket may have written data but needs future handling, flagged with the ErrFlagPending error.
-			return n, true, nil
-		}
-		if err != nil {
-			sock.Close()
-			if err == io.EOF {
-				// Special case: If error is EOF we don't return it to caller but we do write the packet if any.
-				err = nil
-			} else {
-				n = 0 // Clear n on unknown error and return error up the call stack.
-			}
-		}
-		return n, sock.IsPendingHandling(), err
-	}
-
 	isDebug := ps.isLogEnabled(slog.LevelDebug)
 	socketPending := false
 	if ps.pendingUDPv4 > 0 {
-		
+
 		for i := range ps.portsUDP {
 			n, pending, err := handleSocket(dst, &ps.portsUDP[i])
 			if pending {
@@ -440,9 +405,9 @@ func (ps *PortStack) handleEth(dst []byte) (n int, err error) {
 			if err != nil {
 				return 0, err
 			} else if n > 0 {
-		
+
 				if isDebug {
-					ps.debug("UDP:send", slog.Int("plen", n))					
+					ps.debug("UDP:send", slog.Int("plen", n))
 				}
 				return n, nil
 			}
@@ -476,6 +441,30 @@ func (ps *PortStack) handleEth(dst []byte) (n int, err error) {
 	return 0, nil // Nothing handled.
 }
 
+func handleSocket(dst []byte, sock socket) (int, bool, error) {
+
+	//note sock is a UDPport or TCPport - things that impliment the Sock interface
+
+	if !sock.IsPendingHandling() {
+		return 0, false, nil // Nothing to handle, just skip.
+	}
+	// Socket has an unhandled packet.
+	n, err := sock.HandleEth(dst)
+	if err == ErrFlagPending {
+		// Special case: Socket may have written data but needs future handling, flagged with the ErrFlagPending error.
+		return n, true, nil
+	}
+	if err != nil {
+		sock.Close()
+		if err == io.EOF {
+			// Special case: If error is EOF we don't return it to caller but we do write the packet if any.
+			err = nil
+		} else {
+			n = 0 // Clear n on unknown error and return error up the call stack.
+		}
+	}
+	return n, sock.IsPendingHandling(), err
+}
 
 // IsPendingHandling checks if a call to HandleEth could possibly result in a packet being generated by the PortStack.
 func (ps *PortStack) IsPendingHandling() bool {

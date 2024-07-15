@@ -227,7 +227,7 @@ func (ehdr EthernetHeader) AssertType() EtherType { return EtherType(ehdr.SizeOr
 
 // Put marshals the ethernet frame onto buf. buf needs to be 14 bytes in length or Put panics.
 func (ehdr *EthernetHeader) Put(buf []byte) {
-	_ = buf[13] 
+	_ = buf[13]
 
 	copy(buf[0:], ehdr.Destination[0:])
 	copy(buf[6:], ehdr.Source[0:])

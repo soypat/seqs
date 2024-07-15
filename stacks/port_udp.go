@@ -17,7 +17,7 @@ type iudphandler interface {
 
 type udpPort struct {
 	handler iudphandler
-	port     uint16
+	port    uint16
 }
 
 func (port udpPort) Port() uint16 { return port.port }
@@ -31,17 +31,16 @@ func (port *udpPort) IsPendingHandling() bool {
 // HandleEth writes the socket's response into dst to be sent over an ethernet interface.
 // HandleEth can return 0 bytes written and a nil error to indicate no action must be taken.
 func (port *udpPort) HandleEth(dst []byte) (int, error) {
-	
-	//println("udpPort.HandleEth: ", string(dst)) //@@@REMOVE
+
 	if port.handler == nil {
 		panic("nil udp handler on port " + strconv.Itoa(int(port.port)))
 	}
-	
+
 	return port.handler.send(dst)
 }
 
-// Open sets the UDP handler and opens the port. 
-// This is effectively a constructor for the port NewUDPPort() - would be an alternative name 
+// Open sets the UDP handler and opens the port.
+// This is effectively a constructor for the port NewUDPPort() - would be an alternative name
 func (port *udpPort) Open(portNum uint16, h iudphandler) {
 	if portNum == 0 || h == nil {
 		panic("invalid port or nil handler" + strconv.Itoa(int(port.port)))

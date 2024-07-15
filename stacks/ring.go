@@ -14,11 +14,11 @@ type ring struct {
 	end int
 }
 
-//writes b[] into the ring buffer at the current write position (r.end)  - wrapping if needed, and increasing r.end (possibly wrapping)
+// Write writes b[] into the ring buffer at the current write position (r.end)  - wrapping if needed, and increasing r.end (possibly wrapping)
 func (r *ring) Write(b []byte) (int, error) {
 
-	//println("wrote ",string(b),"into tx ring buff") //@@@REMOVE
-	
+	//println("wrote ",string(b),"into tx ring buff") //@@@REMOVES
+
 	free := r.Free()
 	if len(b) > free {
 		return 0, errRingBufferFull
@@ -109,7 +109,7 @@ func (r *ring) onReadEnd() {
 		r.off = 0 // Wrap around.
 	}
 	if r.off == r.end {
-		r.Reset() // We read everything, reset.  - why reset - ever ?
+		r.Reset() // We have read everything, reset. (reduces split reads - can get the data in one chunk more often)
 	}
 }
 
