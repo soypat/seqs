@@ -17,8 +17,6 @@ type ring struct {
 // Write writes b[] into the ring buffer at the current write position (r.end)  - wrapping if needed, and increasing r.end (possibly wrapping)
 func (r *ring) Write(b []byte) (int, error) {
 
-	//println("wrote ",string(b),"into tx ring buff") //@@@REMOVES
-
 	free := r.Free()
 	if len(b) > free {
 		return 0, errRingBufferFull

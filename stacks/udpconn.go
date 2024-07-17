@@ -127,7 +127,7 @@ func (u *UDPConn) Read(b []byte) (n int, err error) {
 func (sock *UDPConn) Write(b []byte) (n int, err error) {
 	err = sock.stack.FlagPendingUDP(sock.localPort)
 	if err != nil {
-		panic("flagpending error")
+		return 0, err
 	}
 	return sock.tx.Write(b)
 }
