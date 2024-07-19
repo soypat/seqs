@@ -9,7 +9,7 @@ import (
 	"github.com/soypat/seqs/eth"
 )
 
-// tcphandler represents a user provided function for handling incoming TCP packets on a port.
+// itcphandler represents a user provided function for handling incoming TCP packets on a port.
 // Incoming data is passed in a 'pkt' to the recv function which is invoked whenever data arrives (by RecvEth)
 // Outgoing data is written into the `dst` byte slice (from the tx ring buffer). The function must return the number of
 // bytes written to `response` and an error.
