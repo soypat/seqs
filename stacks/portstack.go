@@ -381,10 +381,10 @@ func (ps *PortStack) HandleEth(dst []byte) (n int, err error) {
 //
 // If a handler returns any other error the port is closed.
 func (ps *PortStack) handleEth(dst []byte) (n int, err error) {
-
 	switch {
 	case len(dst) < int(ps.mtu):
 		return 0, io.ErrShortBuffer
+
 	case !ps.IsPendingHandling():
 		return 0, nil // No remaining packets to handle.
 	}

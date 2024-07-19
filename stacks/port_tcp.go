@@ -9,17 +9,14 @@ import (
 	"github.com/soypat/seqs/eth"
 )
 
-
 // tcphandler represents a user provided function for handling incoming TCP packets on a port.
 // Incoming data is passed in a 'pkt' to the recv function which is invoked whenever data arrives (by RecvEth)
 // Outgoing data is written into the `dst` byte slice (from the tx ring buffer). The function must return the number of
 // bytes written to `response` and an error.
 // TCPConn provides an implemntation of this interface - note .send is ONLY called by HandleEth
-
-
 // See [PortStack] for information on how to use this function and other port handlers.
-// note TCPConn is our implementation of this interface 
-type itcphandler interface {  
+// note TCPConn is our implementation of this interface
+type itcphandler interface {
 	send(dst []byte) (n int, err error)
 	recv(pkt *TCPPacket) error
 	// needsHandling() bool
@@ -197,7 +194,7 @@ func (pkt *TCPPacket) CalculateHeaders(seg seqs.Segment, payload []byte) {
 	pkt.TCP.Checksum = pkt.TCP.CalculateChecksumIPv4(&pkt.IP, nil, payload)
 }
 
-func (pkt *UDPPacket) CalculateHeaders( payload []byte) {
+func (pkt *UDPPacket) CalculateHeaders(payload []byte) {
 	const ipLenInWords = 5
 	pkt.Eth.SizeOrEtherType = uint16(eth.EtherTypeIPv4)
 
@@ -210,16 +207,15 @@ func (pkt *UDPPacket) CalculateHeaders( payload []byte) {
 	// TODO(soypat): Document how to handle ToS. For now just use ToS used by other side.
 	pkt.IP.Flags = 0 // packet.IP.ToS = 0
 	pkt.IP.Checksum = pkt.IP.CalculateChecksum()
-	
+
 	pkt.UDP = eth.UDPHeader{
 		SourcePort:      pkt.UDP.SourcePort,
 		DestinationPort: pkt.UDP.DestinationPort,
-		Checksum : pkt.UDP.CalculateChecksumIPv4(&pkt.IP,  payload),
-		Length: uint16(len(payload)+8),		
+		Checksum:        pkt.UDP.CalculateChecksumIPv4(&pkt.IP, payload),
+		Length:          uint16(len(payload) + 8),
 	}
-	
-}
 
+}
 
 // prand16 generates a pseudo random number from a seed.
 func prand16(seed uint16) uint16 {

@@ -16,7 +16,6 @@ type ring struct {
 
 // Write writes b[] into the ring buffer at the current write position (r.end)  - wrapping if needed, and increasing r.end (possibly wrapping)
 func (r *ring) Write(b []byte) (int, error) {
-
 	free := r.Free()
 	if len(b) > free {
 		return 0, errRingBufferFull
@@ -112,7 +111,6 @@ func (r *ring) onReadEnd() {
 }
 
 func max(a, b int) int {
-
 	if a > b {
 		return a
 	}

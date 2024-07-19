@@ -26,7 +26,6 @@ const (
 
 // TCPConn is a userspace implementation of a TCP connection intended for use with PortStack
 // though is purposefully loosely coupled. It implements [net.Conn].
-
 type TCPConn struct {
 	stack  *PortStack
 	rdead  time.Time
