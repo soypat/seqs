@@ -156,7 +156,7 @@ func (sock *UDPConn) FlushOutputBuffer() error {
 	return nil
 }
 
-// Write writes into the underlying tx ring buffer - calls to the portStacks handleEth() will send the (queued) data
+// Write writes into the underlying tx ring buffer - calls to the portStacks [PortStack.PutOutboundEth] will send the (queued) data
 func (sock *UDPConn) Write(b []byte) (int, error) {
 	err := sock.checkPipeClosed()
 	if err != nil {
@@ -246,8 +246,8 @@ func (sock *UDPConn) SetWriteDeadline(t time.Time) error {
 	return nil
 }
 
-// recv takes (the contents of ) a packet it and puts it in the RX ring buffer
-func (sock *UDPConn) recv(pkt *UDPPacket) (err error) {
+// recvEth implements the [iudphandler] interface.
+func (sock *UDPConn) recvEth(pkt *UDPPacket) (err error) {
 	sock.trace("UDP.recv:start")
 	if sock.closing {
 		return io.EOF
@@ -265,8 +265,8 @@ func (sock *UDPConn) recv(pkt *UDPPacket) (err error) {
 	return err //which is hopefully nil - but could be errRingBufferFull
 }
 
-// send - this handler is called regularly by the underlying stack (HandleEth) and populates response[] from the TX ring buffer, with data to be sent as a packet
-func (sock *UDPConn) send(response []byte) (n int, err error) {
+// putOutboundEth implements the [iudphandler] interface.
+func (sock *UDPConn) putOutboundEth(response []byte) (n int, err error) {
 	sock.trace("UDPConn.send:start")
 	if !sock.remote.IsValid() {
 		return 0, nil // No remote address yet, yield.

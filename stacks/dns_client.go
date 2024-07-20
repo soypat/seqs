@@ -68,7 +68,8 @@ func (dnsc *DNSClient) StartResolve(cfg DNSResolveConfig) error {
 	return nil
 }
 
-func (dnsc *DNSClient) send(dst []byte) (n int, err error) {
+// putOutboundEth implements [iudphandler] interface.
+func (dnsc *DNSClient) putOutboundEth(dst []byte) (n int, err error) {
 	if dnsc.state == dnsAborted {
 		return 0, io.EOF
 	} else if dnsc.state != dnsSendQuery {
@@ -101,7 +102,8 @@ func (dnsc *DNSClient) send(dst []byte) (n int, err error) {
 	return payloadOffset + int(msgLen), nil
 }
 
-func (dnsc *DNSClient) recv(pkt *UDPPacket) error {
+// recvEth implements the [iudphandler] interface.
+func (dnsc *DNSClient) recvEth(pkt *UDPPacket) error {
 	if dnsc.state == dnsAborted {
 		return io.EOF
 	} else if dnsc.state != dnsAwaitResponse {

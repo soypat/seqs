@@ -828,7 +828,7 @@ func (egr *Exchanger) HandleTx(t *testing.T) (pkts, bytesSent int) {
 	var err error
 	for istack := 0; istack < len(egr.Stacks); istack++ {
 		// This first for loop generates packets "in-flight" contained in `pipes` data structure.
-		egr.pipesN[istack], err = egr.Stacks[istack].HandleEth(egr.pipes[istack][:])
+		egr.pipesN[istack], err = egr.Stacks[istack].PutOutboundEth(egr.pipes[istack][:])
 		egr.handleErr(t, err, "send", istack)
 		bytesSent += egr.pipesN[istack]
 		if egr.pipesN[istack] > 0 {
@@ -1025,7 +1025,7 @@ func checkNoMoreDataSent(t *testing.T, msg string, egr *Exchanger) {
 	handleTx := func() (newTxs int) {
 		txOld := txs
 		for istack := 0; istack < len(egr.Stacks); istack++ {
-			n, _ := egr.Stacks[istack].HandleEth(buf)
+			n, _ := egr.Stacks[istack].PutOutboundEth(buf)
 			if n > 0 {
 				txs++
 				data += n

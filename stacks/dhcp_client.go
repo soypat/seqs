@@ -243,7 +243,8 @@ func getDefaultParams() []byte {
 	return unsafe.Slice((*byte)(unsafe.Pointer(ptr)), len(dhcpDefaultParamReqList))
 }
 
-func (d *DHCPClient) send(dst []byte) (n int, err error) {
+// putOutboundEth implements [iudphandler] interface.
+func (d *DHCPClient) putOutboundEth(dst []byte) (n int, err error) {
 	if d.isAborted() {
 		return 0, io.EOF
 	} else if !d.isPendingHandling() {
@@ -340,7 +341,8 @@ func (d *DHCPClient) send(dst []byte) (n int, err error) {
 	return ptr, nil
 }
 
-func (d *DHCPClient) recv(pkt *UDPPacket) (err error) {
+// recvEth implements [iudphandler] interface.
+func (d *DHCPClient) recvEth(pkt *UDPPacket) (err error) {
 	if d.isAborted() {
 		return io.EOF
 	}

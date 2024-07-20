@@ -8,8 +8,11 @@ import (
 )
 
 type iudphandler interface {
-	send(dst []byte) (n int, err error)
-	recv(pkt *UDPPacket) error
+	// putOutboundEth is called by the underlying stack [PortStack.PutOutboundEth] method and populates
+	// response from the TX ring buffer, with data to be sent as a packet and returns n bytes written.
+	// See [PortStack] for more information.
+	putOutboundEth(response []byte) (n int, err error)
+	recvEth(pkt *UDPPacket) error
 	// needsHandling() bool
 	isPendingHandling() bool
 	abort()
@@ -28,15 +31,15 @@ func (port *udpPort) IsPendingHandling() bool {
 	return port.port != 0 && port.handler.isPendingHandling()
 }
 
-// HandleEth writes the socket's response into dst to be sent over an ethernet interface.
-// HandleEth can return 0 bytes written and a nil error to indicate no action must be taken.
-func (port *udpPort) HandleEth(dst []byte) (int, error) {
+// PutOutboundEth writes the socket's response into dst to be sent over an ethernet interface.
+// PutOutboundEth can return 0 bytes written and a nil error to indicate no action must be taken.
+func (port *udpPort) PutOutboundEth(dst []byte) (int, error) {
 
 	if port.handler == nil {
 		panic("nil udp handler on port " + strconv.Itoa(int(port.port)))
 	}
 
-	return port.handler.send(dst)
+	return port.handler.putOutboundEth(dst)
 }
 
 // Open sets the UDP handler and opens the port.

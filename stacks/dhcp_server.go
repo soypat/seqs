@@ -45,7 +45,8 @@ func (d *DHCPServer) Start() error {
 	return d.stack.OpenUDP(d.port, d)
 }
 
-func (d *DHCPServer) recv(pkt *UDPPacket) (err error) {
+// recvEth implements [iudphandler] interface.
+func (d *DHCPServer) recvEth(pkt *UDPPacket) (err error) {
 	if d.isAborted() {
 		return io.EOF // Signal to close socket.
 	}
@@ -57,7 +58,8 @@ func (d *DHCPServer) recv(pkt *UDPPacket) (err error) {
 	return nil
 }
 
-func (d *DHCPServer) send(dst []byte) (int, error) {
+// putOutboundEth implements [iudphandler] interface.
+func (d *DHCPServer) putOutboundEth(dst []byte) (int, error) {
 	if d.isAborted() {
 		return 0, io.EOF // Signal to close socket.
 	}

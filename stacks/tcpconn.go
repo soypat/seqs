@@ -332,8 +332,8 @@ func (sock *TCPConn) checkPipeOpen() error {
 	return nil
 }
 
-// recv is called by the PortStack.RecvEth when a packet is received on the network interface, pkt is (a pointer to) the arrived packet.
-func (sock *TCPConn) recv(pkt *TCPPacket) (err error) {
+// recvEth implements the [itcphandler] interface.
+func (sock *TCPConn) recvEth(pkt *TCPPacket) (err error) {
 	sock.trace("TCPConn.recv:start")
 	prevState := sock.scb.State()
 	if prevState.IsClosed() {
@@ -382,8 +382,8 @@ func (sock *TCPConn) recv(pkt *TCPPacket) (err error) {
 	return err
 }
 
-// Send this handler is called by the underlying stack and populates response[] from the TX ring buffer, with data to be sent as a packet
-func (sock *TCPConn) send(response []byte) (n int, err error) {
+// Send this handler is called by the underlying stack [PortStack.PutOutboundEth] method and populates response[] from the TX ring buffer, with data to be sent as a packet
+func (sock *TCPConn) putOutboundEth(response []byte) (n int, err error) {
 	defer sock.trace("TCPConn.send:start")
 	if !sock.remote.IsValid() {
 		return 0, nil // No remote address yet, yield.

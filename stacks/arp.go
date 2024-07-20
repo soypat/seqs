@@ -95,7 +95,8 @@ func (c *arpClient) pendingOutReqARPv4() bool {
 	return c.result.Operation == 1 // User asked for a ARP request.
 }
 
-func (c *arpClient) handle(dst []byte) (n int) {
+// putOutboundEth implements [iudphandler] interface.
+func (c *arpClient) putOutboundEth(dst []byte) (n int) {
 	pendingOutReq := c.pendingOutReqARPv4()
 	switch {
 	case pendingOutReq:
@@ -131,7 +132,8 @@ func (c *arpClient) handle(dst []byte) (n int) {
 	return n
 }
 
-func (c *arpClient) recv(ahdr *eth.ARPv4Header) error {
+// recvEth implements [iudphandler] interface.
+func (c *arpClient) recvEth(ahdr *eth.ARPv4Header) error {
 	if ahdr.HardwareLength != 6 || ahdr.ProtoLength != 4 || ahdr.HardwareType != 1 || ahdr.AssertEtherType() != eth.EtherTypeIPv4 {
 		return errARPUnsupported // Ignore ARP unsupported requests.
 	}
