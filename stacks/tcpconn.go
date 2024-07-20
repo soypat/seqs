@@ -62,8 +62,8 @@ func NewTCPConn(stack *PortStack, cfg TCPConnConfig) (*TCPConn, error) {
 	if cfg.TxBufSize == 0 {
 		cfg.TxBufSize = defaultSocketSize
 	}
-	buf := make([]byte, cfg.RxBufSize+cfg.TxBufSize)
-	sock := makeTCPConn(stack, buf[:cfg.TxBufSize], buf[cfg.TxBufSize:cfg.TxBufSize+cfg.RxBufSize])
+	tx, rx := contiguous2Bufs(int(cfg.TxBufSize), int(cfg.RxBufSize))
+	sock := makeTCPConn(stack, tx, rx)
 	sock.trace("NewTCPConn:end")
 	return &sock, nil
 }
@@ -273,6 +273,7 @@ func (sock *TCPConn) openstack(state seqs.State, localPortNum uint16, iss seqs.V
 	}
 	err = sock.open(state, localPortNum, iss, remoteMAC, remoteAddr)
 	if err != nil {
+		// On failure ensure PortStack socket is released to avoid leak.
 		sock.stack.CloseTCP(localPortNum)
 	}
 	return err

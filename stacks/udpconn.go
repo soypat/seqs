@@ -6,13 +6,16 @@ package stacks
 
 import (
 	"errors"
-	"github.com/soypat/seqs/eth"
-	"github.com/soypat/seqs/internal"
 	"io"
 	"log/slog"
 	"net"
 	"net/netip"
+	"os"
+	"runtime"
 	"time"
+
+	"github.com/soypat/seqs/eth"
+	"github.com/soypat/seqs/internal"
 )
 
 var _ net.Conn = &UDPConn{} //net.conn is part of the standard go library - it's an interface we must implement
@@ -38,6 +41,10 @@ type UDPConn struct {
 	localPort    uint16
 	remoteMAC    [6]byte //this is a local peer - OR the ROUTER/Gateways mac address
 	raddr, laddr net.UDPAddr
+	// Read and Write deadlines.
+	rdeadline, wdeadline time.Time
+	connid               uint8
+	closing              bool
 }
 
 // this is an identical structure to TCPConnConfig - but I didn't want to change the original name without discussions
@@ -55,9 +62,8 @@ func NewUDPConn(stack *PortStack, cfg UDPConnConfig) (*UDPConn, error) {
 		cfg.TxBufSize = defaultUDPbuffSize
 	}
 
-	buf := make([]byte, cfg.RxBufSize+cfg.TxBufSize) //I guess slicing this single buffer is a heap allocation optimisation or something - but I'm not really a fan TX and RX buffers would be a lot more readable
-
-	sock := makeUDPConn(stack, buf[:cfg.TxBufSize], buf[cfg.TxBufSize:cfg.TxBufSize+cfg.RxBufSize])
+	tx, rx := contiguous2Bufs(int(cfg.TxBufSize), int(cfg.RxBufSize))
+	sock := makeUDPConn(stack, tx, rx)
 	sock.trace("NewUDPConn:end")
 	return &sock, nil
 
@@ -73,77 +79,147 @@ func makeUDPConn(stack *PortStack, tx, rx []byte) UDPConn {
 
 // OpenDialUDP won't really do anything - other than choose a local outbound port) ???
 func (sock *UDPConn) OpenDialUDP(localPort uint16, remoteMAC [6]byte, remote netip.AddrPort) error {
-
+	if !remote.IsValid() {
+		return errors.New("invalid netip.AddrPort")
+	}
 	sock.trace("UDPConn.OpenDialUDP:start")
-	return sock.openstack(localPort, remoteMAC, remote)
-
-}
-
-func (sock *UDPConn) openstack(localPortNum uint16, remoteMAC [6]byte, remote netip.AddrPort) error { //}, iss seqs.Value, remoteMAC [6]byte, remoteAddr netip.AddrPort) error {
-
-	sock.stack.OpenUDP(localPortNum, sock)
-	err := sock.open(localPortNum, remoteMAC, remote)
-
-	return err
-
-}
-
-func (sock *UDPConn) open(localPortNum uint16, remoteMAC [6]byte, remoteAddr netip.AddrPort) error {
-
+	err := sock.stack.OpenUDP(localPort, sock)
+	if err != nil {
+		return err
+	}
+	sock.closing = false
+	sock.connid++
 	sock.remoteMAC = remoteMAC //this is our router/gateway MAC address - we never get to know the remote MAC address (that would be a security issue)
-	sock.remote = remoteAddr
-	sock.localPort = localPortNum
+	sock.remote = remote
+	sock.localPort = localPort
 	sock.rx.Reset()
 	sock.tx.Reset()
-
 	return nil
 }
 
-func (u *UDPConn) abort() {
-	// There is no connection per se to abort
-}
-
-func (u *UDPConn) SetReadDeadline(t time.Time) error {
-	return errors.ErrUnsupported
-}
-
-func (u *UDPConn) SetWriteDeadline(t time.Time) error {
-	return errors.ErrUnsupported
+// abort deletes connection state and fails all pending Read/Write calls.
+func (sock *UDPConn) abort() {
+	sock.rx.Reset()
+	sock.tx.Reset()
+	*sock = UDPConn{
+		stack:  sock.stack,
+		tx:     sock.tx,
+		rx:     sock.tx,
+		connid: sock.connid + 1,
+	}
 }
 
 func (sock *UDPConn) isPendingHandling() bool {
-
 	// much simpler than TCP - may need expanding??
-	return (sock.tx.Buffered() > 0) || (sock.rx.Buffered() > 0)
-
+	return sock.closing || sock.tx.Buffered() > 0
 }
 
 // Read reads from the underlying RX ring buffer, throws an EOF error if no data is available
-func (u *UDPConn) Read(b []byte) (n int, err error) {
-	return u.rx.Read(b) //read from the rx ring buffer into b
+func (sock *UDPConn) Read(b []byte) (int, error) {
+	err := sock.checkPipeClosed()
+	if err != nil {
+		return 0, err
+	}
+	connid := sock.connid
+	backoff := internal.NewBackoff(internal.BackoffHasPriority)
+	for sock.rx.Buffered() == 0 {
+		if connid != sock.connid {
+			return 0, net.ErrClosed
+		} else if !sock.wdeadline.IsZero() && time.Since(sock.wdeadline) > 0 {
+			return 0, os.ErrDeadlineExceeded
+		}
+		backoff.Miss()
+	}
+	return sock.rx.Read(b) //read from the rx ring buffer into b
+}
+
+func (sock *UDPConn) BufferedInput() int {
+	if sock.closing || sock.localPort == 0 {
+		return 0
+	}
+	return sock.rx.Buffered()
+}
+
+func (sock *UDPConn) FlushOutputBuffer() error {
+	sock.trace("UDPConn.FlushOutputBuffer:start")
+	if err := sock.checkPipeClosed(); err != nil {
+		return err
+	}
+	backoff := internal.NewBackoff(internal.BackoffHasPriority)
+	connid := sock.connid
+	for sock.tx.Buffered() > 0 {
+		backoff.Miss()
+		if connid != sock.connid {
+			return net.ErrClosed
+		}
+	}
+	return nil
 }
 
 // Write writes into the underlying tx ring buffer - calls to the portStacks handleEth() will send the (queued) data
-func (sock *UDPConn) Write(b []byte) (n int, err error) {
+func (sock *UDPConn) Write(b []byte) (int, error) {
+	err := sock.checkPipeClosed()
+	if err != nil {
+		return 0, err
+	}
 	err = sock.stack.FlagPendingUDP(sock.localPort)
 	if err != nil {
 		return 0, err
 	}
-	return sock.tx.Write(b)
+	connid := sock.connid
+	totalLen := len(b)
+	backoff := internal.NewBackoff(internal.BackoffHasPriority)
+
+	for {
+		if connid != sock.connid {
+			// Important check before writing to buffer- maybe connection was aborted during sleep.
+			return totalLen - len(b), net.ErrClosed
+		}
+		n, _ := sock.tx.Write(b)
+		b = b[n:]
+		if len(b) == 0 {
+			break
+		}
+		if n == 0 && !sock.wdeadline.IsZero() && time.Since(sock.wdeadline) > 0 {
+			return totalLen - len(b), os.ErrDeadlineExceeded
+		} else if n == 0 {
+			backoff.Miss()
+		} else {
+			backoff.Hit()
+			runtime.Gosched()
+		}
+		err = sock.stack.FlagPendingUDP(sock.localPort)
+		if err != nil {
+			return totalLen - len(b), err
+		}
+	}
+	return totalLen, nil
 }
 
-func (u *UDPConn) Close() error {
-	return u.stack.CloseUDP(u.localPort)
+func (sock *UDPConn) Close() error {
+	if sock.localPort == 0 {
+		return net.ErrClosed
+	}
+	sock.closing = true
+	sock.stack.FlagPendingUDP(sock.localPort)
+	return nil
+}
+
+func (sock *UDPConn) checkPipeClosed() error {
+	if sock.closing {
+		return io.EOF
+	} else if sock.localPort == 0 {
+		return net.ErrClosed
+	}
+	return nil
 }
 
 func (sock *UDPConn) LocalAddr() net.Addr {
-
 	sock.laddr = net.UDPAddr{
 		IP:   sock.stack.ip[:],
 		Port: int(sock.localPort),
 	}
 	return &sock.laddr
-
 }
 
 func (sock *UDPConn) RemoteAddr() net.Addr {
@@ -154,17 +230,28 @@ func (sock *UDPConn) RemoteAddr() net.Addr {
 	return &sock.raddr
 }
 
-func (u *UDPConn) SetDeadline(t time.Time) error {
-	return errors.ErrUnsupported
+func (sock *UDPConn) SetDeadline(t time.Time) error {
+	sock.SetReadDeadline(t)
+	sock.SetWriteDeadline(t)
+	return nil
 }
 
-func (sock *UDPConn) trace(msg string, attrs ...slog.Attr) {
-	internal.LogAttrs(sock.stack.logger, internal.LevelTrace, msg, attrs...)
+func (sock *UDPConn) SetReadDeadline(t time.Time) error {
+	sock.rdeadline = t
+	return nil
+}
+
+func (sock *UDPConn) SetWriteDeadline(t time.Time) error {
+	sock.wdeadline = t
+	return nil
 }
 
 // recv takes (the contents of ) a packet it and puts it in the RX ring buffer
 func (sock *UDPConn) recv(pkt *UDPPacket) (err error) {
 	sock.trace("UDP.recv:start")
+	if sock.closing {
+		return io.EOF
+	}
 
 	remotePort := sock.remote.Port()
 	if remotePort != 0 && pkt.UDP.SourcePort != remotePort {
@@ -180,9 +267,7 @@ func (sock *UDPConn) recv(pkt *UDPPacket) (err error) {
 
 // send - this handler is called regularly by the underlying stack (HandleEth) and populates response[] from the TX ring buffer, with data to be sent as a packet
 func (sock *UDPConn) send(response []byte) (n int, err error) {
-
 	sock.trace("UDPConn.send:start")
-
 	if !sock.remote.IsValid() {
 		return 0, nil // No remote address yet, yield.
 	}
@@ -216,4 +301,8 @@ func (sock *UDPConn) setSrcDest(pkt *UDPPacket) {
 	pkt.IP.Destination = sock.remote.Addr().As4()
 	pkt.UDP.DestinationPort = sock.remote.Port()
 	pkt.Eth.Destination = sock.remoteMAC
+}
+
+func (sock *UDPConn) trace(msg string, attrs ...slog.Attr) {
+	internal.LogAttrs(sock.stack.logger, internal.LevelTrace, msg, attrs...)
 }

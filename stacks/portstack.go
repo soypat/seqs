@@ -162,9 +162,9 @@ func (ps *PortStack) MTU() uint16 { return ps.mtu }
 func (ps *PortStack) HardwareAddr6() [6]byte { return ps.mac }
 
 // RecvEth validates an ethernet+ipv4 frame in payload. If it is OK then it
-// defers response handling of the packets during a call to [Stack.HandleEth].
+// defers response handling of the packets during a call to [PortStack.HandleEth].
 //
-// If [Stack.HandleEth] is not called often enough prevent packet queue from
+// If [PortStack.HandleEth] is not called often enough prevent packet queue from
 // filling up on a socket RecvEth will start to return [ErrDroppedPacket].
 func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 	// defer ps.trace("RecvEth:end")
@@ -359,12 +359,18 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 	return err
 }
 
+// HandleEth searches for a socket with a pending packet and writes the response
+// into the dst argument. The length written to dst is returned.
+// [ErrFlagPending] can be returned by value by a handler to indicate the packet was
+// not processed and that a future call to HandleEth is required to complete.
+//
+// If a handler returns any other error the port is closed.
 func (ps *PortStack) HandleEth(dst []byte) (n int, err error) {
 	isTrace := ps.isLogEnabled(internal.LevelTrace)
 	n, err = ps.handleEth(dst)
 	if n > 0 && err == nil {
 		if isTrace {
-			ps.trace("Stack:	HandleEth", slog.Int("plen", n))
+			ps.trace("Stack:HandleEth", slog.Int("plen", n))
 		}
 		ps.lastTx = ps.now()
 		ps.processedPackets++
@@ -374,12 +380,6 @@ func (ps *PortStack) HandleEth(dst []byte) (n int, err error) {
 	return n, err
 }
 
-// HandleEth searches for a socket with a pending packet and writes the response
-// into the dst argument. The length written to dst is returned.
-// [ErrFlagPending] can be returned by value by a handler to indicate the packet was
-// not processed and that a future call to HandleEth is required to complete.
-//
-// If a handler returns any other error the port is closed.
 func (ps *PortStack) handleEth(dst []byte) (n int, err error) {
 	switch {
 	case len(dst) < int(ps.mtu):
@@ -442,9 +442,7 @@ func (ps *PortStack) handleEth(dst []byte) (n int, err error) {
 }
 
 func handleSocket(dst []byte, sock socket) (int, bool, error) {
-
 	//note sock is a UDPport or TCPport - things that impliment the Sock interface
-
 	if !sock.IsPendingHandling() {
 		return 0, false, nil // Nothing to handle, just skip.
 	}
@@ -641,4 +639,12 @@ func bytesAttr(name string, b []byte) slog.Attr {
 		Key:   name,
 		Value: slog.StringValue(string(b)),
 	}
+}
+
+func contiguous2Bufs(b1, b2 int) ([]byte, []byte) {
+	buf := make([]byte, b1+b2)
+	// make sure first buffer's capacity does not bleed into second buffer to avoid append interference.
+	buf1 := buf[:b1:b1]
+	buf2 := buf[b1 : b1+b2]
+	return buf1, buf2
 }
