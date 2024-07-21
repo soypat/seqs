@@ -97,6 +97,10 @@ func (sock *UDPConn) OpenDialUDP(localPort uint16, remoteMAC [6]byte, remote net
 	return nil
 }
 
+func (sock *UDPConn) PortStack() *PortStack {
+	return sock.stack
+}
+
 // abort deletes connection state and fails all pending Read/Write calls.
 func (sock *UDPConn) abort() {
 	sock.rx.Reset()

@@ -198,29 +198,6 @@ func (pkt *TCPPacket) CalculateHeaders(seg seqs.Segment, payload []byte) {
 	pkt.TCP.Checksum = pkt.TCP.CalculateChecksumIPv4(&pkt.IP, nil, payload)
 }
 
-func (pkt *UDPPacket) CalculateHeaders(payload []byte) {
-	const ipLenInWords = 5
-	pkt.Eth.SizeOrEtherType = uint16(eth.EtherTypeIPv4)
-
-	// IPv4 frame.
-	pkt.IP.Protocol = 17 // UDP
-	pkt.IP.TTL = 64
-	pkt.IP.ID = prand16(pkt.IP.ID)
-	pkt.IP.VersionAndIHL = ipLenInWords // Sets IHL: No IP options. Version set automatically.
-	pkt.IP.TotalLength = 4*ipLenInWords + eth.SizeUDPHeader + uint16(len(payload))
-	// TODO(soypat): Document how to handle ToS. For now just use ToS used by other side.
-	pkt.IP.Flags = 0 // packet.IP.ToS = 0
-	pkt.IP.Checksum = pkt.IP.CalculateChecksum()
-
-	pkt.UDP = eth.UDPHeader{
-		SourcePort:      pkt.UDP.SourcePort,
-		DestinationPort: pkt.UDP.DestinationPort,
-		Checksum:        pkt.UDP.CalculateChecksumIPv4(&pkt.IP, payload),
-		Length:          uint16(len(payload) + 8),
-	}
-
-}
-
 // prand16 generates a pseudo random number from a seed.
 func prand16(seed uint16) uint16 {
 	// 16bit Xorshift  https://en.wikipedia.org/wiki/Xorshift
