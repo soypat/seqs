@@ -228,6 +228,7 @@ func (ehdr EthernetHeader) AssertType() EtherType { return EtherType(ehdr.SizeOr
 // Put marshals the ethernet frame onto buf. buf needs to be 14 bytes in length or Put panics.
 func (ehdr *EthernetHeader) Put(buf []byte) {
 	_ = buf[13]
+
 	copy(buf[0:], ehdr.Destination[0:])
 	copy(buf[6:], ehdr.Source[0:])
 	binary.BigEndian.PutUint16(buf[12:14], ehdr.SizeOrEtherType)
@@ -256,7 +257,7 @@ func (ehdr *EthernetHeader) String() string {
 
 // IHL returns the internet header length in 32bit words and is guaranteed to be within 0..15.
 // Valid values for IHL are 5..15. When multiplied by 4 this yields number of bytes of the header, 20..60.
-func (iphdr *IPv4Header) IHL() uint8     { return iphdr.VersionAndIHL & 0xf }
+func (iphdr *IPv4Header) IHL() uint8     { return iphdr.VersionAndIHL & 0xf } //low four bits
 func (iphdr *IPv4Header) Version() uint8 { return iphdr.VersionAndIHL >> 4 }
 func (iphdr *IPv4Header) DSCP() uint8    { return iphdr.ToS >> 2 }
 func (iphdr *IPv4Header) ECN() uint8     { return iphdr.ToS & 0b11 }

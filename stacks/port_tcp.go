@@ -9,15 +9,20 @@ import (
 	"github.com/soypat/seqs/eth"
 )
 
-// tcphandler represents a user provided function for handling incoming TCP packets on a port.
-// Incoming data is sent inside the `pkt` TCPPacket argument when pkt.HasPacket returns true.
-// Outgoing data is stored into the `response` byte slice. The function must return the number of
+// itcphandler represents a user provided function for handling incoming TCP packets on a port.
+// Incoming data is passed in a 'pkt' to the recv function which is invoked whenever data arrives (by [PortStack.RecvEth])
+// Outgoing data is written into the `dst` byte slice (from the tx ring buffer). The function must return the number of
 // bytes written to `response` and an error.
-//
+// TCPConn provides an implemntation of this interface - note .send is ONLY called by [PortStack.PutOutboundEth]
 // See [PortStack] for information on how to use this function and other port handlers.
+// Note [TCPConn] is our implementation of this interface
 type itcphandler interface {
-	send(dst []byte) (n int, err error)
-	recv(pkt *TCPPacket) error
+	// putOutboundEth is called by the underlying stack [PortStack.PutOutboundEth] method and populates
+	// response from the TX ring buffer, with data to be sent as a packet and returns n bytes written.
+	// See [PortStack] for more information.
+	putOutboundEth(response []byte) (n int, err error)
+	// recvEth called by the [PortStack.RecvEth] method when a packet is received on the network interface, pkt is (a pointer to) the arrived packet.
+	recvEth(pkt *TCPPacket) error
 	// needsHandling() bool
 	isPendingHandling() bool
 	abort()
@@ -36,14 +41,14 @@ func (port *tcpPort) IsPendingHandling() bool {
 	return port.port != 0 && port.handler.isPendingHandling()
 }
 
-// HandleEth writes the socket's response into dst to be sent over an ethernet interface.
-// HandleEth can return 0 bytes written and a nil error to indicate no action must be taken.
-func (port *tcpPort) HandleEth(dst []byte) (n int, err error) {
+// PutOutboundEth writes the socket's response into dst to be sent over an ethernet interface.
+// PutOutboundEth can return 0 bytes written and a nil error to indicate no action must be taken.
+func (port *tcpPort) PutOutboundEth(dst []byte) (n int, err error) {
 	if port.handler == nil {
 		panic("nil tcp handler on port " + strconv.Itoa(int(port.port)))
 	}
 
-	n, err = port.handler.send(dst)
+	n, err = port.handler.putOutboundEth(dst)
 	port.p = false
 	if err == ErrFlagPending {
 		port.p = true
@@ -51,7 +56,7 @@ func (port *tcpPort) HandleEth(dst []byte) (n int, err error) {
 	return n, err
 }
 
-// Open sets the UDP handler and opens the port.
+// Open sets the TCP handler and opens the port.
 func (port *tcpPort) Open(portNum uint16, handler itcphandler) {
 	if portNum == 0 || handler == nil {
 		panic("invalid port or nil handler" + strconv.Itoa(int(port.port)))

@@ -39,7 +39,7 @@ type TCPConn struct {
 	// remote is the IP+port address of remote.
 	remote    netip.AddrPort
 	localPort uint16
-	remoteMAC [6]byte
+	remoteMAC [6]byte //this is the local peer's MAC address (or often, that of the router/gateway for Internet traffic)
 	abortErr  error
 	closing   bool
 	// connid is a conenction counter that is incremented each time a new
@@ -62,8 +62,8 @@ func NewTCPConn(stack *PortStack, cfg TCPConnConfig) (*TCPConn, error) {
 	if cfg.TxBufSize == 0 {
 		cfg.TxBufSize = defaultSocketSize
 	}
-	buf := make([]byte, cfg.RxBufSize+cfg.TxBufSize)
-	sock := makeTCPConn(stack, buf[:cfg.TxBufSize], buf[cfg.TxBufSize:cfg.TxBufSize+cfg.RxBufSize])
+	tx, rx := contiguous2Bufs(int(cfg.TxBufSize), int(cfg.RxBufSize))
+	sock := makeTCPConn(stack, tx, rx)
 	sock.trace("NewTCPConn:end")
 	return &sock, nil
 }
@@ -160,8 +160,8 @@ func (sock *TCPConn) Write(b []byte) (n int, _ error) {
 	}
 }
 
-// Read reads data from the socket's input buffer. If the buffer is empty,
-// Read will block until data is available.
+// Read reads data from the socket's input (RX) (ring) buffer... populating b[]..
+// If the rx buffer is empty, Read will block until data is available.
 func (sock *TCPConn) Read(b []byte) (int, error) {
 	err := sock.checkPipeOpen()
 	if err != nil {
@@ -273,6 +273,7 @@ func (sock *TCPConn) openstack(state seqs.State, localPortNum uint16, iss seqs.V
 	}
 	err = sock.open(state, localPortNum, iss, remoteMAC, remoteAddr)
 	if err != nil {
+		// On failure ensure PortStack socket is released to avoid leak.
 		sock.stack.CloseTCP(localPortNum)
 	}
 	return err
@@ -331,7 +332,8 @@ func (sock *TCPConn) checkPipeOpen() error {
 	return nil
 }
 
-func (sock *TCPConn) recv(pkt *TCPPacket) (err error) {
+// recvEth implements the [itcphandler] interface.
+func (sock *TCPConn) recvEth(pkt *TCPPacket) (err error) {
 	sock.trace("TCPConn.recv:start")
 	prevState := sock.scb.State()
 	if prevState.IsClosed() {
@@ -380,7 +382,8 @@ func (sock *TCPConn) recv(pkt *TCPPacket) (err error) {
 	return err
 }
 
-func (sock *TCPConn) send(response []byte) (n int, err error) {
+// Send this handler is called by the underlying stack [PortStack.PutOutboundEth] method and populates response[] from the TX ring buffer, with data to be sent as a packet
+func (sock *TCPConn) putOutboundEth(response []byte) (n int, err error) {
 	defer sock.trace("TCPConn.send:start")
 	if !sock.remote.IsValid() {
 		return 0, nil // No remote address yet, yield.
@@ -414,14 +417,15 @@ func (sock *TCPConn) send(response []byte) (n int, err error) {
 	var payload []byte
 	if available > 0 {
 		payload = response[sizeTCPNoOptions : sizeTCPNoOptions+seg.DATALEN]
+		//we are reading out of the TX ring buffer, data to encapsulate and send
 		n, err = sock.tx.Read(payload)
 		if err != nil && err != io.EOF || n != int(seg.DATALEN) {
-			panic("bug in handleUser") // This is a bug in ring buffer or a race condition.
+			panic("unexpected condition in seqs.TCPConn.send") // This is a bug in ring buffer or a race condition.
 		}
 	}
 	sock.setSrcDest(&sock.pkt)
 	sock.pkt.CalculateHeaders(seg, payload)
-	sock.pkt.PutHeaders(response)
+	sock.pkt.PutHeaders(response) //puts the headers in the response bytes array (around the payload)
 	if prevState != sock.scb.State() {
 		sock.info("TCP:tx-statechange", slog.Uint64("port", uint64(sock.localPort)), slog.String("old", prevState.String()), slog.String("new", sock.scb.State().String()), slog.String("txflags", seg.Flags.String()))
 	}

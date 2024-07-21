@@ -39,6 +39,43 @@ const (
 	synack = seqs.FlagSYN | seqs.FlagACK
 )
 
+func TestUDP(t *testing.T) {
+	const mtu = defaultMTU
+	const bufsize = mtu / 2
+	const nmessages = 100
+	conn1, conn2 := createUDPPair(t, bufsize, bufsize, mtu)
+	ex := NewExchanger(conn1.PortStack(), conn2.PortStack())
+	rng := rand.New(rand.NewSource(1))
+	var send, recv [mtu]byte
+	rng.Read(send[:])
+	for test := 0; test < nmessages; test++ {
+		n := rng.Int() % bufsize
+		ngot, err := conn1.Write(send[:n])
+		if err != nil {
+			t.Fatal(err)
+		} else if n != ngot {
+			t.Errorf("want %d bytes written, got %d", n, ngot)
+		}
+		_, sent := ex.DoExchanges(t, 1)
+		if sent <= 0 {
+			t.Fatal("no data sent")
+		}
+		if conn2.BufferedInput() == 0 {
+			t.Fatal("no buffered input")
+		}
+		nrecv, err := conn2.Read(recv[:])
+		if err != nil {
+			t.Fatal(err)
+		} else if nrecv != n {
+			t.Errorf("want %d bytes received, got %d", n, nrecv)
+		}
+		if !bytes.Equal(send[:n], recv[:n]) {
+			t.Errorf("receive/send mismatch")
+		}
+		recv = [mtu]byte{} // Zero receive buffer.
+	}
+}
+
 func TestDNS(t *testing.T) {
 	const networkSize = testingLargeNetworkSize // How many distinct IP/MAC addresses on network.
 	const questionHost = "www.go.dev"
@@ -828,7 +865,7 @@ func (egr *Exchanger) HandleTx(t *testing.T) (pkts, bytesSent int) {
 	var err error
 	for istack := 0; istack < len(egr.Stacks); istack++ {
 		// This first for loop generates packets "in-flight" contained in `pipes` data structure.
-		egr.pipesN[istack], err = egr.Stacks[istack].HandleEth(egr.pipes[istack][:])
+		egr.pipesN[istack], err = egr.Stacks[istack].PutOutboundEth(egr.pipes[istack][:])
 		egr.handleErr(t, err, "send", istack)
 		bytesSent += egr.pipesN[istack]
 		if egr.pipesN[istack] > 0 {
@@ -932,6 +969,32 @@ func createTCPClientListenerPair(t *testing.T, clientSizes, listenerSizes, maxLi
 	return client, listener
 }
 
+func createUDPPair(t *testing.T, bufsize1, bufsize2, mtu uint16) (one, two *stacks.UDPConn) {
+	t.Helper()
+	const (
+		p1, p2 = 1024, 2048
+	)
+	Stacks := createPortStacks(t, 2, mtu)
+	c1, err := stacks.NewUDPConn(Stacks[0], stacks.UDPConnConfig{TxBufSize: bufsize1, RxBufSize: bufsize1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = c1.OpenDialUDP(p1, Stacks[1].HardwareAddr6(), netip.AddrPortFrom(Stacks[1].Addr(), p2))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c2, err := stacks.NewUDPConn(Stacks[1], stacks.UDPConnConfig{TxBufSize: bufsize2, RxBufSize: bufsize2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = c2.OpenDialUDP(p2, Stacks[0].HardwareAddr6(), netip.AddrPortFrom(Stacks[0].Addr(), p1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c1, c2
+}
+
 func createTCPClientServerPair(t *testing.T, clientSizes, serverSizes, mtu uint16) (client, server *stacks.TCPConn) {
 	t.Helper()
 	const (
@@ -1025,7 +1088,7 @@ func checkNoMoreDataSent(t *testing.T, msg string, egr *Exchanger) {
 	handleTx := func() (newTxs int) {
 		txOld := txs
 		for istack := 0; istack < len(egr.Stacks); istack++ {
-			n, _ := egr.Stacks[istack].HandleEth(buf)
+			n, _ := egr.Stacks[istack].PutOutboundEth(buf)
 			if n > 0 {
 				txs++
 				data += n

@@ -64,7 +64,8 @@ func (nc *NTPClient) BeginDefaultRequest(hwaddr [6]byte, raddr netip.Addr) error
 	return nil
 }
 
-func (nc *NTPClient) send(dst []byte) (n int, err error) {
+// putOutboundEth implements [iudphandler] interface.
+func (nc *NTPClient) putOutboundEth(dst []byte) (n int, err error) {
 	const (
 		payloadoffset = eth.SizeEthernetHeader + eth.SizeIPv4Header + eth.SizeUDPHeader
 		ToS           = 192
@@ -101,7 +102,8 @@ func (nc *NTPClient) send(dst []byte) (n int, err error) {
 	return payloadoffset + ntp.SizeHeader, nil
 }
 
-func (nc *NTPClient) recv(pkt *UDPPacket) (err error) {
+// recvEth implements the [iudphandler] interface.
+func (nc *NTPClient) recvEth(pkt *UDPPacket) (err error) {
 	if nc.isAborted() || nc.IsDone() {
 		return io.EOF
 	}

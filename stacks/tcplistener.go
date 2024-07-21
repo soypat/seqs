@@ -103,7 +103,8 @@ func (l *TCPListener) Addr() net.Addr {
 	return &l.laddr
 }
 
-func (l *TCPListener) send(dst []byte) (n int, err error) {
+// putOutboundEth implements the [itcphandler] interface.
+func (l *TCPListener) putOutboundEth(dst []byte) (n int, err error) {
 	if !l.isOpen() {
 		return 0, io.EOF
 	}
@@ -112,7 +113,7 @@ func (l *TCPListener) send(dst []byte) (n int, err error) {
 		if conn.LocalPort() == 0 || !conn.isPendingHandling() {
 			continue
 		}
-		n, err = conn.send(dst)
+		n, err = conn.putOutboundEth(dst)
 		if err == io.EOF {
 			l.freeConnForReuse(i)
 			err = nil
@@ -125,7 +126,8 @@ func (l *TCPListener) send(dst []byte) (n int, err error) {
 	return 0, nil
 }
 
-func (l *TCPListener) recv(pkt *TCPPacket) error {
+// recvEth implements the [itcphandler] interface.
+func (l *TCPListener) recvEth(pkt *TCPPacket) error {
 	if !l.isOpen() {
 		return io.EOF
 	}
@@ -143,7 +145,7 @@ func (l *TCPListener) recv(pkt *TCPPacket) error {
 			pkt.IP.Source != conn.remote.Addr().As4() {
 			continue // Not for this connection.
 		}
-		err := conn.recv(pkt)
+		err := conn.recvEth(pkt)
 		if err == io.EOF {
 			l.freeConnForReuse(connidx)
 			err = nil
@@ -154,7 +156,7 @@ func (l *TCPListener) recv(pkt *TCPPacket) error {
 		l.trace("lst:noconn2recv")
 		return ErrDroppedPacket // No available connection to receive packet.
 	}
-	err := freeconn.recv(pkt)
+	err := freeconn.recvEth(pkt)
 	if err == io.EOF {
 		l.freeConnForReuse(connidx)
 		freeconn.abort()
