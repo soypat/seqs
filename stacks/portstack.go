@@ -359,7 +359,7 @@ func (ps *PortStack) HandleEth(dst []byte) (n int, err error) {
 	n, err = ps.handleEth(dst)
 	if n > 0 && err == nil {
 		if isTrace {
-			ps.trace("Stack:	HandleEth", slog.Int("plen", n))
+			ps.trace("Stack:HandleEth", slog.Int("plen", n))
 		}
 		ps.lastTx = ps.now()
 		ps.processedPackets++
