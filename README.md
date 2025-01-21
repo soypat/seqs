@@ -15,7 +15,15 @@
     * HTTP: Algorithm to reuse heap memory between requests and avoid allocations. See `httpx` package
     * NTP client for resolving time offset to a NTP server
 
-
+## ⚠️ Developer note ⚠️
+This package may be superceded by https://github.com/soypat/lneto. `lneto` is being designed with ease of testing as a priority. 
+`lneto` also features:
+- Zero copy package processing for performance gains
+- Packet framing design
+  - Variable length headers included in frame type logic, no longer part of client/server implementation
+  - Huge reduction in stack memory usage. Much easier to avoid heap usage
+  - Early stack implementations are shown to be much simpler to write and read by humans
+- Client and Server logic is moved closer to frame logic, better separation of responsibility
 
 ### Example of use
 
