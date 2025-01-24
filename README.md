@@ -21,7 +21,7 @@ This package may be superceded by https://github.com/soypat/lneto.
 ### What does this mean?
 Rest easy, the high-level API of `seqs` will be able to make use of `lneto`, so this package will be supported in the future.
 
-Low level bits of `seqs` may break or be completely removed such as anything inside [`eth`](.eth) package.
+Low level bits of `seqs` may break or be completely removed such as anything inside [`eth`](./eth) package.
 
 Below is a list of future proof APIs in seqs (their internal functioning is subject to change):
 - [`stacks.TCPConn`](./stacks/tcpconn.go)
