@@ -16,8 +16,26 @@
     * NTP client for resolving time offset to a NTP server
 
 ## ⚠️ Developer note ⚠️
-This package may be superceded by https://github.com/soypat/lneto. `lneto` is being designed with ease of testing as a priority. 
-`lneto` also features:
+This package may be superceded by https://github.com/soypat/lneto. 
+
+### What does this mean?
+Rest easy, the high-level API of `seqs` will be able to make use of `lneto`, so this package will be supported in the future.
+
+Low level bits of `seqs` may break or be completely removed such as anything inside [`eth`](.eth) package.
+
+Below is a list of future proof APIs in seqs (their internal functioning is subject to change):
+- [`stacks.TCPConn`](./stacks/tcpconn.go)
+- [`stacks.TCPListener`](./stacks/tcplistener.go)
+- [`stacks.DNSClient`](./stacks/dns_client.go)
+- [`stacks.DHCPClient`](./stacks/dhcp_client.go)
+- [`stacks.NTPClient`](./stacks/ntp_client.go)
+- [`stacks.PortStack`](./stacks/portstack.go) - HandleEth, RecvEth methods will remain. Open* and Close* methods will remain. May require different initialization. 
+
+Use above APIs if you plan on using most up to date version of `seqs` in the future.
+
+### Why?
+seqs has accumulated technical debt due to its design.`lneto` is being designed with ease of testing as a priority. 
+`lneto` features:
 - Zero copy package processing for performance gains
 - Packet framing design
   - Variable length headers included in frame type logic, no longer part of client/server implementation
@@ -25,7 +43,7 @@ This package may be superceded by https://github.com/soypat/lneto. `lneto` is be
   - Early stack implementations are shown to be much simpler to write and read by humans
 - Client and Server logic is moved closer to frame logic, better separation of responsibility
 
-### Example of use
+## Example of use
 
 ```go
 // stack works by having access to Ethernet packet sending
@@ -73,7 +91,7 @@ go mod download github.com/soypat/seqs@latest
 ```
 
 
-#### History - Precursors to seqs
+## History - Precursors to seqs
 Before `seqs` there was:
 
 * [`ether-swtch`](https://github.com/soypat/ether-swtch) - First known instance of a (barely) working TCP/IP stack in Go working on embedded systems, circa June 2021. Could blink an Arduino UNO's LED via HTTP (!). Famously bad design, code, performance, readability.
