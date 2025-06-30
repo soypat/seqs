@@ -16,7 +16,7 @@
     * NTP client for resolving time offset to a NTP server
 
 ## ⚠️ Developer note ⚠️
-This package may be superceded by https://github.com/soypat/lneto. 
+This package will very likely be superceded by https://github.com/soypat/lneto. 
 
 ### What does this mean?
 Rest easy, the high-level API of `seqs` will be able to make use of `lneto`, so this package will be supported in the future.
@@ -55,7 +55,7 @@ stack := stacks.NewPortStack(stacks.PortStackConfig{
     MaxOpenPortsTCP: 1,
     MaxOpenPortsUDP: 1,
     MTU:             2048,
-})
+})may
 // stack.RecvEth should be called on receiving an ethernet packet. It should NOT block.
 NIC.SetRecvEthHandle(stack.RecvEth)
 
