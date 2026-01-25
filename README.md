@@ -1,4 +1,4 @@
-# seqs
+# seqs (archived) ⚠️ See developer note ⚠️
 [![go.dev reference](https://pkg.go.dev/badge/github.com/soypat/seqs)](https://pkg.go.dev/github.com/soypat/seqs)
 [![Go Report Card](https://goreportcard.com/badge/github.com/soypat/seqs)](https://goreportcard.com/report/github.com/soypat/seqs)
 [![codecov](https://codecov.io/gh/soypat/seqs/branch/main/graph/badge.svg)](https://codecov.io/gh/soypat/seqs)
@@ -16,10 +16,13 @@
     * NTP client for resolving time offset to a NTP server
 
 ## ⚠️ Developer note ⚠️
-This package will very likely be superceded by https://github.com/soypat/lneto. 
+This package ~will very likely be~ has been superceded by https://github.com/soypat/lneto. 
+
+If you are a seqs API user and want to transition to a maintained API consider switching API calls to lneto.
+If you wish to preserve API calls in seqs but leverage improvements in lneto please let me know via an issue in lneto and we can consider unarchiving this project.
 
 ### What does this mean?
-Rest easy, the high-level API of `seqs` will be able to make use of `lneto`, so this package will be supported in the future.
+Rest easy, the high-level API of `seqs` will be able to make use of `lneto`, so this package will be supported in the future (if requested by community).
 
 Low level bits of `seqs` may break or be completely removed such as anything inside [`eth`](./eth) package.
 
