@@ -34,8 +34,8 @@ type TCPConn struct {
 	lastRx time.Time
 	pkt    TCPPacket
 	scb    seqs.ControlBlock
-	tx     ring
-	rx     ring
+	tx     internal.Ring
+	rx     internal.Ring
 	// remote is the IP+port address of remote.
 	remote    netip.AddrPort
 	localPort uint16
@@ -71,8 +71,8 @@ func NewTCPConn(stack *PortStack, cfg TCPConnConfig) (*TCPConn, error) {
 func makeTCPConn(stack *PortStack, tx, rx []byte) TCPConn {
 	return TCPConn{
 		stack: stack,
-		tx:    ring{buf: tx},
-		rx:    ring{buf: rx},
+		tx:    internal.Ring{Buf: tx},
+		rx:    internal.Ring{Buf: rx},
 	}
 }
 
@@ -279,7 +279,7 @@ func (sock *TCPConn) openstack(state seqs.State, localPortNum uint16, iss seqs.V
 }
 
 func (sock *TCPConn) open(state seqs.State, localPortNum uint16, iss seqs.Value, remoteMAC [6]byte, remoteAddr netip.AddrPort) error {
-	err := sock.scb.Open(iss, seqs.Size(len(sock.rx.buf)), state)
+	err := sock.scb.Open(iss, seqs.Size(len(sock.rx.Buf)), state)
 	if err != nil {
 		return err
 	}
@@ -468,8 +468,8 @@ func (sock *TCPConn) deleteState() {
 	sock.trace("TCPConn.deleteState", slog.Uint64("port", uint64(sock.localPort)))
 	*sock = TCPConn{
 		stack:  sock.stack,
-		rx:     ring{buf: sock.rx.buf},
-		tx:     ring{buf: sock.tx.buf},
+		rx:     internal.Ring{Buf: sock.rx.Buf},
+		tx:     internal.Ring{Buf: sock.tx.Buf},
 		connid: sock.connid + 1,
 	}
 }
@@ -532,4 +532,18 @@ func (sock *TCPConn) info(msg string, attrs ...slog.Attr) {
 
 func (sock *TCPConn) logerr(msg string, attrs ...slog.Attr) {
 	internal.LogAttrs(sock.stack.logger, slog.LevelError, msg, attrs...)
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
