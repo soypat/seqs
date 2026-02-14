@@ -315,12 +315,6 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 		}
 
 		pkt := &ps.auxTCP
-		if pkt == nil {
-			ps.error("TCP packet dropped")
-			ps.droppedPackets++
-			err = ErrDroppedPacket // Our socket needs handling before admitting more packets.
-			break
-		}
 		if isDebug {
 			ps.debug("TCP:recv",
 				slog.Int("opt", len(tcpOptions)),
@@ -346,6 +340,16 @@ func (ps *PortStack) RecvEth(ethernetFrame []byte) (err error) {
 			}
 		} else if err == ErrFlagPending {
 			err = nil // TODO(soypat).
+		}
+		if err != nil && isDebug && ps.logger.Enabled(context.Background(), internal.LevelTrace) {
+			seg := pkt.TCP.Segment(len(payload))
+			ps.trace("stack:error",
+				slog.Uint64("seg.seq", uint64(seg.SEQ)),
+				slog.Uint64("seg.ack", uint64(seg.ACK)),
+				slog.Uint64("seg.wnd", uint64(seg.WND)),
+				slog.String("seg.flags", seg.Flags.String()),
+				slog.Uint64("seg.data", uint64(seg.DATALEN)),
+			)
 		}
 	}
 	if err != nil {

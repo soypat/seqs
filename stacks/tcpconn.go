@@ -332,13 +332,12 @@ func (sock *TCPConn) checkPipeOpen() error {
 }
 
 func (sock *TCPConn) recv(pkt *TCPPacket) (err error) {
-	sock.trace("TCPConn.recv:start")
+	remotePort := sock.remote.Port()
+	sock.trace("TCPConn.recv:start", slog.Uint64("lport", uint64(sock.localPort)), slog.Uint64("rport", uint64(remotePort)))
 	prevState := sock.scb.State()
 	if prevState.IsClosed() {
 		return io.EOF
 	}
-
-	remotePort := sock.remote.Port()
 	if remotePort != 0 && pkt.TCP.SourcePort != remotePort {
 		return nil // This packet came from a different client to the one we are interacting with.
 	}
